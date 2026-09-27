@@ -42,7 +42,69 @@ export const BLEND_GROUPS: { id: BlendMode; label: string }[][] = [
 export const BLEND_MODES: BlendMode[] = BLEND_GROUPS.flat().map((b) => b.id);
 
 export type ToolId =
-  | 'move' | 'marquee' | 'brush' | 'eraser' | 'eyedropper' | 'hand' | 'zoom';
+  | 'move' | 'marquee' | 'marqueeEllipse' | 'lasso' | 'polylasso' | 'wand' | 'crop' | 'eyedropper'
+  | 'brush' | 'pencil' | 'clone' | 'eraser' | 'gradient' | 'bucket' | 'dodge' | 'burn'
+  | 'text' | 'shape' | 'hand' | 'zoom';
+
+export type LayerKind = 'pixel' | 'adjustment' | 'text' | 'shape';
+
+export type AdjustmentParams =
+  | { type: 'brightness'; brightness: number; contrast: number }
+  | { type: 'levels'; inBlack: number; inWhite: number; gamma: number; outBlack: number; outWhite: number }
+  | { type: 'curves'; points: [number, number][] }
+  | { type: 'exposure'; exposure: number; offset: number; gamma: number }
+  | { type: 'hueSat'; hue: number; saturation: number; lightness: number; colorize: boolean }
+  | { type: 'colorBalance'; shadows: [number, number, number]; midtones: [number, number, number]; highlights: [number, number, number] }
+  | { type: 'blackWhite'; reds: number; yellows: number; greens: number; cyans: number; blues: number; magentas: number }
+  | { type: 'invert' }
+  | { type: 'threshold'; level: number }
+  | { type: 'posterize'; levels: number }
+  | { type: 'gradientMap'; from: RGBA; to: RGBA }
+  | { type: 'vibrance'; vibrance: number; saturation: number }
+  | { type: 'solidColor'; color: RGBA };
+
+export type AdjustmentType = AdjustmentParams['type'];
+
+/** Matriz afín [a, b, c, d, e, f]: x' = a·x + c·y + e ; y' = b·x + d·y + f */
+export type Matrix = [number, number, number, number, number, number];
+export const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
+
+export interface TextParams {
+  text: string;
+  font: string;
+  size: number;
+  color: RGBA;
+  bold: boolean;
+  italic: boolean;
+  align: 'left' | 'center' | 'right';
+  lineHeight: number;
+  x: number;
+  y: number;
+  matrix: Matrix;
+}
+
+export type ShapeKind = 'rect' | 'ellipse' | 'line' | 'polygon';
+
+export interface ShapeParams {
+  shape: ShapeKind;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  fill: RGBA | null;
+  stroke: RGBA | null;
+  strokeWidth: number;
+  radius: number;
+  sides: number;
+  matrix: Matrix;
+}
+
+export interface LayerEffects {
+  dropShadow?: { enabled: boolean; color: RGBA; opacity: number; angle: number; distance: number; size: number };
+  outerGlow?: { enabled: boolean; color: RGBA; opacity: number; size: number };
+  stroke?: { enabled: boolean; color: RGBA; size: number };
+  colorOverlay?: { enabled: boolean; color: RGBA; opacity: number };
+}
 
 export interface BrushSettings {
   size: number;      // px
@@ -61,11 +123,19 @@ export interface Rect { x: number; y: number; w: number; h: number }
 export interface LayerInfo {
   id: number;
   name: string;
+  kind: LayerKind;
   visible: boolean;
   opacity: number; // 0..1
   blend: BlendMode;
   x: number;
   y: number;
+  hasMask: boolean;
+  maskEnabled: boolean;
+  lockAlpha: boolean;
+  adjustment?: AdjustmentParams;
+  text?: TextParams;
+  shape?: ShapeParams;
+  effects?: LayerEffects;
 }
 
 export interface HistoryInfo { label: string }
@@ -79,7 +149,8 @@ export interface DocState {
   activeLayerId: number;
   history: HistoryInfo[];    // [0] = estado inicial
   historyIndex: number;
-  selection: Rect | null;
+  selection: Rect | null;     // límites de la selección
+  editMask: boolean;          // se pinta en la máscara de la capa activa
   dirty: boolean;
 }
 
@@ -119,4 +190,5 @@ export type FromWorker =
   | { type: 'perf'; label: string; ms: number }
   | { type: 'toast'; text: string; kind: 'info' | 'warn' | 'error' }
   | { type: 'busy'; label: string | null; progress?: number }
+  | { type: 'selection'; path: string; bounds: Rect | null }
   | { type: 'reply'; id: number; ok: boolean; value?: unknown; error?: string };

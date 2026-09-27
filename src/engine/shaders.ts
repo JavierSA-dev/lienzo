@@ -19,21 +19,21 @@ void main() {
   gl_Position = vec4(ndc, 0.0, 1.0);
 }`;
 
-/**
- * Composición de una capa sobre el fondo acumulado (premultiplicado).
- * Fórmula de composición W3C/PDF: co = as(1-ab)Cs + as·ab·B(Cb,Cs) + (1-as)·Cb·ab
- */
-export const BLEND_FS = `#version 300 es
-precision highp float;
-precision highp int;
-uniform sampler2D uBack;   // fondo acumulado, premultiplicado
-uniform sampler2D uSrc;    // tile de la capa, alfa directo
-uniform ivec2 uSrcOffset;  // píxel destino - texel origen
-uniform ivec2 uDocOrigin;  // píxel de documento del origen del tile (para Disolver)
-uniform float uOpacity;
-uniform int uMode;
-out vec4 outColor;
+/** Cuadrilátero arbitrario (4 esquinas en píxeles de pantalla): vista previa de transformar. */
+export const QUAD_VS = `#version 300 es
+uniform vec2 uP[4];     // esquinas: sup-izq, sup-der, inf-izq, inf-der
+uniform vec2 uTarget;
+out vec2 vUV;
+const vec2 C[4] = vec2[4](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0));
+void main() {
+  vUV = C[gl_VertexID];
+  vec2 px = uP[gl_VertexID];
+  vec2 ndc = px / uTarget * 2.0 - 1.0;
+  gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);
+}`;
 
+/** Funciones de fusión compartidas (fórmulas W3C/PDF, las mismas que usa Photoshop). */
+const BLEND_LIB = `
 float lum(vec3 c) { return dot(c, vec3(0.3, 0.59, 0.11)); }
 vec3 clipColor(vec3 c) {
   float l = lum(c);
@@ -68,47 +68,40 @@ float softLight(float b, float s) {
   float d = b <= 0.25 ? ((16.0 * b - 12.0) * b + 4.0) * b : sqrt(b);
   return b + (2.0 * s - 1.0) * (d - b);
 }
-float vividLight(float b, float s) {
-  return s <= 0.5 ? colorBurn(b, 2.0 * s) : colorDodge(b, 2.0 * (s - 0.5));
-}
-float pinLight(float b, float s) {
-  return s <= 0.5 ? min(b, 2.0 * s) : max(b, 2.0 * s - 1.0);
-}
-float divideF(float b, float s) {
-  if (s <= 0.0) return b <= 0.0 ? 0.0 : 1.0;
-  return min(1.0, b / s);
-}
+float vividLight(float b, float s) { return s <= 0.5 ? colorBurn(b, 2.0 * s) : colorDodge(b, 2.0 * (s - 0.5)); }
+float pinLight(float b, float s) { return s <= 0.5 ? min(b, 2.0 * s) : max(b, 2.0 * s - 1.0); }
+float divideF(float b, float s) { if (s <= 0.0) return b <= 0.0 ? 0.0 : 1.0; return min(1.0, b / s); }
 float sep(int m, float b, float s) {
   switch (m) {
-    case 2: return min(b, s);                          // Oscurecer
-    case 3: return b * s;                              // Multiplicar
-    case 4: return colorBurn(b, s);                    // Subexposición de color
-    case 5: return max(0.0, b + s - 1.0);              // Subexposición lineal
-    case 7: return max(b, s);                          // Aclarar
-    case 8: return b + s - b * s;                      // Trama
-    case 9: return colorDodge(b, s);                   // Sobreexposición de color
-    case 10: return min(1.0, b + s);                   // Sobreexposición lineal
-    case 12: return hardLight(s, b);                   // Superponer
-    case 13: return softLight(b, s);                   // Luz suave
-    case 14: return hardLight(b, s);                   // Luz fuerte
-    case 15: return vividLight(b, s);                  // Luz intensa
-    case 16: return clamp(b + 2.0 * s - 1.0, 0.0, 1.0);// Luz lineal
-    case 17: return pinLight(b, s);                    // Luz focal
-    case 18: return b + s >= 1.0 ? 1.0 : 0.0;          // Mezcla definida
-    case 19: return abs(b - s);                        // Diferencia
-    case 20: return b + s - 2.0 * b * s;               // Exclusión
-    case 21: return max(0.0, b - s);                   // Restar
-    case 22: return divideF(b, s);                     // Dividir
+    case 2: return min(b, s);
+    case 3: return b * s;
+    case 4: return colorBurn(b, s);
+    case 5: return max(0.0, b + s - 1.0);
+    case 7: return max(b, s);
+    case 8: return b + s - b * s;
+    case 9: return colorDodge(b, s);
+    case 10: return min(1.0, b + s);
+    case 12: return hardLight(s, b);
+    case 13: return softLight(b, s);
+    case 14: return hardLight(b, s);
+    case 15: return vividLight(b, s);
+    case 16: return clamp(b + 2.0 * s - 1.0, 0.0, 1.0);
+    case 17: return pinLight(b, s);
+    case 18: return b + s >= 1.0 ? 1.0 : 0.0;
+    case 19: return abs(b - s);
+    case 20: return b + s - 2.0 * b * s;
+    case 21: return max(0.0, b - s);
+    case 22: return divideF(b, s);
   }
-  return s;                                            // Normal / Disolver
+  return s;
 }
 vec3 blendColor(int m, vec3 b, vec3 s) {
-  if (m == 6) return lum(s) < lum(b) ? s : b;                    // Color más oscuro
-  if (m == 11) return lum(s) > lum(b) ? s : b;                   // Color más claro
-  if (m == 23) return setLum(setSat(s, sat(b)), lum(b));         // Tono
-  if (m == 24) return setLum(setSat(b, sat(s)), lum(b));         // Saturación
-  if (m == 25) return setLum(s, lum(b));                         // Color
-  if (m == 26) return setLum(b, lum(s));                         // Luminosidad
+  if (m == 6) return lum(s) < lum(b) ? s : b;
+  if (m == 11) return lum(s) > lum(b) ? s : b;
+  if (m == 23) return setLum(setSat(s, sat(b)), lum(b));
+  if (m == 24) return setLum(setSat(b, sat(s)), lum(b));
+  if (m == 25) return setLum(s, lum(b));
+  if (m == 26) return setLum(b, lum(s));
   return vec3(sep(m, b.r, s.r), sep(m, b.g, s.g), sep(m, b.b, s.b));
 }
 float hash(vec2 p) {
@@ -116,11 +109,37 @@ float hash(vec2 p) {
   p += dot(p, p.yx + 19.19);
   return fract((p.x + p.y) * p.x);
 }
+`;
+
+/** Máscara de capa: textura R8 alineada con el tile de la capa, o un valor fijo. */
+const MASK_LIB = `
+uniform sampler2D uMask;
+uniform bool uHasMask;
+uniform float uMaskFill;
+float maskAt(ivec2 p) { return uHasMask ? texelFetch(uMask, p, 0).r : uMaskFill; }
+`;
+
+/**
+ * Composición de una capa sobre el fondo acumulado (premultiplicado).
+ * co = as(1-ab)Cs + as·ab·B(Cb,Cs) + (1-as)·Cb·ab
+ */
+export const BLEND_FS = `#version 300 es
+precision highp float;
+precision highp int;
+uniform sampler2D uBack;
+uniform sampler2D uSrc;
+uniform ivec2 uSrcOffset;
+uniform ivec2 uDocOrigin;
+uniform float uOpacity;
+uniform int uMode;
+out vec4 outColor;
+${BLEND_LIB}
+${MASK_LIB}
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
   vec4 back = texelFetch(uBack, p, 0);
   vec4 src = texelFetch(uSrc, p - uSrcOffset, 0);
-  float as = src.a * uOpacity;
+  float as = src.a * uOpacity * maskAt(p - uSrcOffset);
   if (uMode == 1) as = hash(vec2(p + uDocOrigin)) < as ? 1.0 : 0.0;
   float ab = back.a;
   vec3 cb = ab > 0.0 ? back.rgb / ab : vec3(0.0);
@@ -131,16 +150,132 @@ void main() {
   outColor = vec4(co, ao);
 }`;
 
-/** Muestra un tile compuesto (premultiplicado) en pantalla. */
+/** Camino rápido para capas Normal: la GPU hace el source-over con su mezcla fija. */
+export const NORMAL_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc;
+uniform ivec2 uSrcOffset;
+uniform float uOpacity;
+out vec4 outColor;
+${MASK_LIB}
+void main() {
+  ivec2 q = ivec2(gl_FragCoord.xy) - uSrcOffset;
+  vec4 s = texelFetch(uSrc, q, 0);
+  float a = s.a * uOpacity * maskAt(q);
+  outColor = vec4(s.rgb * a, a);
+}`;
+
+/**
+ * Capas de ajuste (no destructivas) y capas de relleno.
+ * uKind: 0 LUT por canal · 1 mapa de degradado · 2 tono/saturación · 3 blanco y negro
+ *        4 equilibrio de color · 5 intensidad · 6 color sólido · 7 umbral
+ */
+export const ADJ_FS = `#version 300 es
+precision highp float;
+precision highp int;
+uniform sampler2D uBack;
+uniform sampler2D uLut;
+uniform int uKind;
+uniform vec4 uP0;
+uniform vec4 uP1;
+uniform vec4 uP2;
+uniform float uOpacity;
+uniform int uMode;
+out vec4 outColor;
+${BLEND_LIB}
+${MASK_LIB}
+vec3 rgb2hsl(vec3 c) {
+  float mx = max(max(c.r, c.g), c.b), mn = min(min(c.r, c.g), c.b);
+  float l = (mx + mn) * 0.5, h = 0.0, s = 0.0;
+  float d = mx - mn;
+  if (d > 1e-5) {
+    s = l > 0.5 ? d / (2.0 - mx - mn) : d / (mx + mn);
+    if (mx == c.r) h = (c.g - c.b) / d + (c.g < c.b ? 6.0 : 0.0);
+    else if (mx == c.g) h = (c.b - c.r) / d + 2.0;
+    else h = (c.r - c.g) / d + 4.0;
+    h /= 6.0;
+  }
+  return vec3(h, s, l);
+}
+float hue2rgb(float p, float q, float t) {
+  t = fract(t);
+  if (t < 1.0 / 6.0) return p + (q - p) * 6.0 * t;
+  if (t < 0.5) return q;
+  if (t < 2.0 / 3.0) return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+  return p;
+}
+vec3 hsl2rgb(vec3 h) {
+  if (h.y <= 0.0) return vec3(h.z);
+  float q = h.z < 0.5 ? h.z * (1.0 + h.y) : h.z + h.y - h.z * h.y;
+  float p = 2.0 * h.z - q;
+  return vec3(hue2rgb(p, q, h.x + 1.0 / 3.0), hue2rgb(p, q, h.x), hue2rgb(p, q, h.x - 1.0 / 3.0));
+}
+vec3 lut3(vec3 c) {
+  ivec3 i = ivec3(clamp(c, 0.0, 1.0) * 255.0 + 0.5);
+  return vec3(texelFetch(uLut, ivec2(i.r, 0), 0).r, texelFetch(uLut, ivec2(i.g, 0), 0).g, texelFetch(uLut, ivec2(i.b, 0), 0).b);
+}
+vec3 adjust(vec3 c) {
+  if (uKind == 0) return lut3(c);
+  if (uKind == 1) return texelFetch(uLut, ivec2(int(clamp(lum(c), 0.0, 1.0) * 255.0 + 0.5), 0), 0).rgb;
+  if (uKind == 2) {
+    vec3 h = rgb2hsl(c);
+    if (uP0.w > 0.5) { h.x = uP0.x; h.y = uP0.y * 0.5 + 0.5; }
+    else { h.x = fract(h.x + uP0.x); h.y = clamp(h.y * (1.0 + uP0.y), 0.0, 1.0); }
+    vec3 r = hsl2rgb(h);
+    return uP0.z >= 0.0 ? r + (1.0 - r) * uP0.z : r * (1.0 + uP0.z);
+  }
+  if (uKind == 3) {
+    float mx = max(max(c.r, c.g), c.b), mn = min(min(c.r, c.g), c.b);
+    float mid = c.r + c.g + c.b - mx - mn;
+    // Peso del primario (canal máximo) y del secundario (dos canales más altos).
+    float wp = mx == c.r ? uP0.x : (mx == c.g ? uP0.z : uP1.x);
+    float ws;
+    if (mn == c.b) ws = uP0.y;        // amarillos (R+G)
+    else if (mn == c.r) ws = uP0.w;   // cianes (G+B)
+    else ws = uP1.y;                  // magentas (R+B)
+    return vec3(clamp(mn + (mid - mn) * ws + (mx - mid) * wp, 0.0, 1.0));
+  }
+  if (uKind == 4) {
+    float l = lum(c);
+    float ws = 1.0 - smoothstep(0.0, 0.5, l), wh = smoothstep(0.5, 1.0, l), wm = 1.0 - ws - wh;
+    vec3 r = clamp(c + uP0.rgb * ws + uP1.rgb * wm + uP2.rgb * wh, 0.0, 1.0);
+    return setLum(r, l);
+  }
+  if (uKind == 5) {
+    float l = lum(c);
+    float s = sat(c);
+    vec3 r = mix(vec3(l), c, 1.0 + uP0.x * (1.0 - s));
+    return clamp(mix(vec3(lum(r)), r, 1.0 + uP0.y), 0.0, 1.0);
+  }
+  if (uKind == 7) return vec3(lum(c) >= uP0.x ? 1.0 : 0.0);
+  return c;
+}
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  vec4 back = texelFetch(uBack, p, 0);
+  float ab = back.a;
+  vec3 cb = ab > 0.0 ? back.rgb / ab : vec3(0.0);
+  float k = uOpacity * maskAt(p);
+  if (uKind == 6) {
+    vec3 cs = uP0.rgb;
+    vec3 B = clamp(blendColor(uMode, cb, cs), 0.0, 1.0);
+    outColor = vec4(k * (1.0 - ab) * cs + k * ab * B + (1.0 - k) * back.rgb, k + ab * (1.0 - k));
+    return;
+  }
+  if (ab <= 0.0 || k <= 0.0) { outColor = back; return; }
+  vec3 B = clamp(blendColor(uMode, cb, clamp(adjust(cb), 0.0, 1.0)), 0.0, 1.0);
+  outColor = vec4(mix(cb, B, k) * ab, ab);
+}`;
+
+/** Muestra una textura (premultiplicada) en pantalla. */
 export const VIEW_FS = `#version 300 es
 precision highp float;
 uniform sampler2D uTex;
-uniform vec4 uUV; // u0, v0, u1, v1
+uniform vec4 uUV;
+uniform float uAlpha;
 in vec2 vUV;
 out vec4 outColor;
-void main() {
-  outColor = texture(uTex, mix(uUV.xy, uUV.zw, vUV));
-}`;
+void main() { outColor = texture(uTex, mix(uUV.xy, uUV.zw, vUV)) * uAlpha; }`;
 
 /** Damero de transparencia, de tamaño fijo en pantalla como en Photoshop. */
 export const CHECKER_FS = `#version 300 es
@@ -160,18 +295,15 @@ uniform vec4 uColor;
 out vec4 outColor;
 void main() { outColor = uColor; }`;
 
-/**
- * Camino rápido para capas en modo Normal: la GPU hace el "source-over"
- * premultiplicado con su mezcla fija, sin copiar el fondo (ping-pong).
- */
-export const NORMAL_FS = `#version 300 es
+/** Máscara en rojo translúcido (Alt+clic en la máscara o máscara rápida). */
+export const MASKVIEW_FS = `#version 300 es
 precision highp float;
-uniform sampler2D uSrc;
-uniform ivec2 uSrcOffset;
-uniform float uOpacity;
+uniform sampler2D uTex;
+uniform vec4 uUV;
+in vec2 vUV;
 out vec4 outColor;
 void main() {
-  vec4 s = texelFetch(uSrc, ivec2(gl_FragCoord.xy) - uSrcOffset, 0);
-  float a = s.a * uOpacity;
-  outColor = vec4(s.rgb * a, a);
+  float m = texture(uTex, mix(uUV.xy, uUV.zw, vUV)).r;
+  float a = (1.0 - m) * 0.5;
+  outColor = vec4(1.0 * a, 0.0, 0.0, a);
 }`;

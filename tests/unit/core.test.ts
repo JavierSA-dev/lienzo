@@ -7,9 +7,12 @@ import { TILE, type BrushSettings } from '../../src/engine/types';
 
 const brush: BrushSettings = { size: 20, hardness: 1, opacity: 1, flow: 1, spacing: 0.1, pressureSize: false, pressureOpacity: false };
 const full = { x: 0, y: 0, w: 1000, h: 1000 };
+type Clip = { x: number; y: number; w: number; h: number };
+const mk = (layer: PixelLayer, settings: BrushSettings, color: [number, number, number, number], erase: boolean, clip: Clip) =>
+  new BrushStroke({ layer, settings, color, mode: erase ? 'erase' : 'paint', clip, selection: null, target: 'pixels' });
 
 function paint(L: PixelLayer, settings: Partial<BrushSettings> = {}, color: [number, number, number, number] = [255, 0, 0, 255]) {
-  const s = new BrushStroke(L, { ...brush, ...settings }, color, false, full);
+  const s = mk(L, { ...brush, ...settings }, color, false, full);
   s.addPoint(50, 50, 1);
   s.addPoint(150, 50, 1);
   return s.finish()!;
@@ -45,7 +48,7 @@ describe('capas y tiles', () => {
 describe('pincel', () => {
   it('la opacidad del trazo es un tope aunque se repase la misma zona', () => {
     const L = new PixelLayer('a');
-    const s = new BrushStroke(L, { ...brush, opacity: 0.5, flow: 0.3 }, [0, 0, 0, 255], false, full);
+    const s = mk(L, { ...brush, opacity: 0.5, flow: 0.3 }, [0, 0, 0, 255], false, full);
     for (let i = 0; i < 20; i++) { s.addPoint(40, 40, 1); s.addPoint(60, 40, 1); }
     s.finish();
     const a = L.pixel(50, 40)[3];
@@ -58,7 +61,7 @@ describe('pincel', () => {
     const L = new PixelLayer('a');
     doc.layers.push(L);
     EditorDocument.fillLayer(L, { x: 0, y: 0, w: 500, h: 500 }, [10, 20, 30, 255]);
-    const s = new BrushStroke(L, brush, [0, 0, 0, 255], true, full);
+    const s = mk(L, brush, [0, 0, 0, 255], true, full);
     s.addPoint(100, 100, 1);
     const patch = s.finish()!;
     expect(L.pixel(100, 100)[3]).toBe(0);
@@ -70,7 +73,7 @@ describe('pincel', () => {
 
   it('respeta la selección como zona de recorte', () => {
     const L = new PixelLayer('a');
-    const s = new BrushStroke(L, { ...brush, size: 100 }, [0, 0, 0, 255], false, { x: 0, y: 0, w: 50, h: 1000 });
+    const s = mk(L, { ...brush, size: 100 }, [0, 0, 0, 255], false, { x: 0, y: 0, w: 50, h: 1000 });
     s.addPoint(50, 50, 1);
     s.finish();
     expect(L.pixel(40, 50)[3]).toBe(255);
@@ -182,5 +185,45 @@ describe('TilePatch', () => {
     EditorDocument.fillLayer(L, { x: 0, y: 0, w: 10, h: 10 }, [2, 2, 2, 255]);
     p.capture(L, tileKey(0, 0));
     expect(p.saved.get(tileKey(0, 0))![0]).toBe(1);
+  });
+});
+
+import { Selection } from '../../src/engine/selection';
+import { cpuFlatten } from '../../src/engine/ops';
+
+describe('selección', () => {
+  it('rectángulo, invertir y combinar', () => {
+    const a = Selection.fromRect({ x: 10, y: 10, w: 20, h: 20 });
+    expect(a.get(15, 15)).toBe(255);
+    expect(a.get(5, 5)).toBe(0);
+    const inv = a.invert(100, 100);
+    expect(inv.get(5, 5)).toBe(255);
+    expect(inv.get(15, 15)).toBe(0);
+    expect(a.bounds()).toEqual({ x: 10, y: 10, w: 20, h: 20 });
+  });
+  it('calar suaviza el borde', () => {
+    const a = Selection.fromRect({ x: 20, y: 20, w: 60, h: 60 }).feather(5, 100, 100);
+    const edge = a.get(20, 50);
+    expect(edge).toBeGreaterThan(40);
+    expect(edge).toBeLessThan(220);
+    expect(a.get(50, 50)).toBe(255);
+  });
+});
+
+describe('composición en CPU', () => {
+  it('Normal con opacidad coincide con la fórmula de Porter-Duff', () => {
+    const B = new PixelLayer('b'), A = new PixelLayer('a');
+    EditorDocument.fillLayer(B, { x: 0, y: 0, w: 10, h: 10 }, [0, 0, 255, 255]);
+    EditorDocument.fillLayer(A, { x: 0, y: 0, w: 5, h: 10 }, [255, 0, 0, 255]);
+    A.opacity = 0.5;
+    const out = cpuFlatten([B, A], { x: 0, y: 0, w: 10, h: 10 })!;
+    expect(Array.from(out.slice(0, 4))).toEqual([128, 0, 128, 255]);
+    expect(Array.from(out.slice(9 * 4, 9 * 4 + 4))).toEqual([0, 0, 255, 255]);
+  });
+  it('devuelve null si hace falta el compositor de GPU', () => {
+    const A = new PixelLayer('a');
+    EditorDocument.fillLayer(A, { x: 0, y: 0, w: 5, h: 5 }, [255, 0, 0, 255]);
+    A.blend = 'multiply';
+    expect(cpuFlatten([A], { x: 0, y: 0, w: 5, h: 5 })).toBeNull();
   });
 });

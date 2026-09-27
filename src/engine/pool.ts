@@ -1,15 +1,14 @@
-import type { BandJob } from './resample';
-import { resampleBand } from './resample';
+import { runJob, type PoolJob } from './filters';
 
 /**
- * Pool de workers para cálculo intensivo en CPU (redimensionar; más adelante filtros).
- * Usa todos los núcleos menos uno. Si el navegador no permite workers anidados,
- * calcula en el propio worker del motor.
+ * Pool de workers para cálculo intensivo en CPU (redimensionar, filtros,
+ * transformar, licuar). Usa todos los núcleos menos uno. Si el navegador no
+ * permite workers anidados, calcula en el propio worker del motor.
  */
 export class Pool {
   private workers: Worker[] = [];
   private idle: Worker[] = [];
-  private queue: { job: BandJob; resolve: (v: Uint8ClampedArray) => void; reject: (e: unknown) => void }[] = [];
+  private queue: { job: PoolJob; resolve: (v: Uint8ClampedArray) => void; reject: (e: unknown) => void }[] = [];
   private callbacks = new Map<Worker, { resolve: (v: Uint8ClampedArray) => void; reject: (e: unknown) => void }>();
   readonly size: number;
   private available = true;
@@ -24,10 +23,10 @@ export class Pool {
     try {
       for (let i = 0; i < this.size; i++) {
         const w = new Worker(new URL('./pool.worker.ts', import.meta.url), { type: 'module' });
-        w.onmessage = (e: MessageEvent<{ out: Uint8ClampedArray }>) => {
+        w.onmessage = (e: MessageEvent<{ out: Uint8ClampedArray; error?: string }>) => {
           const cb = this.callbacks.get(w);
           this.callbacks.delete(w);
-          cb?.resolve(e.data.out);
+          if (e.data.error) cb?.reject(new Error(e.data.error)); else cb?.resolve(e.data.out);
           this.release(w);
         };
         w.onerror = (e) => {
@@ -52,12 +51,19 @@ export class Pool {
 
   private dispatch(w: Worker, t: (typeof this.queue)[number]) {
     this.callbacks.set(w, { resolve: t.resolve, reject: t.reject });
-    w.postMessage(t.job, [t.job.slice.buffer]);
+    const transfer: Transferable[] = [];
+    const j = t.job as unknown as Record<string, unknown>;
+    for (const key of ['slice', 'src', 'field']) {
+      const v = j[key] as ArrayBufferView | undefined;
+      // Los SharedArrayBuffer se comparten, no se transfieren.
+      if (v && v.buffer instanceof ArrayBuffer && !transfer.includes(v.buffer)) transfer.push(v.buffer);
+    }
+    w.postMessage(t.job, transfer);
   }
 
-  resample(job: BandJob): Promise<Uint8ClampedArray> {
+  run(job: PoolJob): Promise<Uint8ClampedArray> {
     this.spawn();
-    if (!this.available) return Promise.resolve(resampleBand(job));
+    if (!this.available) return Promise.resolve(runJob(job));
     return new Promise((resolve, reject) => {
       const t = { job, resolve, reject };
       const w = this.idle.pop();
@@ -65,4 +71,18 @@ export class Pool {
       else this.queue.push(t);
     });
   }
+
+  /** Compatibilidad: remuestreo por bandas. */
+  resample(job: Omit<Extract<PoolJob, { op: 'resample' }>, 'op'>): Promise<Uint8ClampedArray> {
+    return this.run({ op: 'resample', ...job });
+  }
+}
+
+/** Copia datos a un SharedArrayBuffer (si está disponible) para compartirlos entre workers sin copias. */
+export function shareable(data: Uint8ClampedArray): Uint8ClampedArray {
+  if (typeof SharedArrayBuffer === 'undefined' || !(globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated) return data;
+  const sab = new SharedArrayBuffer(data.byteLength);
+  const out = new Uint8ClampedArray(sab);
+  out.set(data);
+  return out;
 }

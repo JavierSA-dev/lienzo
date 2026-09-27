@@ -9,11 +9,19 @@ let engine: Engine | null = null;
 
 // Métodos que la interfaz puede invocar por RPC.
 const ALLOWED = new Set([
-  'newDoc', 'open', 'closeDoc', 'undo', 'redo', 'jumpHistory',
-  'newLayer', 'duplicateLayer', 'deleteLayer', 'selectLayer', 'setLayer', 'moveLayer', 'mergeDown', 'flattenImage',
-  'selectAll', 'deselect', 'fill', 'clear', 'resizeImage', 'adjust',
-  'setTool', 'setBrush', 'setColors', 'fit', 'exportImage', 'savePsd',
-  'stats', 'debugPixel', 'debugStroke', 'debugComposeAll', 'zoomIn', 'zoomOut', 'zoomTo', 'actualPixels',
+  'newDoc', 'open', 'placeImage', 'closeDoc', 'undo', 'redo', 'jumpHistory', 'toggleLastState',
+  'newLayer', 'layerVia', 'duplicateLayer', 'deleteLayer', 'selectLayer', 'selectLayerRelative', 'setLayer', 'soloLayer',
+  'moveLayer', 'arrange', 'mergeDown', 'mergeVisible', 'stampVisible', 'flattenImage', 'rasterizeLayer',
+  'newAdjustmentLayer', 'setAdjustment', 'addMask', 'deleteMask', 'setEditMask', 'loadSelectionFromLayer',
+  'selectAll', 'deselect', 'reselect', 'invertSelection', 'selectShape', 'selectPolygon', 'magicWand',
+  'featherSelection', 'growSelection', 'moveSelectionBy', 'fill', 'clear', 'copy', 'paste',
+  'resizeImage', 'canvasSize', 'crop', 'cropToSelection', 'rotateCanvas', 'flipCanvas', 'applyAdjustment', 'adjust',
+  'applyFilter', 'repeatFilter', 'endPreview', 'restorePreview', 'commitFilterPreview', 'applyGradient', 'bucketFill', 'createText', 'updateText', 'hitText',
+  'createShape', 'updateShape', 'setEffects', 'beginTransform', 'updateTransform', 'cancelTransform', 'commitTransform',
+  'transformLayer', 'liquifySource', 'applyLiquify', 'removeBackground', 'selectSubject', 'generativeInput', 'placeGenerated',
+  'setTool', 'setBrush', 'setColors', 'setAutoSelect', 'moveLayerBy', 'fit', 'exportImage', 'savePsd',
+  'zoomIn', 'zoomOut', 'zoomTo', 'zoomAtPoint', 'actualPixels',
+  'stats', 'debugPixel', 'debugLayerPixel', 'debugSelection', 'debugStroke', 'debugComposeAll', 'debugFlushEffects',
 ]);
 
 self.onmessage = async (e: MessageEvent<ToWorker>) => {
@@ -21,7 +29,7 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
   try {
     switch (m.type) {
       case 'init':
-        engine = new Engine(m.canvas, m.width, m.height, m.dpr, post);
+        engine = new Engine(m.canvas, m.width, m.height, m.dpr, post, new URL(import.meta.env.BASE_URL, self.location.origin).href);
         return;
       case 'resize':
         engine?.resize(m.width, m.height, m.dpr);
@@ -38,7 +46,8 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
         if (!engine || !ALLOWED.has(m.method)) throw new Error(`Método no disponible: ${m.method}`);
         const fn = (engine as unknown as Record<string, (...a: unknown[]) => unknown>)[m.method];
         const value = await fn.apply(engine, m.args);
-        const transfer: Transferable[] = value instanceof Uint8Array ? [value.buffer] : [];
+        const transfer: Transferable[] = value instanceof Uint8Array && value.buffer instanceof ArrayBuffer ? [value.buffer]
+          : value && typeof value === 'object' && 'data' in value && (value as { data: unknown }).data instanceof Uint8ClampedArray ? [((value as { data: Uint8ClampedArray }).data.buffer as ArrayBuffer)] : [];
         post({ type: 'reply', id: m.id, ok: true, value }, transfer);
         return;
       }

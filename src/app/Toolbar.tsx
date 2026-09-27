@@ -1,66 +1,94 @@
+import { useEffect, useRef, useState } from 'react';
 import {
-  Move, SquareDashed, Lasso, WandSparkles, Crop, Pipette, Bandage, Brush, Stamp, History, Eraser, Blend,
-  Droplet, SunDim, PenTool, Type, MousePointer2, RectangleHorizontal, Hand, ZoomIn, ArrowLeftRight, type LucideIcon,
+  Move, SquareDashed, Circle, Lasso, Spline, WandSparkles, Crop, Pipette, Bandage, Brush, Pencil, Stamp, History, Eraser, Blend,
+  PaintBucket, Droplet, Sun, Moon, PenTool, Type, MousePointer2, Shapes, Hand, ZoomIn, ArrowLeftRight, type LucideIcon,
 } from 'lucide-react';
 import { useStore } from './store';
+import { TOOL_GROUPS, TOOL_NAMES, selectTool, groupOf } from './commands';
 import type { ToolId } from '../engine/types';
 
-interface ToolDef { id?: ToolId; icon: LucideIcon; label: string; keys: string; group?: boolean }
+const ICONS: Record<ToolId, LucideIcon> = {
+  move: Move, marquee: SquareDashed, marqueeEllipse: Circle, lasso: Lasso, polylasso: Spline, wand: WandSparkles,
+  crop: Crop, eyedropper: Pipette, brush: Brush, pencil: Pencil, clone: Stamp, eraser: Eraser, gradient: Blend,
+  bucket: PaintBucket, dodge: Sun, burn: Moon, text: Type, shape: Shapes, hand: Hand, zoom: ZoomIn,
+};
 
-/** Barra de herramientas con el orden de Photoshop. Las de fases posteriores se ven atenuadas. */
-const TOOLS: (ToolDef | '-')[] = [
-  { id: 'move', icon: Move, label: 'Mover', keys: 'V', group: true },
-  { id: 'marquee', icon: SquareDashed, label: 'Marco rectangular', keys: 'M', group: true },
-  { icon: Lasso, label: 'Lazo', keys: 'L', group: true },
-  { icon: WandSparkles, label: 'Selección de objetos / rápida / varita', keys: 'W', group: true },
-  { icon: Crop, label: 'Recortar', keys: 'C', group: true },
-  { id: 'eyedropper', icon: Pipette, label: 'Cuentagotas', keys: 'I', group: true },
-  '-',
-  { icon: Bandage, label: 'Pincel corrector puntual', keys: 'J', group: true },
-  { id: 'brush', icon: Brush, label: 'Pincel', keys: 'B', group: true },
-  { icon: Stamp, label: 'Tampón de clonar', keys: 'S', group: true },
-  { icon: History, label: 'Pincel de historia', keys: 'Y', group: true },
-  { id: 'eraser', icon: Eraser, label: 'Borrador', keys: 'E', group: true },
-  { icon: Blend, label: 'Degradado / Bote de pintura', keys: 'G', group: true },
-  { icon: Droplet, label: 'Desenfocar / Enfocar / Dedo', keys: '', group: true },
-  { icon: SunDim, label: 'Sobreexponer / Subexponer', keys: 'O', group: true },
-  '-',
-  { icon: PenTool, label: 'Pluma', keys: 'P', group: true },
-  { icon: Type, label: 'Texto horizontal', keys: 'T', group: true },
-  { icon: MousePointer2, label: 'Selección de trazado', keys: 'A', group: true },
-  { icon: RectangleHorizontal, label: 'Rectángulo', keys: 'U', group: true },
-  '-',
-  { id: 'hand', icon: Hand, label: 'Mano', keys: 'H', group: true },
-  { id: 'zoom', icon: ZoomIn, label: 'Zoom', keys: 'Z' },
+/** Orden de la barra de Photoshop; los grupos sin herramienta aún se ven atenuados. */
+const LAYOUT: (string | { soon: string; icon: LucideIcon; key: string } | '-')[] = [
+  'V', 'M', 'L', 'W', 'C', 'I', '-',
+  { soon: 'Pincel corrector puntual', icon: Bandage, key: 'J' }, 'B', 'S', { soon: 'Pincel de historia', icon: History, key: 'Y' }, 'E', 'G',
+  { soon: 'Desenfocar / Enfocar / Dedo', icon: Droplet, key: '' }, 'O', '-',
+  { soon: 'Pluma', icon: PenTool, key: 'P' }, 'T', { soon: 'Selección de trazado', icon: MousePointer2, key: 'A' }, 'U', '-',
+  'H', 'Z',
 ];
 
 export function Toolbar() {
   const tool = useStore((s) => s.tool);
-  const setTool = useStore((s) => s.setTool);
+  const groupTool = useStore((s) => s.groupTool);
   const fg = useStore((s) => s.fg);
   const bg = useStore((s) => s.bg);
   const setColors = useStore((s) => s.setColors);
+  const [flyout, setFlyout] = useState<{ key: string; top: number } | null>(null);
+  const ref = useRef<HTMLElement>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!flyout) return;
+    const close = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) setFlyout(null); };
+    window.addEventListener('pointerdown', close);
+    return () => window.removeEventListener('pointerdown', close);
+  }, [flyout]);
 
   return (
-    <aside className="toolbar" aria-label="Herramientas">
-      {TOOLS.map((t, i) => {
-        if (t === '-') return <div className="tool-sep" key={i} />;
-        const Icon = t.icon;
-        const soon = !t.id;
+    <aside className="toolbar" aria-label="Herramientas" ref={ref}>
+      {LAYOUT.map((item, i) => {
+        if (item === '-') return <div className="tool-sep" key={i} />;
+        if (typeof item !== 'string') {
+          const Icon = item.icon;
+          return (
+            <button key={i} className="tool soon" title={`${item.soon}${item.key ? ` (${item.key})` : ''} — próximamente`} aria-label={item.soon}>
+              <Icon size={17} strokeWidth={1.6} /><span className="corner" />
+            </button>
+          );
+        }
+        const g = TOOL_GROUPS.find((x) => x.key === item)!;
+        const current = g.tools.includes(tool) ? tool : groupTool[g.key] ?? g.tools[0];
+        const Icon = ICONS[current];
+        const active = g.tools.includes(tool);
+        const openFly = (el: HTMLElement) => g.tools.length > 1 && setFlyout({ key: g.key, top: el.offsetTop });
         return (
           <button
-            key={t.label}
-            className={`tool ${t.id === tool ? 'active' : ''} ${soon ? 'soon' : ''}`}
-            title={`${t.label}${t.keys ? ` (${t.keys})` : ''}${soon ? ' — próximamente' : ''}`}
-            aria-label={t.label}
-            aria-pressed={t.id === tool}
-            onClick={() => t.id && setTool(t.id)}
+            key={g.key}
+            className={`tool ${active ? 'active' : ''}`}
+            title={`${TOOL_NAMES[current]} (${g.key})${g.tools.length > 1 ? ` · Mayús+${g.key} alterna` : ''}`}
+            aria-label={TOOL_NAMES[current]}
+            aria-pressed={active}
+            data-tool={current}
+            onPointerDown={(e) => {
+              const el = e.currentTarget;
+              timer.current = setTimeout(() => openFly(el), 400);
+            }}
+            onPointerUp={() => { if (timer.current) clearTimeout(timer.current); }}
+            onClick={() => selectTool(current)}
+            onContextMenu={(e) => { e.preventDefault(); openFly(e.currentTarget); }}
           >
             <Icon size={17} strokeWidth={1.6} />
-            {t.group && <span className="corner" />}
+            {g.tools.length > 1 && <span className="corner" />}
           </button>
         );
       })}
+      {flyout && (
+        <div className="tool-flyout" style={{ top: flyout.top }}>
+          {TOOL_GROUPS.find((g) => g.key === flyout.key)!.tools.map((t) => {
+            const Icon = ICONS[t];
+            return (
+              <button key={t} className={`menu-item ${t === tool ? 'current' : ''}`} onClick={() => { selectTool(t); setFlyout(null); }}>
+                <span className="fly-label"><Icon size={15} /> {TOOL_NAMES[t]}</span><span className="keys">{groupOf(t).key}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div className="swatches">
         <label className="swatch fg" style={{ background: fg }} title="Color frontal">
           <input type="color" value={fg} onChange={(e) => setColors(e.target.value, bg)} />
@@ -78,3 +106,5 @@ export function Toolbar() {
     </aside>
   );
 }
+
+

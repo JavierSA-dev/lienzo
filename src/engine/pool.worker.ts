@@ -1,9 +1,13 @@
 /// <reference lib="webworker" />
-import { resampleBand, type BandJob } from './resample';
+import { runJob, type PoolJob } from './filters';
 
 declare const self: DedicatedWorkerGlobalScope;
 
-self.onmessage = (e: MessageEvent<BandJob>) => {
-  const out = resampleBand(e.data);
-  self.postMessage({ out }, [out.buffer]);
+self.onmessage = (e: MessageEvent<PoolJob>) => {
+  try {
+    const out = runJob(e.data);
+    self.postMessage({ out }, [out.buffer]);
+  } catch (err) {
+    self.postMessage({ error: err instanceof Error ? err.message : String(err) });
+  }
 };

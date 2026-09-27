@@ -1,5 +1,8 @@
 import { TILE_BYTES, type EditorDocument, type PixelLayer } from './document';
 
+type Tile = Uint8Array | Uint8ClampedArray;
+type Store = { getTile(k: number): Tile | undefined; setTile(k: number, t: Tile | null): void };
+
 /**
  * Historial por deltas: cada paso guarda sólo lo que cambió.
  * - Pasos de píxeles: los tiles afectados (se intercambian al deshacer/rehacer).
@@ -12,25 +15,35 @@ export interface HistoryEntry {
   redo(doc: EditorDocument): void;
 }
 
-/** Guarda el estado previo de tiles de una capa antes de modificarlos. */
+/**
+ * Guarda el estado previo de los tiles de una capa (píxeles o máscara) antes de
+ * modificarlos. Al deshacer/rehacer se intercambian con los actuales.
+ */
 export class TilePatch implements HistoryEntry {
   label: string;
   layerId: number;
+  target: 'pixels' | 'mask';
   /** Contenido "del otro estado": al aplicar se intercambia con el actual. */
-  saved = new Map<number, Uint8ClampedArray | null>();
+  saved = new Map<number, Uint8ClampedArray | Uint8Array | null>();
   bytes = 0;
 
-  constructor(label: string, layer: PixelLayer) {
+  constructor(label: string, layer: PixelLayer, target: 'pixels' | 'mask' = 'pixels') {
     this.label = label;
     this.layerId = layer.id;
+    this.target = target;
+  }
+
+  private store(layer: PixelLayer): Store | null {
+    return this.target === 'mask' ? (layer.mask as unknown as Store | null) : (layer as unknown as Store);
   }
 
   /** Llamar ANTES de modificar el tile k por primera vez en este paso. */
   capture(layer: PixelLayer, k: number) {
     if (this.saved.has(k)) return;
-    const t = layer.getTile(k);
+    const st = this.store(layer);
+    const t = st?.getTile(k);
     this.saved.set(k, t ? t.slice() : null);
-    if (t) this.bytes += TILE_BYTES;
+    if (t) this.bytes += this.target === 'mask' ? TILE_BYTES / 4 : TILE_BYTES;
   }
 
   has(k: number) {
@@ -40,9 +53,11 @@ export class TilePatch implements HistoryEntry {
   private swap(doc: EditorDocument) {
     const layer = doc.layer(this.layerId);
     if (!layer) return;
+    const st = this.store(layer);
+    if (!st) return;
     for (const [k, other] of this.saved) {
-      const cur = layer.getTile(k) ?? null;
-      layer.setTile(k, other);
+      const cur = st.getTile(k) ?? null;
+      st.setTile(k, other);
       this.saved.set(k, cur);
     }
   }

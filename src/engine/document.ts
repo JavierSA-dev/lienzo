@@ -1,4 +1,8 @@
-import { TILE, type BlendMode, type LayerInfo, type Rect, type RGBA } from './types';
+import {
+  TILE, type BlendMode, type LayerInfo, type Rect, type RGBA, type LayerKind, type AdjustmentParams,
+  type TextParams, type ShapeParams, type LayerEffects,
+} from './types';
+import type { Selection } from './selection';
 
 /** Clave numérica de un tile; admite índices negativos (capas desplazadas). */
 export const tileKey = (tx: number, ty: number) => (ty + 32768) * 65536 + (tx + 32768);
@@ -28,6 +32,47 @@ let nextLayerId = 1;
 const SHARED = new WeakSet<Uint8ClampedArray>();
 
 /**
+ * Máscara de capa: un canal de 8 bits por tiles en coordenadas locales de la capa
+ * (se mueve con ella). Donde no hay tile vale `fill` (255 = mostrar, 0 = ocultar).
+ */
+export class MaskChannel {
+  tiles = new Map<number, Uint8Array>();
+  fill: number;
+  gpuDirty = new Set<number>();
+  gpuRemoved = new Set<number>();
+  constructor(fill = 255) { this.fill = fill; }
+
+  getTile(k: number) { return this.tiles.get(k); }
+
+  ensureTile(k: number): Uint8Array {
+    let t = this.tiles.get(k);
+    if (!t) { t = new Uint8Array(TILE * TILE).fill(this.fill); this.tiles.set(k, t); this.gpuRemoved.delete(k); }
+    return t;
+  }
+
+  setTile(k: number, t: Uint8Array | null) {
+    if (t) { this.tiles.set(k, t); this.gpuRemoved.delete(k); this.gpuDirty.add(k); }
+    else if (this.tiles.has(k)) { this.tiles.delete(k); this.gpuDirty.delete(k); this.gpuRemoved.add(k); }
+  }
+
+  touch(k: number) { this.gpuDirty.add(k); }
+
+  get(lx: number, ly: number): number {
+    const tx = Math.floor(lx / TILE), ty = Math.floor(ly / TILE);
+    const t = this.tiles.get(tileKey(tx, ty));
+    return t ? t[(ly - ty * TILE) * TILE + (lx - tx * TILE)] : this.fill;
+  }
+
+  clone(): MaskChannel {
+    const m = new MaskChannel(this.fill);
+    for (const [k, t] of this.tiles) m.setTile(k, t.slice());
+    return m;
+  }
+
+  byteSize() { return this.tiles.size * TILE * TILE; }
+}
+
+/**
  * Capa de píxeles dispersa: sólo existen los tiles con contenido.
  * Los tiles están en coordenadas locales; (x, y) es el desplazamiento en el documento.
  * Píxeles RGBA de 8 bits con alfa directo (no premultiplicado).
@@ -45,13 +90,31 @@ export class PixelLayer {
   gpuDirty = new Set<number>();
   /** Tiles eliminados que el compositor debe liberar. */
   gpuRemoved = new Set<number>();
+  kind: LayerKind = 'pixel';
+  mask: MaskChannel | null = null;
+  maskEnabled = true;
+  /** Bloquear píxeles transparentes: pintar sólo donde ya hay contenido. */
+  lockAlpha = false;
+  adjustment?: AdjustmentParams;
+  text?: TextParams;
+  shape?: ShapeParams;
+  effects?: LayerEffects;
+  /** Capas auxiliares con los estilos (sombra/resplandor debajo, trazo/superposición encima). */
+  fxUnder: PixelLayer | null = null;
+  fxOver: PixelLayer | null = null;
+  /** Versión de contenido: cambia al editar (para invalidar cachés como los estilos). */
+  version = 0;
 
   constructor(name: string) {
     this.name = name;
   }
 
   info(): LayerInfo {
-    return { id: this.id, name: this.name, visible: this.visible, opacity: this.opacity, blend: this.blend, x: this.x, y: this.y };
+    return {
+      id: this.id, name: this.name, kind: this.kind, visible: this.visible, opacity: this.opacity, blend: this.blend,
+      x: this.x, y: this.y, hasMask: !!this.mask, maskEnabled: this.maskEnabled, lockAlpha: this.lockAlpha,
+      adjustment: this.adjustment, text: this.text, shape: this.shape, effects: this.effects,
+    };
   }
 
   getTile(k: number): Uint8ClampedArray | undefined {
@@ -76,6 +139,7 @@ export class PixelLayer {
   }
 
   setTile(k: number, t: Uint8ClampedArray | null) {
+    this.version++;
     if (t) {
       this.tiles.set(k, t);
       this.gpuRemoved.delete(k);
@@ -89,6 +153,12 @@ export class PixelLayer {
 
   touch(k: number) {
     this.gpuDirty.add(k);
+    this.version++;
+  }
+
+  /** Borra todo el contenido de píxeles (p. ej. antes de re-rasterizar texto). */
+  clearTiles() {
+    for (const k of [...this.tiles.keys()]) this.setTile(k, null);
   }
 
   /** Límites del contenido en coordenadas del documento, a nivel de tile. */
@@ -110,6 +180,14 @@ export class PixelLayer {
     l.blend = this.blend;
     l.x = this.x;
     l.y = this.y;
+    l.kind = this.kind;
+    l.lockAlpha = this.lockAlpha;
+    l.maskEnabled = this.maskEnabled;
+    l.mask = this.mask?.clone() ?? null;
+    l.adjustment = this.adjustment && structuredClone(this.adjustment);
+    l.text = this.text && structuredClone(this.text);
+    l.shape = this.shape && structuredClone(this.shape);
+    l.effects = this.effects && structuredClone(this.effects);
     // Duplicar es instantáneo: se comparten los tiles hasta que alguna capa los modifica.
     for (const [k, t] of this.tiles) {
       l.tiles.set(k, t);
@@ -120,7 +198,13 @@ export class PixelLayer {
   }
 
   byteSize(): number {
-    return this.tiles.size * TILE_BYTES;
+    return this.tiles.size * TILE_BYTES + (this.mask?.byteSize() ?? 0);
+  }
+
+  /** Valor efectivo de la máscara (0..255) en coordenadas de documento. */
+  maskAt(dx: number, dy: number): number {
+    if (!this.mask || !this.maskEnabled) return 255;
+    return this.mask.get(dx - this.x, dy - this.y);
   }
 
   /** Lee un píxel en coordenadas del documento. */
@@ -184,7 +268,9 @@ export class EditorDocument {
   height: number;
   layers: PixelLayer[] = []; // de abajo a arriba
   activeLayerId = 0;
-  selection: Rect | null = null;
+  selection: Selection | null = null;
+  /** true = las herramientas de pintura actúan sobre la máscara de la capa activa. */
+  editMask = false;
   dirty = false;
 
   constructor(name: string, width: number, height: number) {

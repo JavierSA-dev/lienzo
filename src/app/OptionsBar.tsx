@@ -1,60 +1,160 @@
+import { Check, X, Bold, Italic, AlignLeft, AlignCenter, AlignRight } from 'lucide-react';
 import { useStore } from './store';
 import { engine } from '../engine/client';
+import { TOOL_NAMES } from './commands';
+import { FONTS } from '../engine/vector';
+import type { ShapeKind } from '../engine/types';
+import type { GradientType } from '../engine/ops';
 
-function Slider(props: { label: string; value: number; min: number; max: number; step?: number; unit?: string; onChange: (v: number) => void }) {
-  const { label, value, min, max, step = 1, unit = '', onChange } = props;
+function Slider(props: { label: string; value: number; min: number; max: number; step?: number; unit?: string; onChange: (v: number) => void; width?: number }) {
+  const { label, value, min, max, step = 1, unit = '', onChange, width } = props;
   return (
     <label className="opt">
       {label}
-      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} />
-      <input
-        className="num"
-        type="number"
-        min={min}
-        max={max}
-        value={Math.round(value)}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
+      <input type="range" min={min} max={max} step={step} value={value} style={width ? { width } : undefined} onChange={(e) => onChange(Number(e.target.value))} />
+      <input className="num" type="number" min={min} max={max} value={Math.round(value)} onChange={(e) => onChange(Number(e.target.value))} onKeyDown={(e) => e.stopPropagation()} />
       {unit}
     </label>
   );
 }
 
-const TOOL_NAMES: Record<string, string> = {
-  move: 'Mover', marquee: 'Marco rectangular', brush: 'Pincel', eraser: 'Borrador',
-  eyedropper: 'Cuentagotas', hand: 'Mano', zoom: 'Zoom',
-};
+const Toggle = ({ on, label, title, onClick }: { on: boolean; label: React.ReactNode; title?: string; onClick: () => void }) => (
+  <button className={`chip ${on ? 'on' : ''}`} title={title} onClick={onClick}>{label}</button>
+);
+
+const SELECT_MODES = <span className="hint">Mayús: añadir · Alt: restar · Mayús+Alt: intersecar</span>;
 
 export function OptionsBar() {
   const tool = useStore((s) => s.tool);
   const brush = useStore((s) => s.brush);
   const setBrush = useStore((s) => s.setBrush);
+  const opts = useStore((s) => s.opts);
+  const setOpts = useStore((s) => s.setOpts);
   const doc = useStore((s) => s.doc);
+  const transform = useStore((s) => s.transform);
+  const crop = useStore((s) => s.crop);
 
-  const painting = tool === 'brush' || tool === 'eraser';
+  if (transform) {
+    const m = transform.matrix;
+    const sx = Math.hypot(m[0], m[1]) * 100, sy = Math.hypot(m[2], m[3]) * 100, rot = (Math.atan2(m[1], m[0]) * 180) / Math.PI;
+    return (
+      <div className="optionsbar">
+        <span className="opt-tool">Transformación libre</span>
+        <span className="opt">An: {sx.toFixed(1)} %</span>
+        <span className="opt">Al: {sy.toFixed(1)} %</span>
+        <span className="opt">Ángulo: {rot.toFixed(1)}°</span>
+        <span className="hint">Esquinas mantienen proporción (Mayús libera) · Alt: desde el centro · fuera de la caja: rotar (Mayús: 15°)</span>
+        <span className="grow" />
+        <button className="chip" title="Cancelar (Esc)" onClick={() => { engine.call('cancelTransform'); useStore.setState({ transform: null }); }}><X size={14} /></button>
+        <button className="chip on" title="Aplicar (Intro)" onClick={() => { engine.call('commitTransform'); useStore.setState({ transform: null }); }}><Check size={14} /></button>
+      </div>
+    );
+  }
+
+  const painting = ['brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn'].includes(tool);
   return (
     <div className="optionsbar">
       <span className="opt-tool">{TOOL_NAMES[tool]}</span>
       {painting && (
         <>
           <Slider label="Tamaño" value={brush.size} min={1} max={1000} unit="px" onChange={(v) => setBrush({ size: v })} />
-          <Slider label="Dureza" value={brush.hardness * 100} min={0} max={100} unit="%" onChange={(v) => setBrush({ hardness: v / 100 })} />
-          <Slider label="Opacidad" value={brush.opacity * 100} min={1} max={100} unit="%" onChange={(v) => setBrush({ opacity: v / 100 })} />
+          {tool !== 'pencil' && <Slider label="Dureza" value={brush.hardness * 100} min={0} max={100} unit="%" onChange={(v) => setBrush({ hardness: v / 100 })} />}
+          <Slider label={tool === 'dodge' || tool === 'burn' ? 'Exposición' : 'Opacidad'} value={brush.opacity * 100} min={1} max={100} unit="%" onChange={(v) => setBrush({ opacity: v / 100 })} />
           <Slider label="Flujo" value={brush.flow * 100} min={1} max={100} unit="%" onChange={(v) => setBrush({ flow: v / 100 })} />
-          <button className={`chip ${brush.pressureSize ? 'on' : ''}`} title="La presión del lápiz controla el tamaño" onClick={() => setBrush({ pressureSize: !brush.pressureSize })}>Presión → tamaño</button>
-          <button className={`chip ${brush.pressureOpacity ? 'on' : ''}`} title="La presión del lápiz controla la opacidad" onClick={() => setBrush({ pressureOpacity: !brush.pressureOpacity })}>Presión → opacidad</button>
+          <Toggle on={brush.pressureSize} label="Presión → tamaño" onClick={() => setBrush({ pressureSize: !brush.pressureSize })} />
+          <Toggle on={brush.pressureOpacity} label="Presión → opacidad" onClick={() => setBrush({ pressureOpacity: !brush.pressureOpacity })} />
+          {tool === 'clone' && <span className="hint">Alt+clic define el origen</span>}
+          {doc.editMask && <span className="hint mask-hint">Pintando en la máscara: negro oculta, blanco muestra</span>}
         </>
       )}
-      {tool === 'move' && <span className="hint">Arrastra para mover la capa activa · Mayús restringe el eje</span>}
-      {tool === 'marquee' && <span className="hint">Mayús: cuadrado · Alt: desde el centro · Ctrl+D deselecciona</span>}
+      {tool === 'move' && (
+        <>
+          <Toggle on={opts.autoSelect} label="Selección automática" title="Clic sobre el lienzo selecciona la capa (Ctrl+clic hace lo mismo)" onClick={() => setOpts({ autoSelect: !opts.autoSelect })} />
+          <span className="hint">Flechas: 1 px · Mayús+flechas: 10 px · Mayús al arrastrar: eje fijo</span>
+        </>
+      )}
+      {(tool === 'marquee' || tool === 'marqueeEllipse') && (
+        <>
+          <Slider label="Calar" value={opts.feather} min={0} max={250} unit="px" width={80} onChange={(v) => setOpts({ feather: v })} />
+          {SELECT_MODES}
+        </>
+      )}
+      {(tool === 'lasso' || tool === 'polylasso') && (
+        <>
+          {SELECT_MODES}
+          {tool === 'polylasso' && <span className="hint">Doble clic o Intro cierra · Retroceso quita el último punto</span>}
+        </>
+      )}
+      {(tool === 'wand' || tool === 'bucket') && (
+        <>
+          <Slider label="Tolerancia" value={opts.wandTolerance} min={0} max={255} width={90} onChange={(v) => setOpts({ wandTolerance: v })} />
+          <Toggle on={opts.contiguous} label="Contiguo" onClick={() => setOpts({ contiguous: !opts.contiguous })} />
+          <Toggle on={opts.sampleAll} label="Muestrear todas las capas" onClick={() => setOpts({ sampleAll: !opts.sampleAll })} />
+          {tool === 'wand' && SELECT_MODES}
+        </>
+      )}
+      {tool === 'gradient' && (
+        <>
+          <select className="sel" value={opts.gradientType} onChange={(e) => setOpts({ gradientType: e.target.value as GradientType })}>
+            <option value="linear">Lineal</option><option value="radial">Radial</option><option value="angle">Angular</option>
+            <option value="reflected">Reflejado</option><option value="diamond">Diamante</option>
+          </select>
+          <Toggle on={opts.gradientTransparent} label="Frontal a transparente" onClick={() => setOpts({ gradientTransparent: !opts.gradientTransparent })} />
+          <Toggle on={opts.gradientReverse} label="Invertir" onClick={() => setOpts({ gradientReverse: !opts.gradientReverse })} />
+          <span className="hint">Mayús: ángulos de 45°</span>
+        </>
+      )}
+      {tool === 'crop' && crop && (
+        <>
+          <span className="opt">{crop.w} × {crop.h} px</span>
+          <span className="hint">Arrastra las asas · Intro aplica · Esc restablece (no destructivo: el contenido fuera se conserva)</span>
+          <span className="grow" />
+          <button className="chip on" onClick={() => { engine.call('crop', crop); useStore.setState({ crop: null }); }}><Check size={14} /> Recortar</button>
+        </>
+      )}
+      {tool === 'text' && (
+        <>
+          <select className="sel" value={opts.font} onChange={(e) => { setOpts({ font: e.target.value }); applyText({ font: e.target.value }); }}>
+            {FONTS.map((f) => <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>)}
+          </select>
+          <Slider label="" value={opts.fontSize} min={4} max={500} unit="pt" width={80} onChange={(v) => { setOpts({ fontSize: v }); applyText({ size: v }); }} />
+          <Toggle on={opts.bold} label={<Bold size={13} />} title="Negrita" onClick={() => { setOpts({ bold: !opts.bold }); applyText({ bold: !opts.bold }); }} />
+          <Toggle on={opts.italic} label={<Italic size={13} />} title="Cursiva" onClick={() => { setOpts({ italic: !opts.italic }); applyText({ italic: !opts.italic }); }} />
+          {(['left', 'center', 'right'] as const).map((a) => (
+            <Toggle key={a} on={opts.align === a} label={a === 'left' ? <AlignLeft size={13} /> : a === 'center' ? <AlignCenter size={13} /> : <AlignRight size={13} />}
+              onClick={() => { setOpts({ align: a }); applyText({ align: a }); }} />
+          ))}
+          <span className="hint">Clic: texto nuevo · clic en un texto: editar · Esc o Ctrl+Intro: aplicar</span>
+        </>
+      )}
+      {tool === 'shape' && (
+        <>
+          <select className="sel" value={opts.shapeKind} onChange={(e) => setOpts({ shapeKind: e.target.value as ShapeKind })}>
+            <option value="rect">Rectángulo</option><option value="ellipse">Elipse</option><option value="polygon">Polígono</option><option value="line">Línea</option>
+          </select>
+          {opts.shapeKind !== 'line' && <Toggle on={opts.shapeFill} label="Relleno (frontal)" onClick={() => setOpts({ shapeFill: !opts.shapeFill })} />}
+          {opts.shapeKind !== 'line' && <Toggle on={opts.shapeStroke} label="Trazo (fondo)" onClick={() => setOpts({ shapeStroke: !opts.shapeStroke })} />}
+          <Slider label="Grosor" value={opts.strokeWidth} min={1} max={100} unit="px" width={70} onChange={(v) => setOpts({ strokeWidth: v })} />
+          {opts.shapeKind === 'rect' && <Slider label="Radio" value={opts.cornerRadius} min={0} max={300} unit="px" width={70} onChange={(v) => setOpts({ cornerRadius: v })} />}
+          {opts.shapeKind === 'polygon' && <Slider label="Lados" value={opts.sides} min={3} max={20} width={60} onChange={(v) => setOpts({ sides: v })} />}
+          <span className="hint">Mayús: proporción · Mayús+U: siguiente forma</span>
+        </>
+      )}
       {tool === 'eyedropper' && <span className="hint">Clic: color frontal · Alt+clic: color de fondo</span>}
       {(tool === 'hand' || tool === 'zoom') && (
         <>
           <button className="chip" disabled={!doc.open} onClick={() => engine.call('actualPixels')}>100 %</button>
           <button className="chip" disabled={!doc.open} onClick={() => engine.call('fit', false)}>Encajar en pantalla</button>
-          {tool === 'zoom' && <span className="hint">Clic acerca · Alt+clic aleja · Ctrl+rueda en cualquier herramienta</span>}
+          {tool === 'zoom' && <span className="hint">Clic acerca · Alt+clic aleja · Ctrl/Alt+rueda en cualquier herramienta</span>}
         </>
       )}
     </div>
   );
+}
+
+/** Cambia el texto que se está editando (o el de la capa de texto activa). */
+function applyText(p: Record<string, unknown>) {
+  const s = useStore.getState();
+  const id = s.textEdit?.layerId ?? s.doc.layers.find((l) => l.id === s.doc.activeLayerId && l.kind === 'text')?.id;
+  if (id) engine.call('updateText', id, p, true);
 }

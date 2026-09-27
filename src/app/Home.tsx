@@ -22,7 +22,7 @@ export function Home({ dragOver }: { dragOver: boolean }) {
         <h1>{APP_NAME}</h1>
         <p>Editor de imágenes en el navegador. Tus archivos no salen de tu equipo.</p>
         <div className="home-actions">
-          <button className="btn primary" disabled={!ready} onClick={() => setDialog('new')}><FilePlus size={16} /> Proyecto nuevo</button>
+          <button className="btn primary" disabled={!ready} onClick={() => setDialog({ kind: 'new' })}><FilePlus size={16} /> Proyecto nuevo</button>
           <button className="btn" disabled={!ready} onClick={() => openFile()}><FolderOpen size={16} /> Abrir desde el ordenador</button>
         </div>
         <div className={`drop ${dragOver ? 'over' : ''}`}>

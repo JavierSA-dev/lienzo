@@ -13,5 +13,6 @@ export default defineConfig({
   server: { headers: isolation },
   preview: { headers: isolation },
   worker: { format: 'es' },
+  base: process.env.BASE_PATH ?? '/',
   build: { target: 'es2022', sourcemap: true },
 });
