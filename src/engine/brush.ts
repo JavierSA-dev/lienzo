@@ -3,7 +3,7 @@ import { tileKey, isTileEmpty, type PixelLayer } from './document';
 import { TilePatch } from './history';
 import type { Selection } from './selection';
 
-export type BrushMode = 'paint' | 'erase' | 'clone' | 'dodge' | 'burn';
+export type BrushMode = 'paint' | 'erase' | 'clone' | 'dodge' | 'burn' | 'blur' | 'sharpen' | 'smudge';
 
 export interface StrokeOptions {
   layer: PixelLayer;
@@ -47,7 +47,7 @@ export class BrushStroke {
 
   constructor(o: StrokeOptions) {
     this.o = o;
-    const names: Record<BrushMode, string> = { paint: 'Pincel', erase: 'Borrador', clone: 'Tampón de clonar', dodge: 'Sobreexponer', burn: 'Subexponer' };
+    const names: Record<BrushMode, string> = { paint: 'Pincel', erase: 'Borrador', clone: 'Tampón de clonar', dodge: 'Sobreexponer', burn: 'Subexponer', blur: 'Desenfocar', sharpen: 'Enfocar', smudge: 'Dedo' };
     if (!o.label && o.healTool) o.label = o.healTool === 'spotHeal' ? 'Pincel corrector puntual' : 'Pincel corrector';
     this.patch = new TilePatch(o.label ?? (o.target === 'mask' ? `${names[o.mode]} (máscara)` : names[o.mode]), o.layer, o.target);
   }
@@ -149,6 +149,27 @@ export class BrushStroke {
             const sv = selAt(docX, docY);
             if (!sv) continue;
             const i = py * TILE + px;
+            if (mode === 'smudge' && !mask) {
+              // Dedo: arrastra el color que "lleva el dedo" (búfer) sobre el píxel actual.
+              const T = t as Uint8ClampedArray, j = i * 4;
+              const bi = this.smudgeIndex(docX - cx, docY - cy);
+              if (bi < 0) continue;
+              const B = this.smudgeBuf!;
+              const k = a * cap * (sv / 255);
+              if (!this.smudgeInit[bi >> 2]) { this.smudgeInit[bi >> 2] = 1; B[bi] = T[j]; B[bi + 1] = T[j + 1]; B[bi + 2] = T[j + 2]; B[bi + 3] = T[j + 3]; }
+              const o0 = T[j], o1 = T[j + 1], o2 = T[j + 2], o3 = T[j + 3];
+              const ta = T[j + 3] / 255, ba = B[bi + 3] / 255;
+              const na = ta + (ba - ta) * k;
+              for (let c = 0; c < 3; c++) {
+                const v = na > 0 ? (T[j + c] * ta + (B[bi + c] * ba - T[j + c] * ta) * k) / na : B[bi + c];
+                T[j + c] = v;
+              }
+              T[j + 3] = na * 255;
+              // El dedo recoge parte del color nuevo (se va diluyendo, como en Photoshop).
+              const pick = (1 - cap) * a;
+              B[bi] += (o0 - B[bi]) * pick; B[bi + 1] += (o1 - B[bi + 1]) * pick; B[bi + 2] += (o2 - B[bi + 2]) * pick; B[bi + 3] += (o3 - B[bi + 3]) * pick;
+              continue;
+            }
             const limit = cap * (sv / 255);
             const prev = m[i];
             if (prev >= limit) continue;
@@ -167,6 +188,27 @@ export class BrushStroke {
             if (mode === 'erase') {
               T[j + 3] = oa * (1 - nm) * 255;
               if (O) { T[j] = O[j]; T[j + 1] = O[j + 1]; T[j + 2] = O[j + 2]; }
+              continue;
+            }
+            if (mode === 'blur' || mode === 'sharpen') {
+              if (!O || !O[j + 3]) continue;
+              // Media 5×5 del contenido previo al trazo (no se acumula dentro del mismo trazo).
+              let sr = 0, sg = 0, sb = 0, sa = 0, n = 0;
+              for (let yy = -2; yy <= 2; yy++) for (let xx = -2; xx <= 2; xx++) {
+                const q = this.sample(docX + xx, docY + yy);
+                const w = (3 - Math.abs(xx)) * (3 - Math.abs(yy));
+                sr += q[0] * q[3] * w; sg += q[1] * q[3] * w; sb += q[2] * q[3] * w; sa += q[3] * w; n += w;
+              }
+              if (sa <= 0) continue;
+              const ar = sr / sa, ag = sg / sa, ab = sb / sa;
+              if (mode === 'blur') {
+                T[j] = O[j] + (ar - O[j]) * nm; T[j + 1] = O[j + 1] + (ag - O[j + 1]) * nm; T[j + 2] = O[j + 2] + (ab - O[j + 2]) * nm;
+                T[j + 3] = O[j + 3] + (sa / n - O[j + 3]) * nm;
+              } else {
+                const k2 = nm * 1.5;
+                T[j] = O[j] + (O[j] - ar) * k2; T[j + 1] = O[j + 1] + (O[j + 1] - ag) * k2; T[j + 2] = O[j + 2] + (O[j + 2] - ab) * k2;
+                T[j + 3] = O[j + 3];
+              }
               continue;
             }
             if (mode === 'dodge' || mode === 'burn') {
@@ -201,6 +243,23 @@ export class BrushStroke {
         if (mask) mask.touch(k); else L.touch(k);
       }
     }
+  }
+
+  private smudgeBuf: Float32Array | null = null;
+  private smudgeInit = new Uint8Array(0);
+  private smudgeR = 0;
+
+  /** Índice en el búfer del dedo para un desplazamiento respecto al centro del toque. */
+  private smudgeIndex(dx: number, dy: number): number {
+    if (!this.smudgeBuf) {
+      this.smudgeR = Math.ceil(this.o.settings.size / 2) + 2;
+      const side = this.smudgeR * 2 + 1;
+      this.smudgeBuf = new Float32Array(side * side * 4);
+      this.smudgeInit = new Uint8Array(side * side);
+    }
+    const R = this.smudgeR, x = Math.round(dx) + R, y = Math.round(dy) + R, side = R * 2 + 1;
+    if (x < 0 || y < 0 || x >= side || y >= side) return -1;
+    return (y * side + x) * 4;
   }
 
   /** Lee el píxel de origen para el tampón: siempre del contenido previo al trazo. */

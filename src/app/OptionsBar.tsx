@@ -1,4 +1,7 @@
-import { Check, X, Bold, Italic, AlignLeft, AlignCenter, AlignRight } from 'lucide-react';
+import {
+  Check, X, Bold, Italic, AlignLeft, AlignCenter, AlignRight, AlignStartVertical, AlignCenterVertical, AlignEndVertical,
+  AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalDistributeCenter, AlignVerticalDistributeCenter,
+} from 'lucide-react';
 import { useStore, toRgba } from './store';
 import { penFinish } from './Pen';
 import { isEmpty as isEmptyPath } from '../engine/path';
@@ -53,7 +56,8 @@ export function OptionsBar() {
     );
   }
 
-  const painting = ['brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn'].includes(tool);
+  const painting = ['brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'blur', 'sharpen', 'smudge'].includes(tool);
+  const strength = tool === 'blur' || tool === 'sharpen' || tool === 'smudge';
   return (
     <div className="optionsbar">
       <span className="opt-tool">{TOOL_NAMES[tool]}</span>
@@ -61,8 +65,8 @@ export function OptionsBar() {
         <>
           <Slider label="Tamaño" value={brush.size} min={1} max={1000} unit="px" onChange={(v) => setBrush({ size: v })} />
           {tool !== 'pencil' && <Slider label="Dureza" value={brush.hardness * 100} min={0} max={100} unit="%" onChange={(v) => setBrush({ hardness: v / 100 })} />}
-          <Slider label={tool === 'dodge' || tool === 'burn' ? 'Exposición' : 'Opacidad'} value={brush.opacity * 100} min={1} max={100} unit="%" onChange={(v) => setBrush({ opacity: v / 100 })} />
-          <Slider label="Flujo" value={brush.flow * 100} min={1} max={100} unit="%" onChange={(v) => setBrush({ flow: v / 100 })} />
+          <Slider label={tool === 'dodge' || tool === 'burn' ? 'Exposición' : strength ? 'Intensidad' : 'Opacidad'} value={brush.opacity * 100} min={1} max={100} unit="%" onChange={(v) => setBrush({ opacity: v / 100 })} />
+          {!strength && <Slider label="Flujo" value={brush.flow * 100} min={1} max={100} unit="%" onChange={(v) => setBrush({ flow: v / 100 })} />}
           <Toggle on={brush.pressureSize} label="Presión → tamaño" onClick={() => setBrush({ pressureSize: !brush.pressureSize })} />
           <Toggle on={brush.pressureOpacity} label="Presión → opacidad" onClick={() => setBrush({ pressureOpacity: !brush.pressureOpacity })} />
           {tool === 'clone' && <span className="hint">Alt+clic define el origen</span>}
@@ -79,9 +83,11 @@ export function OptionsBar() {
         </>
       )}
       {(tool === 'pen' || tool === 'pathSelect') && <PathActions />}
+      {tool === 'patch' && <span className="hint">Parche · Origen: rodea la zona a corregir y arrástrala hasta una zona limpia (Mayús añade, Alt resta)</span>}
       {tool === 'move' && (
         <>
           <Toggle on={opts.autoSelect} label="Selección automática" title="Clic sobre el lienzo selecciona la capa (Ctrl+clic hace lo mismo)" onClick={() => setOpts({ autoSelect: !opts.autoSelect })} />
+          <AlignButtons />
           <span className="hint">Flechas: 1 px · Mayús+flechas: 10 px · Mayús al arrastrar: eje fijo</span>
         </>
       )}
@@ -184,8 +190,32 @@ function PathActions() {
       <button className="chip" disabled={empty} onClick={() => run('shapeFromPath', toRgba(fg))}>Forma</button>
       <button className="chip" disabled={empty} onClick={() => run('fillPath')}>Rellenar trazado</button>
       <button className="chip" disabled={empty} title="Con el pincel y el color frontal" onClick={() => run('strokePath')}>Contornear</button>
-      <button className="chip" disabled={!path.length} onClick={() => useStore.setState({ path: [], penDrawing: null, pathSel: null })}>Borrar trazado</button>
+      <button className="chip" disabled={!path.length} onClick={() => { const id = useStore.getState().doc.activePathId; useStore.setState({ penDrawing: null, pathSel: null }); if (id != null) engine.call('deletePath', id); }}>Eliminar trazado</button>
       <span className="hint">Clic: esquina · arrastrar: curva · Alt: romper manejador · clic en el primer punto: cerrar · Ctrl: mover puntos</span>
     </>
+  );
+}
+
+/** Alinear y distribuir (herramienta Mover), como la barra de Photoshop. */
+function AlignButtons() {
+  const n = useStore((s) => s.doc.selectedLayerIds.length);
+  const hasSel = useStore((s) => !!s.doc.selection);
+  const ref = n > 1 ? 'las capas seleccionadas' : hasSel ? 'la selección' : 'el lienzo';
+  const A = (mode: string, Icon: typeof AlignLeft, label: string) => (
+    <button className="icon-btn" title={`${label} (respecto a ${ref})`} aria-label={label} onClick={() => engine.call('alignLayers', mode)}><Icon size={15} /></button>
+  );
+  return (
+    <span className="align-btns">
+      {A('left', AlignStartVertical, 'Alinear bordes izquierdos')}
+      {A('hcenter', AlignCenterVertical, 'Alinear centros horizontales')}
+      {A('right', AlignEndVertical, 'Alinear bordes derechos')}
+      {A('top', AlignStartHorizontal, 'Alinear bordes superiores')}
+      {A('vcenter', AlignCenterHorizontal, 'Alinear centros verticales')}
+      {A('bottom', AlignEndHorizontal, 'Alinear bordes inferiores')}
+      {n >= 3 && <>
+        <button className="icon-btn" title="Distribuir centros horizontales" aria-label="Distribuir en horizontal" onClick={() => engine.call('distributeLayers', 'hcenter')}><AlignHorizontalDistributeCenter size={15} /></button>
+        <button className="icon-btn" title="Distribuir centros verticales" aria-label="Distribuir en vertical" onClick={() => engine.call('distributeLayers', 'vcenter')}><AlignVerticalDistributeCenter size={15} /></button>
+      </>}
+    </span>
   );
 }

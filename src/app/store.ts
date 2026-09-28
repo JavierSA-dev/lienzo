@@ -78,6 +78,8 @@ interface Store {
   penDrawing: number | null;
   /** Punto de ancla seleccionado (muestra sus manejadores). */
   pathSel: { sub: number; idx: number } | null;
+  /** true mientras se arrastra con la pluma (el trazado local manda). */
+  penLocal: boolean;
 
   setTool(t: ToolId): void;
   pushTempTool(t: ToolId, key: string): void;
@@ -97,7 +99,7 @@ export const toRgba = (hex: string): RGBA => {
 
 const EMPTY_DOC: DocState = {
   open: false, name: '', width: 0, height: 0, layers: [], activeLayerId: 0,
-  history: [], historyIndex: 0, selection: null, editMask: false, dirty: false,
+  history: [], historyIndex: 0, selection: null, editMask: false, dirty: false, selectedLayerIds: [], paths: [], activePathId: null,
 };
 
 /** Preferencias que se recuerdan entre sesiones (sólo en este navegador). */
@@ -151,6 +153,7 @@ export const useStore = create<Store>((set, get) => ({
   path: [],
   penDrawing: null,
   pathSel: null,
+  penLocal: false,
 
   setTool(t) {
     set({ tool: t, tempTool: null });
@@ -201,6 +204,31 @@ export const useStore = create<Store>((set, get) => ({
 }));
 
 // Mensajes del motor -> estado de la interfaz.
+/** Ediciones de trazado enviadas al motor y aún sin confirmar. */
+let pathEdits = 0;
+
+/** El trazado visible es el trazado activo del documento (panel Trazados). */
+export function syncPathFromDoc() {
+  const { doc, penDrawing, pathSel } = useStore.getState();
+  const ap = doc.paths.find((p) => p.id === doc.activePathId);
+  const path = ap?.path ?? [];
+  useStore.setState({
+    path,
+    penDrawing: penDrawing != null && path[penDrawing] && !path[penDrawing].closed ? penDrawing : null,
+    pathSel: pathSel && path[pathSel.sub]?.points[pathSel.idx] ? pathSel : null,
+  });
+}
+
+/** Guarda en el documento (y en el historial) la edición actual del trazado. */
+export function commitPath(label: string) {
+  const s = useStore.getState();
+  useStore.setState({ penLocal: false });
+  pathEdits++;
+  engine.call('setPathData', s.doc.activePathId, s.path, label).finally(() => {
+    if (--pathEdits === 0) syncPathFromDoc();
+  });
+}
+
 engine.on((m) => {
   const s = useStore.getState();
   switch (m.type) {
@@ -213,6 +241,7 @@ engine.on((m) => {
     }
     case 'state':
       useStore.setState({ doc: m.state });
+      if (!pathEdits && !useStore.getState().penLocal) syncPathFromDoc();
       break;
     case 'view':
       useStore.setState({ view: m.view });

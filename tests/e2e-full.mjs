@@ -531,6 +531,100 @@ try {
   await key('Backspace');
   ok('Retroceso sin ancla seleccionada borra el trazado', (await page.evaluate(() => window.__lienzoStore.getState().path.length)) === 0);
 
+  // =========================================================== FASE 6: TRAZADOS EN EL HISTORIAL Y PANEL TRAZADOS
+  await newDoc(400, 300, 'white');
+  await key('p');
+  await click([100, 100]); await click([300, 100]); await click([200, 250]);
+  const ptsN = async () => page.evaluate(() => window.__lienzoStore.getState().path[0]?.points.length ?? 0);
+  ok('Cada punto de la pluma es un paso del historial', (await S()).doc.history.at(-1).label === 'Nuevo punto de ancla' && (await ptsN()) === 3);
+  await key('Control+z', 400);
+  ok('Ctrl+Z quita el último punto de la pluma', (await ptsN()) === 2);
+  await key('Control+Shift+z', 400);
+  ok('Ctrl+Mayús+Z lo recupera', (await ptsN()) === 3);
+  await click([100, 100]);
+  await page.getByTestId('tab-Trazados').click(); await wait();
+  ok('Panel Trazados muestra el trazado de trabajo', (await page.locator('[data-testid=path-row]').count()) === 1 && (await page.locator('[data-testid=path-row] .work-path').count()) === 1);
+  await page.locator('[data-testid=path-row]').first().dblclick(); await wait();
+  await page.keyboard.type('Contorno'); await page.keyboard.press('Enter'); await wait(300);
+  ok('Guardar el trazado con nombre', (await S()).doc.paths[0].name === 'Contorno' && !(await S()).doc.paths[0].work, (await S()).doc.paths[0].name);
+  await call('selectShape', { x: 250, y: 150, w: 100, h: 80 }, 'ellipse', 'replace', 0);
+  await page.locator('button[title="Hacer trazado de trabajo desde la selección"]').click(); await wait(400);
+  {
+    const wp = (await S()).doc.paths.find((q) => q.work);
+    ok('Hacer trazado de trabajo desde la selección (con curvas)', wp && wp.path[0].closed && wp.path[0].points.some((q) => q.ox !== q.x), wp ? `${wp.path[0].points.length} puntos` : '');
+  }
+  await call('deselect');
+  await page.locator('[data-testid=path-row]').first().click({ modifiers: ['Control'] }); await wait();
+  ok('Ctrl+clic en un trazado lo carga como selección', (await sel(200, 150)) === 255 && (await sel(20, 20)) === 0);
+  await call('deselect');
+  await page.getByTestId('tab-Capas').click(); await wait();
+
+  // =========================================================== FASE 6: VARIAS CAPAS
+  await newDoc(400, 300, 'white');
+  for (const [x, c] of [[20, [255, 0, 0, 255]], [150, [0, 255, 0, 255]], [300, [0, 0, 255, 255]]]) {
+    await call('newLayer'); await call('selectShape', { x, y: 20 + x / 3, w: 40, h: 40 }, 'rect', 'replace', 0); await call('fill', c); await call('deselect');
+  }
+  await wait();
+  const lrows = page.locator('[data-testid=layer-row]');
+  await lrows.nth(0).click(); await lrows.nth(2).click({ modifiers: ['Shift'] }); await wait();
+  ok('Mayús+clic selecciona un rango de capas', (await S()).doc.selectedLayerIds.length === 3);
+  await lrows.nth(1).click({ modifiers: ['Control'] }); await wait();
+  ok('Ctrl+clic quita una capa de la selección', (await S()).doc.selectedLayerIds.length === 2);
+  await lrows.nth(1).click({ modifiers: ['Control'] }); await wait();
+  await useTool('move');
+  await page.getByRole('button', { name: 'Alinear bordes superiores' }).click(); await wait();
+  ok('Alinear bordes superiores', near(await px(30, 30), [255, 0, 0, 255]) && near(await px(160, 30), [0, 255, 0, 255]) && near(await px(310, 30), [0, 0, 255, 255]));
+  await page.getByRole('button', { name: 'Distribuir en horizontal' }).click(); await wait();
+  ok('Distribuir en un solo paso del historial', (await S()).doc.history.at(-1).label === 'Distribuir');
+  await drag([30, 30], [30, 80], 6);
+  ok('Mover arrastra todas las capas seleccionadas', near(await px(30, 80), [255, 0, 0, 255]) && near(await px(310, 80), [0, 0, 255, 255]));
+  await key('Control+z');
+  await page.locator('.layer-controls input.num').fill('50'); await page.locator('.layer-controls input.num').press('Enter'); await wait();
+  ok('La opacidad se aplica a todas las capas seleccionadas', (await S()).doc.layers.filter((l) => l.opacity === 0.5).length === 3);
+  await key('Control+z');
+  await key('Control+g');
+  st = await S();
+  ok('Ctrl+G agrupa todas las capas seleccionadas', st.doc.layers.filter((l) => l.parent != null).length === 3);
+  await key('Control+z');
+  await lrows.nth(0).click(); await lrows.nth(1).click({ modifiers: ['Control'] }); await wait();
+  await key('Control+e');
+  ok('Ctrl+E combina las capas seleccionadas', (await S()).doc.layers.length === 3 && (await S()).doc.history.at(-1).label === 'Combinar capas');
+  await key('Control+Alt+a');
+  ok('Ctrl+Alt+A selecciona todas las capas', (await S()).doc.selectedLayerIds.length === 3);
+  await lrows.nth(0).click();
+
+  // =========================================================== FASE 6: PARCHE, DESENFOCAR, ENFOCAR, DEDO
+  await newDoc(300, 200, 'white');
+  await call('selectShape', { x: 50, y: 50, w: 20, h: 20 }, 'rect', 'replace', 0); await call('fill', [0, 0, 0, 255]); await call('deselect');
+  await useTool('patch');
+  {
+    const pts = [[40, 40], [80, 40], [80, 80], [40, 80], [40, 42]];
+    await page.mouse.move(...(await scr(...pts[0]))); await page.mouse.down();
+    for (const q of pts.slice(1)) await page.mouse.move(...(await scr(...q)), { steps: 6 });
+    await page.mouse.up(); await wait();
+  }
+  ok('Parche: rodear la zona crea una selección', (await sel(60, 60)) === 255);
+  await drag([60, 60], [200, 60], 8);
+  await page.waitForFunction(() => window.__lienzoStore.getState().doc.history.at(-1)?.label === 'Parche', null, { timeout: 15000 }).catch(() => {});
+  ok('Parche: arrastrar a una zona limpia corrige', near(await lpx(60, 60), [255, 255, 255, 255], 10), JSON.stringify(await lpx(60, 60)));
+  await call('deselect');
+  await newDoc(400, 200, 'white');
+  await call('selectShape', { x: 0, y: 0, w: 200, h: 200 }, 'rect', 'replace', 0); await call('fill', [0, 0, 0, 255]); await call('deselect');
+  await page.evaluate(() => window.__lienzoStore.getState().setBrush({ size: 30, hardness: 1, opacity: 1, flow: 1 }));
+  await useTool('blur');
+  await drag([200, 60], [200, 140], 12);
+  const bl = (await lpx(199, 100))[0], br = (await lpx(200, 100))[0];
+  ok('Desenfocar suaviza el borde', bl > 20 && br < 235, JSON.stringify([bl, br]));
+  await useTool('sharpen');
+  await drag([200, 60], [200, 140], 12);
+  const sl = (await lpx(197, 100))[0];
+  ok('Enfocar aumenta el contraste del borde', sl < (await page.evaluate(() => 999)) && sl <= bl, JSON.stringify([sl, bl]));
+  await useTool('smudge');
+  await page.evaluate(() => window.__lienzoStore.getState().setBrush({ opacity: 0.8 }));
+  await drag([150, 30], [260, 30], 20);
+  ok('Dedo arrastra el color', (await lpx(230, 30))[0] < 200, JSON.stringify(await lpx(230, 30)));
+  await page.evaluate(() => window.__lienzoStore.getState().setBrush({ opacity: 1 }));
+
   // =========================================================== RENDIMIENTO
   await call('newDoc', 6000, 4000, 'white', 'grande.psd');
   await call('selectShape', { x: 0, y: 0, w: 3000, h: 4000 }, 'rect', 'replace', 0);

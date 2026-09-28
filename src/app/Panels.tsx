@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Eye, EyeOff, Plus, Copy, Trash2, Layers as LayersIcon, CircleDot, SlidersHorizontal, Type, Shapes, Lock, Sparkles,
-  Play, Square, Link, Folder, FolderOpen, ChevronRight, ChevronDown, CornerLeftDown, FolderPlus,
+  Play, Square, Link, Folder, FolderOpen, ChevronRight, ChevronDown, CornerLeftDown, FolderPlus, PaintBucket, SquareDashed, Spline,
 } from 'lucide-react';
+import { toSvg, type VectorPath } from '../engine/path';
 import { engine } from '../engine/client';
 import { BLEND_GROUPS, PASS_THROUGH, type LayerInfo, type AdjustmentType } from '../engine/types';
 import { ADJUSTMENT_LABELS } from '../engine/adjust';
@@ -13,11 +14,12 @@ import { startRecording, stopRecording, playAction, deleteAction, renameAction }
 
 const BLEND_LABEL = Object.fromEntries([...BLEND_GROUPS.flat(), PASS_THROUGH].map((b) => [b.id, b.label]));
 
-function PanelTabs({ tabs }: { tabs: { label: string; on?: boolean }[] }) {
+function PanelTabs({ tabs }: { tabs: { label: string; on?: boolean; onClick?: () => void }[] }) {
   return (
-    <div className="panel-tabs">
+    <div className="panel-tabs" role="tablist">
       {tabs.map((t) => (
-        <div key={t.label} className={`panel-tab ${t.on ? 'on' : ''}`} title={t.on ? undefined : 'Próximamente'}>{t.label}</div>
+        <div key={t.label} role="tab" aria-selected={!!t.on} className={`panel-tab ${t.on ? 'on' : ''} ${t.onClick || t.on ? '' : 'soon'}`}
+          title={t.on || t.onClick ? undefined : 'Próximamente'} onClick={t.onClick} data-testid={`tab-${t.label}`}>{t.label}</div>
       ))}
     </div>
   );
@@ -152,7 +154,7 @@ export function ActionsPanel() {
           {actions.map((a, i) => (
             <div key={i} className="action-row">
               {editing === i
-                ? <input className="action-name" autoFocus defaultValue={a.name}
+                ? <input className="action-name" autoFocus onFocus={(e) => e.target.select()} defaultValue={a.name}
                     onBlur={(e) => { renameAction(i, e.target.value.trim() || a.name); setEditing(null); }}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') (e.target as HTMLInputElement).blur(); e.stopPropagation(); }} />
                 : <span title={`${a.steps.map((s) => s.id).join(', ')}\nDoble clic para renombrar`} onDoubleClick={() => setEditing(i)}>{a.name} <span className="hint">({a.steps.length})</span></span>}
@@ -187,7 +189,7 @@ const KIND_ICON = { adjustment: SlidersHorizontal, text: Type, shape: Shapes, gr
 
 type DropPos = 'above' | 'below' | 'inside';
 
-function LayerRow({ layer, active, editMask, depth, isBase }: { layer: LayerInfo; active: boolean; editMask: boolean; depth: number; isBase: boolean }) {
+function LayerRow({ layer, active, selected, editMask, depth, isBase }: { layer: LayerInfo; active: boolean; selected: boolean; editMask: boolean; depth: number; isBase: boolean }) {
   const [editing, setEditing] = useState(false);
   const [drop, setDrop] = useState<DropPos | null>(null);
   const group = layer.kind === 'group';
@@ -195,8 +197,11 @@ function LayerRow({ layer, active, editMask, depth, isBase }: { layer: LayerInfo
   const fx = layer.effects && Object.values(layer.effects).some((e) => e?.enabled);
   return (
     <div
-      className={`layer ${active ? 'active' : ''} ${layer.visible ? '' : 'hidden'} ${drop ? `drop-${drop}` : ''} ${layer.clipped ? 'clipped' : ''}`}
-      onClick={(e) => { if (e.altKey) engine.call('toggleClip', layer.id); else engine.call('selectLayer', layer.id, false); }}
+      className={`layer ${active ? 'active' : ''} ${selected && !active ? 'selected' : ''} ${layer.visible ? '' : 'hidden'} ${drop ? `drop-${drop}` : ''} ${layer.clipped ? 'clipped' : ''}`}
+      onClick={(e) => {
+        if (e.altKey) engine.call('toggleClip', layer.id);
+        else engine.call('selectLayer', layer.id, false, e.ctrlKey || e.metaKey ? 'toggle' : e.shiftKey ? 'range' : 'replace');
+      }}
       title={group ? undefined : 'Alt+clic: crear o liberar máscara de recorte'}
       draggable={!editing}
       onDragStart={(e) => { e.dataTransfer.setData('text/x-layer-id', String(layer.id)); e.dataTransfer.effectAllowed = 'move'; }}
@@ -305,6 +310,8 @@ const ADJ_MENU: AdjustmentType[] = ['solidColor', 'brightness', 'levels', 'curve
 export function LayersPanel() {
   const doc = useStore((s) => s.doc);
   const [adjOpen, setAdjOpen] = useState(false);
+  const [tab, setTab] = useState<'layers' | 'paths'>('layers');
+  if (tab === 'paths') return <PathsPanel onTab={setTab} />;
   const active = doc.layers.find((l) => l.id === doc.activeLayerId);
   // Árbol visible de arriba a abajo (los grupos plegados ocultan su contenido).
   const rows: { l: LayerInfo; depth: number; isBase: boolean }[] = [];
@@ -319,17 +326,17 @@ export function LayersPanel() {
   walk(null, 0);
   return (
     <section className="panel grow">
-      <PanelTabs tabs={[{ label: 'Capas', on: true }, { label: 'Canales' }, { label: 'Trazados' }]} />
+      <PanelTabs tabs={[{ label: 'Capas', on: true }, { label: 'Canales' }, { label: 'Trazados', onClick: () => setTab('paths') }]} />
       {doc.open && active ? (
         <>
           <div className="layer-controls">
-            <select value={active.blend} aria-label="Modo de fusión" onChange={(e) => engine.call('setLayer', active.id, { blend: e.target.value })}>
+            <select value={active.blend} aria-label="Modo de fusión" onChange={(e) => engine.call('setLayers', doc.selectedLayerIds, { blend: e.target.value })}>
               {active.kind === 'group' && <option value={PASS_THROUGH.id}>{PASS_THROUGH.label}</option>}
               {BLEND_GROUPS.map((g, gi) => <optgroup key={gi} label="──────────">{g.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}</optgroup>)}
             </select>
             <ScrubPercent label="Opac.:" value={active.opacity}
-              onLive={(v) => engine.call('setLayer', active.id, { opacity: v }, false)}
-              onCommit={(v) => engine.call('setLayer', active.id, { opacity: v }, true)} />
+              onLive={(v) => engine.call('setLayers', doc.selectedLayerIds, { opacity: v }, false)}
+              onCommit={(v) => engine.call('setLayers', doc.selectedLayerIds, { opacity: v }, true)} />
           </div>
           <div className="layer-locks">
             <span className="hint">Bloquear:</span>
@@ -339,7 +346,7 @@ export function LayersPanel() {
           </div>
           <div className="layers" role="list">
             {rows.map(({ l, depth, isBase }) => (
-              <LayerRow key={l.id} layer={l} depth={depth} isBase={isBase} active={l.id === doc.activeLayerId} editMask={doc.editMask} />
+              <LayerRow key={l.id} layer={l} depth={depth} isBase={isBase} active={l.id === doc.activeLayerId} selected={doc.selectedLayerIds.includes(l.id)} editMask={doc.editMask} />
             ))}
           </div>
           <div className="panel-foot">
@@ -370,6 +377,59 @@ export function LayersPanel() {
       ) : (
         <div className="panel-body hint" style={{ display: 'flex', gap: 6, alignItems: 'center' }}><LayersIcon size={14} /> Abre o crea un documento</div>
       )}
+    </section>
+  );
+}
+
+/** Miniatura de un trazado ajustada al documento. */
+function PathThumb({ path, w, h }: { path: VectorPath; w: number; h: number }) {
+  const k = Math.min(40 / Math.max(1, w), 30 / Math.max(1, h));
+  const ox = (40 - w * k) / 2, oy = (30 - h * k) / 2;
+  return (
+    <svg width="40" height="30" className="path-thumb">
+      <rect x={ox} y={oy} width={w * k} height={h * k} fill="#fff" />
+      <path d={toSvg(path, (x, y) => [ox + x * k, oy + y * k])} fill="#666" fillRule="evenodd" stroke="#333" strokeWidth={0.5} />
+    </svg>
+  );
+}
+
+export function PathsPanel({ onTab }: { onTab: (t: 'layers' | 'paths') => void }) {
+  const doc = useStore((s) => s.doc);
+  const [editing, setEditing] = useState<number | null>(null);
+  const active = doc.paths.find((p) => p.id === doc.activePathId);
+  const act = (m: string, ...a: unknown[]) => { if (active) engine.call(m, active.path, ...a); };
+  return (
+    <section className="panel grow">
+      <PanelTabs tabs={[{ label: 'Capas', onClick: () => onTab('layers') }, { label: 'Canales' }, { label: 'Trazados', on: true }]} />
+      <div className="layers paths" role="list" onClick={(e) => { if (e.target === e.currentTarget) engine.call('setActivePath', null); }}>
+        {!doc.paths.length && <div className="panel-body hint">Dibuja con la pluma (P) o convierte una selección en trazado.</div>}
+        {[...doc.paths].map((p) => (
+          <div key={p.id} className={`layer path-row ${p.id === doc.activePathId ? 'active' : ''}`} data-testid="path-row"
+            onClick={(e) => {
+              if (e.ctrlKey || e.metaKey) { engine.call('selectPath', p.path, e.shiftKey ? 'add' : e.altKey ? 'subtract' : 'replace', 0); return; }
+              engine.call('setActivePath', p.id);
+            }}
+            onDoubleClick={() => setEditing(p.id)}>
+            <PathThumb path={p.path} w={doc.width} h={doc.height} />
+            <div className="layer-text">
+              {editing === p.id
+                ? <input className="action-name" autoFocus onFocus={(e) => e.target.select()} defaultValue={p.work ? `Trazado ${doc.paths.filter((q) => !q.work).length + 1}` : p.name}
+                    onClick={(e) => e.stopPropagation()}
+                    onBlur={(e) => { setEditing(null); if (e.target.value.trim()) { if (p.work) engine.call('savePath', p.id, e.target.value.trim()); else engine.call('renamePath', p.id, e.target.value); } }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setEditing(null); e.stopPropagation(); }} />
+                : <div className={`name ${p.work ? 'work-path' : ''}`} title={p.work ? 'Doble clic para guardarlo' : 'Doble clic para cambiar el nombre · Ctrl+clic: cargar como selección'}>{p.name}</div>}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="panel-foot">
+        <button className="icon-btn" title="Rellenar trazado con el color frontal" disabled={!active} onClick={() => act('fillPath')}><PaintBucket size={15} /></button>
+        <button className="icon-btn" title="Contornear trazado con el pincel" disabled={!active} onClick={() => act('strokePath')}><CircleDot size={15} /></button>
+        <button className="icon-btn" title="Cargar el trazado como selección (Ctrl+Intro)" disabled={!active} onClick={() => act('selectPath', 'replace', 0)}><SquareDashed size={15} /></button>
+        <button className="icon-btn" title="Hacer trazado de trabajo desde la selección" disabled={!doc.selection} onClick={() => engine.call('workPathFromSelection', 2)}><Spline size={15} /></button>
+        <button className="icon-btn" title="Crear trazado nuevo" onClick={() => engine.call('savePath')}><Plus size={16} /></button>
+        <button className="icon-btn" title="Eliminar trazado" disabled={!active} onClick={() => active && engine.call('deletePath', active.id)}><Trash2 size={15} /></button>
+      </div>
     </section>
   );
 }

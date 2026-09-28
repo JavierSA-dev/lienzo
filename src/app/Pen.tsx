@@ -5,19 +5,19 @@
 // Mayús = ángulos de 45° · Intro/Esc = terminar · Retroceso = quitar el último punto ·
 // Ctrl (temporal) = mover anclas y manejadores · Alt+clic en un ancla = convertir punto.
 // Ctrl+Intro convierte el trazado en selección.
-import { useStore } from './store';
+import { useStore, commitPath } from './store';
 import { corner, toSvg, type PathPoint, type VectorPath } from '../engine/path';
 
 type Pt = [number, number];
 
-export type PenDrag =
+export type PenDrag = { label: string; moved?: boolean } & (
   | { kind: 'penPoint'; sub: number; idx: number; alt: boolean }
   | { kind: 'anchor'; sub: number; idx: number; start: Pt; orig: PathPoint }
-  | { kind: 'handle'; sub: number; idx: number; which: 'in' | 'out'; alt: boolean };
+  | { kind: 'handle'; sub: number; idx: number; which: 'in' | 'out'; alt: boolean });
 
 const S = () => useStore.getState();
 const clone = (p: VectorPath): VectorPath => p.map((sp) => ({ closed: sp.closed, points: sp.points.map((q) => ({ ...q })) }));
-const setPath = (path: VectorPath, extra: Partial<ReturnType<typeof S>> = {}) => useStore.setState({ path, ...extra });
+const setPath = (path: VectorPath, extra: Partial<ReturnType<typeof S>> = {}) => useStore.setState({ path, penLocal: true, ...extra });
 
 function hit(p: Pt, tol: number): { sub: number; idx: number; part: 'anchor' | 'in' | 'out' } | null {
   const { path, pathSel } = S();
@@ -54,9 +54,9 @@ export function penDown(p: Pt, e: { altKey: boolean; shiftKey: boolean }, zoom: 
   if (e.altKey && h?.part === 'anchor' && !(d === h.sub && h.idx === 0 && path[d].points.length > 1)) {
     const q = path[h.sub].points[h.idx];
     const smooth = q.ix !== q.x || q.iy !== q.y || q.ox !== q.x || q.oy !== q.y;
-    if (smooth) { Object.assign(q, corner(q.x, q.y)); setPath(path, { pathSel: { sub: h.sub, idx: h.idx } }); return null; }
+    if (smooth) { Object.assign(q, corner(q.x, q.y)); setPath(path, { pathSel: { sub: h.sub, idx: h.idx } }); commitPath('Convertir punto'); return null; }
     setPath(path, { pathSel: { sub: h.sub, idx: h.idx } });
-    return { kind: 'penPoint', sub: h.sub, idx: h.idx, alt: false };
+    return { kind: 'penPoint', sub: h.sub, idx: h.idx, alt: false, label: 'Convertir punto' };
   }
 
   if (d != null && path[d] && !path[d].closed) {
@@ -65,13 +65,13 @@ export function penDown(p: Pt, e: { altKey: boolean; shiftKey: boolean }, zoom: 
     if (sp.points.length >= 2 && h?.sub === d && h.idx === 0 && h.part === 'anchor') {
       sp.closed = true;
       setPath(path, { penDrawing: null, pathSel: { sub: d, idx: 0 } });
-      return { kind: 'penPoint', sub: d, idx: 0, alt: e.altKey };
+      return { kind: 'penPoint', sub: d, idx: 0, alt: e.altKey, label: 'Cerrar trazado' };
     }
     const last = sp.points[sp.points.length - 1];
     const q = e.shiftKey ? snap45([last.x, last.y], p) : p;
     sp.points.push(corner(q[0], q[1]));
     setPath(path, { pathSel: { sub: d, idx: sp.points.length - 1 } });
-    return { kind: 'penPoint', sub: d, idx: sp.points.length - 1, alt: false };
+    return { kind: 'penPoint', sub: d, idx: sp.points.length - 1, alt: false, label: 'Nuevo punto de ancla' };
   }
   // Clic en un punto existente sin estar dibujando: seleccionarlo (y poder moverlo).
   if (h) {
@@ -80,7 +80,7 @@ export function penDown(p: Pt, e: { altKey: boolean; shiftKey: boolean }, zoom: 
   }
   path.push({ points: [corner(p[0], p[1])], closed: false });
   setPath(path, { penDrawing: path.length - 1, pathSel: { sub: path.length - 1, idx: 0 } });
-  return { kind: 'penPoint', sub: path.length - 1, idx: 0, alt: false };
+  return { kind: 'penPoint', sub: path.length - 1, idx: 0, alt: false, label: 'Nuevo punto de ancla' };
 }
 
 /** Selección directa: arrastrar anclas o manejadores. */
@@ -89,11 +89,13 @@ export function pathEditDown(p: Pt, e: { altKey: boolean }, zoom: number): PenDr
   if (!h) { useStore.setState({ pathSel: null }); return null; }
   useStore.setState({ pathSel: { sub: h.sub, idx: h.idx } });
   const q = S().path[h.sub].points[h.idx];
-  if (h.part === 'anchor') return { kind: 'anchor', sub: h.sub, idx: h.idx, start: p, orig: { ...q } };
-  return { kind: 'handle', sub: h.sub, idx: h.idx, which: h.part, alt: e.altKey };
+  useStore.setState({ penLocal: true });
+  if (h.part === 'anchor') return { kind: 'anchor', sub: h.sub, idx: h.idx, start: p, orig: { ...q }, label: 'Arrastrar punto de ancla' };
+  return { kind: 'handle', sub: h.sub, idx: h.idx, which: h.part, alt: e.altKey, label: 'Arrastrar manejador' };
 }
 
 export function penMove(g: PenDrag, p: Pt, e: { altKey: boolean; shiftKey: boolean }, zoom: number) {
+  g.moved = true;
   const path = clone(S().path);
   const q = path[g.sub]?.points[g.idx];
   if (!q) return;
@@ -122,11 +124,19 @@ export function penMove(g: PenDrag, p: Pt, e: { altKey: boolean; shiftKey: boole
   setPath(path);
 }
 
+/** Al soltar: la edición pasa al historial (un arrastre sin movimiento no cuenta). */
+export function penUp(g: PenDrag) {
+  if (g.kind !== 'penPoint' && !g.moved) { useStore.setState({ penLocal: false }); return; }
+  commitPath(g.label);
+}
+
 /** Intro / Esc: termina el subtrazado en curso. */
 export function penFinish(): boolean {
   if (S().penDrawing == null) return false;
-  const path = S().path.filter((sp) => sp.points.length >= 2 || sp.closed);
+  const before = S().path;
+  const path = before.filter((sp) => sp.points.length >= 2 || sp.closed);
   useStore.setState({ path, penDrawing: null });
+  if (path.length !== before.length) commitPath('Eliminar punto de ancla');
   return true;
 }
 
@@ -139,6 +149,7 @@ export function penBackspace(): boolean {
     sp.points.pop();
     if (!sp.points.length) { path.splice(s.penDrawing, 1); setPath(path, { penDrawing: null, pathSel: null }); }
     else setPath(path, { pathSel: { sub: s.penDrawing, idx: sp.points.length - 1 } });
+    commitPath('Eliminar punto de ancla');
     return true;
   }
   if (s.pathSel && path[s.pathSel.sub]) {
@@ -146,9 +157,10 @@ export function penBackspace(): boolean {
     sp.points.splice(s.pathSel.idx, 1);
     if (sp.points.length < 2) path.splice(s.pathSel.sub, 1);
     setPath(path, { pathSel: null });
+    commitPath('Eliminar punto de ancla');
     return true;
   }
-  if (path.length) { setPath([], { pathSel: null }); return true; }
+  if (path.length) { setPath([], { pathSel: null }); commitPath('Eliminar trazado'); return true; }
   return false;
 }
 

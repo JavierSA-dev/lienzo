@@ -47,7 +47,7 @@ export type ToolId =
   | 'move' | 'marquee' | 'marqueeEllipse' | 'lasso' | 'polylasso' | 'wand' | 'crop' | 'eyedropper'
   | 'brush' | 'pencil' | 'clone' | 'eraser' | 'gradient' | 'bucket' | 'dodge' | 'burn'
   | 'text' | 'shape' | 'hand' | 'zoom'
-  | 'spotHeal' | 'heal' | 'pen' | 'pathSelect';
+  | 'spotHeal' | 'heal' | 'patch' | 'pen' | 'pathSelect' | 'blur' | 'sharpen' | 'smudge';
 
 export type LayerKind = 'pixel' | 'adjustment' | 'text' | 'shape' | 'group';
 
@@ -163,7 +163,14 @@ export interface DocState {
   selection: Rect | null;     // límites de la selección
   editMask: boolean;          // se pinta en la máscara de la capa activa
   dirty: boolean;
+  /** Capas seleccionadas en el panel (incluye la activa). */
+  selectedLayerIds: number[];
+  /** Trazados del documento (panel Trazados). */
+  paths: DocPathInfo[];
+  activePathId: number | null;
 }
+
+export interface DocPathInfo { id: number; name: string; work: boolean; path: import('./path').VectorPath }
 
 export interface ViewState { zoom: number; panX: number; panY: number; dpr: number }
 

@@ -1,3 +1,4 @@
+import type { VectorPath } from './path';
 import {
   TILE, type BlendMode, type LayerInfo, type Rect, type RGBA, type LayerKind, type AdjustmentParams,
   type TextParams, type ShapeParams, type LayerEffects,
@@ -281,6 +282,19 @@ export class EditorDocument {
   selection: Selection | null = null;
   /** true = las herramientas de pintura actúan sobre la máscara de la capa activa. */
   editMask = false;
+  /** Capas seleccionadas a la vez (Ctrl/Mayús+clic en el panel). Siempre incluye la activa. */
+  selectedIds = new Set<number>();
+  /** Trazados (pluma). `work` = trazado de trabajo, se reemplaza al dibujar uno nuevo. */
+  paths: { id: number; name: string; work: boolean; path: VectorPath }[] = [];
+  activePathId: number | null = null;
+
+  /** Capas seleccionadas que siguen existiendo, en el orden del documento. */
+  selected(): PixelLayer[] {
+    const a = this.active();
+    // La selección múltiple sólo vale si incluye la capa activa (si no, se ha cambiado de capa).
+    if (!a || !this.selectedIds.has(a.id)) return a ? [a] : [];
+    return this.layers.filter((l) => this.selectedIds.has(l.id));
+  }
   dirty = false;
 
   constructor(name: string, width: number, height: number) {

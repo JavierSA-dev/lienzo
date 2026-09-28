@@ -18,7 +18,7 @@ import { filterApron, WHOLE_FILTERS, type FilterName, type FilterParams } from '
 import { defaultAdjustment, ADJUSTMENT_LABELS } from './adjust';
 import { rasterizeText, rasterizeShape, rasterLimit, mul, invert as invertM, textBox, transformRect } from './vector';
 import { buildEffects } from './effects';
-import { flatten as flattenPath, pathBounds, toSvg, isEmpty as isEmptyPath, type VectorPath } from './path';
+import { flatten as flattenPath, pathBounds, toSvg, isEmpty as isEmptyPath, clonePath, traceMask, type VectorPath } from './path';
 
 type Post = (m: FromWorker, transfer?: Transferable[]) => void;
 
@@ -41,7 +41,7 @@ const TOOL_LABEL = { spotHeal: 'Pincel corrector puntual', heal: 'Pincel correct
 
 const BRUSH_TOOLS: Partial<Record<ToolId, BrushMode>> = {
   brush: 'paint', pencil: 'paint', eraser: 'erase', clone: 'clone', dodge: 'dodge', burn: 'burn',
-  spotHeal: 'paint', heal: 'clone',
+  spotHeal: 'paint', heal: 'clone', blur: 'blur', sharpen: 'sharpen', smudge: 'smudge',
 };
 
 /** Motor del editor: vive entero en el worker; la interfaz sólo envía comandos. */
@@ -66,6 +66,8 @@ export class Engine {
   private layerCounter = 1;
   private groupCounter = 1;
   private healing = false;
+  private batch: HistoryEntry[] | null = null;
+  private pathCounter = 1;
   private pointerQueue: PointerMsg[] = [];
   private strokeTool: ToolId = 'brush';
   private pool = new Pool();
@@ -182,7 +184,7 @@ export class Engine {
   private snapshot(): DocState {
     const d = this.doc;
     if (!d) {
-      return { open: false, name: '', width: 0, height: 0, layers: [], activeLayerId: 0, history: [], historyIndex: 0, selection: null, editMask: false, dirty: false };
+      return { open: false, name: '', width: 0, height: 0, layers: [], activeLayerId: 0, history: [], historyIndex: 0, selection: null, editMask: false, dirty: false, selectedLayerIds: [], paths: [], activePathId: null };
     }
     return {
       open: true,
@@ -196,6 +198,9 @@ export class Engine {
       selection: d.selection?.bounds() ?? null,
       editMask: d.editMask && !!d.active()?.mask,
       dirty: d.dirty,
+      selectedLayerIds: d.selected().map((l) => l.id),
+      paths: d.paths.map((p) => ({ ...p })),
+      activePathId: d.activePathId,
     };
   }
 
@@ -252,9 +257,28 @@ export class Engine {
   }
 
   private commit(e: HistoryEntry) {
+    if (this.batch) { this.batch.push(e); return; }
     this.history.push(e);
     if (this.doc) this.doc.dirty = true;
     this.pushState();
+  }
+
+  /** Agrupa en un solo paso del historial todo lo que se registre dentro de `fn`. */
+  private batched(label: string, fn: () => void) {
+    const outer = this.batch;
+    this.batch = [];
+    try { fn(); } finally {
+      const es = this.batch;
+      this.batch = outer;
+      if (es.length) this.commit(new GroupEntry(label, es));
+    }
+  }
+
+  /** Capas seleccionadas sin las que ya están dentro de otro grupo seleccionado. */
+  private topSelected(): PixelLayer[] {
+    const d = this.doc!;
+    const sel = d.selected();
+    return sel.filter((l) => !sel.some((g) => g !== l && g.kind === 'group' && d.isInside(l, g)));
   }
 
   private perf<T>(label: string, fn: () => T): T {
@@ -283,6 +307,8 @@ export class Engine {
     this.baseLabel = label;
     this.layerCounter = doc.layers.length + 1;
     this.groupCounter = doc.layers.filter((l) => l.kind === 'group').length + 1;
+    this.pathCounter = Math.max(0, ...doc.paths.map((p) => p.id)) + 1;
+    this.pointerQueue = [];
     this.fit(true);
     this.invalidate(null);
     this.pushState();
@@ -422,8 +448,101 @@ export class Engine {
 
   /** Capas que se mueven juntas con la herramienta Mover (un grupo mueve su contenido). */
   private moveSet(L: PixelLayer): PixelLayer[] {
-    if (L.kind !== 'group') return [L];
-    return this.doc!.descendants(L.id).filter((l) => l.kind !== 'group' && l.kind !== 'adjustment');
+    const d = this.doc!;
+    // Con varias capas seleccionadas se mueven todas (si la pulsada es una de ellas).
+    const units = d.selected().some((l) => l === L) ? this.topSelected() : [L];
+    const out = new Set<PixelLayer>();
+    for (const U of units) {
+      if (U.kind !== 'group') { if (U.kind !== 'adjustment') out.add(U); continue; }
+      for (const l of d.descendants(U.id)) if (l.kind !== 'group' && l.kind !== 'adjustment') out.add(l);
+    }
+    return [...out];
+  }
+
+  /** Ctrl+Alt+A: selecciona todas las capas. */
+  selectAllLayers() {
+    const d = this.doc;
+    if (!d) return;
+    d.selectedIds = new Set(d.layers.map((l) => l.id));
+    if (!d.selectedIds.has(d.activeLayerId)) d.activeLayerId = d.layers.at(-1)!.id;
+    this.pushState(false);
+  }
+
+  /** Cambia opacidad, modo, visibilidad… de todas las capas seleccionadas en un solo paso. */
+  setLayers(ids: number[], props: Parameters<Engine['setLayer']>[1], record = true) {
+    if (ids.length <= 1) return this.setLayer(ids[0] ?? this.doc?.activeLayerId ?? 0, props, record);
+    this.batched(props.opacity !== undefined ? 'Opacidad de capa' : props.blend !== undefined ? 'Modo de fusión' : 'Propiedades de capa', () => {
+      for (const id of ids) this.setLayer(id, props, record);
+    });
+  }
+
+  /**
+   * Alinear capas: con varias, respecto a su caja común; con una, respecto a la selección
+   * (o al lienzo si no hay selección), como Photoshop.
+   */
+  alignLayers(mode: 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'bottom') {
+    const d = this.doc;
+    if (!d) return;
+    const units = this.topSelected().filter((l) => l.kind !== 'adjustment');
+    const boxes = units.map((U) => ({ U, b: this.unitBox(U) })).filter((x) => x.b) as { U: PixelLayer; b: Rect }[];
+    if (!boxes.length) return;
+    let ref: Rect;
+    if (boxes.length > 1) { let r: Rect | null = null; for (const x of boxes) r = union(r, x.b); ref = r!; }
+    else ref = (d.selection && intersect(d.selection.bounds()!, this.docRect())) || this.docRect();
+    this.batched('Alinear', () => {
+      for (const { U, b } of boxes) {
+        let dx = 0, dy = 0;
+        if (mode === 'left') dx = ref.x - b.x;
+        if (mode === 'right') dx = ref.x + ref.w - (b.x + b.w);
+        if (mode === 'hcenter') dx = Math.round(ref.x + ref.w / 2 - (b.x + b.w / 2));
+        if (mode === 'top') dy = ref.y - b.y;
+        if (mode === 'bottom') dy = ref.y + ref.h - (b.y + b.h);
+        if (mode === 'vcenter') dy = Math.round(ref.y + ref.h / 2 - (b.y + b.h / 2));
+        if (dx || dy) this.shiftUnit(U, dx, dy);
+      }
+    });
+  }
+
+  /** Distribuir (3 o más capas): mismos huecos entre centros. */
+  distributeLayers(mode: 'hcenter' | 'vcenter' | 'left' | 'right' | 'top' | 'bottom') {
+    const d = this.doc;
+    if (!d) return;
+    const units = this.topSelected().filter((l) => l.kind !== 'adjustment');
+    const boxes = units.map((U) => ({ U, b: this.unitBox(U) })).filter((x) => x.b) as { U: PixelLayer; b: Rect }[];
+    if (boxes.length < 3) { this.toast('Selecciona al menos tres capas para distribuir.', 'warn'); return; }
+    const key = (b: Rect) => mode === 'left' ? b.x : mode === 'right' ? b.x + b.w : mode === 'top' ? b.y : mode === 'bottom' ? b.y + b.h
+      : mode === 'hcenter' ? b.x + b.w / 2 : b.y + b.h / 2;
+    boxes.sort((a, b) => key(a.b) - key(b.b));
+    const k0 = key(boxes[0].b), k1 = key(boxes[boxes.length - 1].b);
+    const horiz = mode === 'left' || mode === 'right' || mode === 'hcenter';
+    this.batched('Distribuir', () => {
+      boxes.forEach(({ U, b }, i) => {
+        const delta = Math.round(k0 + ((k1 - k0) * i) / (boxes.length - 1) - key(b));
+        if (delta) this.shiftUnit(U, horiz ? delta : 0, horiz ? 0 : delta);
+      });
+    });
+  }
+
+  /** Caja exacta del contenido de una capa o de todo un grupo. */
+  private unitBox(U: PixelLayer): Rect | null {
+    const d = this.doc!;
+    let r: Rect | null = null;
+    for (const l of U.kind === 'group' ? d.descendants(U.id) : [U]) if (l.kind !== 'group' && l.kind !== 'adjustment') r = union(r, exactBounds(l));
+    return r;
+  }
+
+  /** Mueve una capa o un grupo entero y lo registra. */
+  private shiftUnit(U: PixelLayer, dx: number, dy: number) {
+    const d = this.doc!;
+    const set = U.kind === 'group' ? d.descendants(U.id).filter((l) => l.kind !== 'group' && l.kind !== 'adjustment') : [U];
+    const pos = (l: PixelLayer) => ({ x: l.x, y: l.y, text: l.text, shape: l.shape });
+    const from = set.map(pos);
+    let dirty: Rect | null = null;
+    for (const L of set) { dirty = union(dirty, this.fullBounds(L)); this.shiftLayer(L, dx, dy); dirty = union(dirty, this.fullBounds(L)); }
+    const to = set.map(pos);
+    const apply = (v: typeof from) => (doc: EditorDocument) => { set.forEach((L, i) => { const l = doc.layer(L.id); if (l) Object.assign(l, v[i]); }); };
+    this.commit(new FnEntry('Mover', apply(from), apply(to)));
+    this.invalidate(dirty);
   }
 
   /** Ctrl+G: mete la capa activa en un grupo nuevo. Sin capa activa, crea un grupo vacío. */
@@ -435,7 +554,13 @@ export class Engine {
     const G = new PixelLayer(`Grupo ${this.groupCounter++}`);
     G.kind = 'group';
     G.blend = 'pass-through';
-    if (empty || !A) {
+    const sel = empty ? [] : this.topSelected();
+    if (sel.length > 1) {
+      const top = sel[sel.length - 1];
+      G.parent = top.parent;
+      d.layers.splice(d.indexOf(top.id) + 1, 0, G);
+      for (const l of sel) { l.parent = G.id; l.clipped = false; }
+    } else if (empty || !A) {
       d.layers.splice(this.above(G), 0, G);
     } else {
       G.parent = A.parent;
@@ -445,6 +570,7 @@ export class Engine {
       d.layers.splice(d.indexOf(A.id) + 1, 0, G);
     }
     d.activeLayerId = G.id;
+    d.selectedIds = new Set([G.id]);
     d.editMask = false;
     this.commitStruct(empty ? 'Nuevo grupo' : 'Agrupar capas', before);
     return G.id;
@@ -551,6 +677,22 @@ export class Engine {
     const d = this.doc;
     const A = d?.active();
     if (!d || !A) return;
+    if (d.selected().length > 1) {
+      const before = this.structSnap();
+      const newIds: number[] = [];
+      for (const U of this.topSelected()) {
+        const subtree = U.kind === 'group' ? [...d.descendants(U.id), U] : [U];
+        const ids = new Map<number, number>();
+        const copies = subtree.map((l) => { const c = l.clone(l === U ? `${l.name} copia` : l.name); ids.set(l.id, c.id); return c; });
+        copies.forEach((c, i) => { if (subtree[i] !== U && subtree[i].parent != null) c.parent = ids.get(subtree[i].parent!) ?? c.parent; });
+        d.layers.splice(d.indexOf(U.id) + 1, 0, ...copies);
+        newIds.push(copies[copies.length - 1].id);
+      }
+      d.selectedIds = new Set(newIds);
+      d.activeLayerId = newIds[newIds.length - 1];
+      this.commitStruct('Duplicar capas', before);
+      return;
+    }
     if (A.kind === 'group') {
       const before = this.structSnap();
       const subtree = [...d.descendants(A.id), A];
@@ -569,6 +711,19 @@ export class Engine {
   deleteLayer(id?: number) {
     const d = this.doc;
     if (!d || d.layers.length <= 1) return;
+    if (!id && d.selected().length > 1) {
+      const gone = new Set<PixelLayer>();
+      for (const U of this.topSelected()) { gone.add(U); if (U.kind === 'group') for (const l of d.descendants(U.id)) gone.add(l); }
+      if (gone.size >= d.layers.length) { this.toast('El documento necesita al menos una capa.', 'warn'); return; }
+      const before = this.structSnap();
+      const idx = Math.min(...[...gone].map((l) => d.indexOf(l.id)));
+      d.layers = d.layers.filter((l) => !gone.has(l));
+      d.activeLayerId = d.layers[Math.max(0, Math.min(d.layers.length - 1, idx - 1))].id;
+      d.selectedIds = new Set([d.activeLayerId]);
+      d.editMask = false;
+      this.commitStruct('Eliminar capas', before);
+      return;
+    }
     const L = id ? d.layer(id) : d.active();
     if (!L) return;
     if (L.kind === 'group') {
@@ -593,10 +748,30 @@ export class Engine {
     this.invalidate(L.kind === 'adjustment' ? null : union(L.bounds(), union(L.fxUnder?.bounds() ?? null, L.fxOver?.bounds() ?? null)));
   }
 
-  selectLayer(id: number, editMask?: boolean) {
+  /** mode: 'replace' (clic), 'toggle' (Ctrl+clic), 'range' (Mayús+clic). */
+  selectLayer(id: number, editMask?: boolean, mode: 'replace' | 'toggle' | 'range' = 'replace') {
     const d = this.doc;
     const L = d?.layer(id);
     if (!d || !L) return;
+    const cur = new Set(d.selected().map((l) => l.id));
+    if (mode === 'toggle') {
+      if (cur.has(id) && cur.size > 1) {
+        cur.delete(id);
+        d.selectedIds = cur;
+        if (d.activeLayerId === id) d.activeLayerId = [...cur].at(-1)!;
+        d.editMask = false;
+        this.pushState(false);
+        return;
+      }
+      cur.add(id);
+      d.selectedIds = cur;
+    } else if (mode === 'range') {
+      const a = d.indexOf(d.activeLayerId), b = d.indexOf(id);
+      const [i0, i1] = a < b ? [a, b] : [b, a];
+      d.selectedIds = new Set(d.layers.slice(Math.max(0, i0), i1 + 1).map((l) => l.id));
+    } else {
+      d.selectedIds = new Set([id]);
+    }
     d.activeLayerId = id;
     d.editMask = editMask ?? (L.kind === 'adjustment' && !!L.mask);
     this.pushState(false);
@@ -716,6 +891,7 @@ export class Engine {
     const d = this.doc;
     const A = d?.active();
     if (!d || !A) return;
+    if (d.selected().length > 1) return this.mergeLayers();
     if (A.kind === 'group') return this.mergeGroup(A);
     const sibs = d.children(A.parent);
     const j = sibs.indexOf(A);
@@ -733,6 +909,31 @@ export class Engine {
       merged.writeRegion(px, region.w, region.h, region.x, region.y);
     }
     this.replaceLayers('Combinar hacia abajo', [B, A], [merged], i - 1);
+  }
+
+  /** Ctrl+E con varias capas seleccionadas: se combinan en una (arriba del todo de ellas). */
+  private mergeLayers() {
+    const d = this.doc!;
+    const units = this.topSelected();
+    const all = new Set<PixelLayer>();
+    for (const U of units) { all.add(U); if (U.kind === 'group') for (const l of d.descendants(U.id)) all.add(l); }
+    const list = d.layers.filter((l) => all.has(l));
+    const region = this.contentRect(list.filter((l) => l.kind !== 'group'));
+    const top = units[units.length - 1];
+    const merged = new PixelLayer(top.name);
+    if (region) {
+      const px = this.perf('Combinar capas', () => this.r.flatten(d, list, region));
+      merged.writeRegion(px, region.w, region.h, region.x, region.y);
+    }
+    merged.parent = top.parent;
+    const before = this.structSnap();
+    const idx = d.indexOf(top.id);
+    d.layers.splice(idx + 1, 0, merged);
+    d.layers = d.layers.filter((l) => !all.has(l));
+    d.activeLayerId = merged.id;
+    d.selectedIds = new Set([merged.id]);
+    d.editMask = false;
+    this.commitStruct('Combinar capas', before, list.reduce((a, l) => a + l.byteSize(), 0));
   }
 
   /** Ctrl+E con un grupo activo: el grupo pasa a ser una sola capa. */
@@ -1598,8 +1799,8 @@ export class Engine {
     let src: Rect | null = null;
     for (const l of set) src = union(src, exactBounds(l));
     if (!src) { if (L.kind === 'group') this.toast('El grupo no tiene contenido que transformar.', 'warn'); return null; }
-    const px = L.kind === 'group'
-      ? this.r.flatten(d, [...d.descendants(L.id), L], src)
+    const px = L.kind === 'group' || set.length > 1
+      ? this.r.flatten(d, d.layers.filter((l) => set.includes(l) || (l.kind === 'group' && set.some((x) => d.isInside(x, l)))), src)
       : L.readRegion(src.x - L.x, src.y - L.y, src.w, src.h);
     const s = Math.min(1, 2048 / Math.max(src.w, src.h));
     const bmp = await createImageBitmap(new ImageData(px as Uint8ClampedArray<ArrayBuffer>, src.w, src.h), {
@@ -2015,6 +2216,103 @@ export class Engine {
 
   // ================================================================ trazados (pluma)
 
+  private pathsSnap() {
+    const d = this.doc!;
+    return { list: d.paths.map((p) => ({ ...p, path: clonePath(p.path) })), active: d.activePathId };
+  }
+
+  private pathsApply(sn: ReturnType<Engine['pathsSnap']>) {
+    return (doc: EditorDocument) => { doc.paths = sn.list.map((p) => ({ ...p, path: clonePath(p.path) })); doc.activePathId = sn.active; };
+  }
+
+  private commitPaths(label: string, before: ReturnType<Engine['pathsSnap']>) {
+    this.commit(new FnEntry(label, this.pathsApply(before), this.pathsApply(this.pathsSnap())));
+  }
+
+  /**
+   * Guarda la edición de un trazado (cada clic o arrastre de la pluma es un paso del historial).
+   * id null = trazado de trabajo nuevo (reemplaza al anterior, como en Photoshop).
+   */
+  setPathData(id: number | null, path: VectorPath, label = 'Editar trazado') {
+    const d = this.doc;
+    if (!d) return;
+    const before = this.pathsSnap();
+    let e = id != null ? d.paths.find((p) => p.id === id) : undefined;
+    if (!e) {
+      if (!path.length) return;
+      d.paths = d.paths.filter((p) => !p.work);
+      e = { id: this.pathCounter++, name: 'Trazado de trabajo', work: true, path: [] };
+      d.paths.push(e);
+    }
+    e.path = clonePath(path);
+    d.activePathId = e.id;
+    if (!path.length && e.work) { d.paths = d.paths.filter((p) => p !== e); d.activePathId = null; }
+    this.commitPaths(label, before);
+  }
+
+  /** Panel Trazados: seleccionar (null = ninguno; el trazado deja de verse). */
+  setActivePath(id: number | null) {
+    const d = this.doc;
+    if (!d) return;
+    d.activePathId = id != null && d.paths.some((p) => p.id === id) ? id : null;
+    this.pushState(false);
+  }
+
+  /** Guardar el trazado de trabajo con nombre (o crear un trazado vacío). */
+  savePath(id?: number, name?: string) {
+    const d = this.doc;
+    if (!d) return;
+    const before = this.pathsSnap();
+    const n = d.paths.filter((p) => !p.work).length + 1;
+    const e = id != null ? d.paths.find((p) => p.id === id) : undefined;
+    if (e) { e.work = false; e.name = name ?? `Trazado ${n}`; d.activePathId = e.id; }
+    else { const np = { id: this.pathCounter++, name: name ?? `Trazado ${n}`, work: false, path: [] as VectorPath }; d.paths.push(np); d.activePathId = np.id; }
+    this.commitPaths(e ? 'Guardar trazado' : 'Nuevo trazado', before);
+  }
+
+  renamePath(id: number, name: string) {
+    const d = this.doc;
+    const e = d?.paths.find((p) => p.id === id);
+    if (!d || !e || !name.trim()) return;
+    const before = this.pathsSnap();
+    e.name = name.trim();
+    e.work = false;
+    this.commitPaths('Cambiar nombre de trazado', before);
+  }
+
+  deletePath(id: number) {
+    const d = this.doc;
+    if (!d || !d.paths.some((p) => p.id === id)) return;
+    const before = this.pathsSnap();
+    d.paths = d.paths.filter((p) => p.id !== id);
+    if (d.activePathId === id) d.activePathId = null;
+    this.commitPaths('Eliminar trazado', before);
+  }
+
+  duplicatePath(id: number) {
+    const d = this.doc;
+    const e = d?.paths.find((p) => p.id === id);
+    if (!d || !e) return;
+    const before = this.pathsSnap();
+    const c = { id: this.pathCounter++, name: `${e.name} copia`, work: false, path: clonePath(e.path) };
+    d.paths.splice(d.paths.indexOf(e) + 1, 0, c);
+    d.activePathId = c.id;
+    this.commitPaths('Duplicar trazado', before);
+  }
+
+  /** Selección > Hacer trazado de trabajo (contorno de la selección, simplificado). */
+  workPathFromSelection(tolerance = 2) {
+    const d = this.doc;
+    const sel = d?.selection;
+    if (!d || !sel) { this.toast('No hay selección.', 'warn'); return; }
+    const b = intersect(sel.bounds()!, this.docRect());
+    if (!b) return;
+    const m = sel.region(b);
+    const path = traceMask(m, b.w, b.h, b.x, b.y, tolerance);
+    if (!path.length) return;
+    this.setPathData(null, path, 'Hacer trazado de trabajo');
+  }
+
   /** Ctrl+Intro: el trazado se convierte en selección (regla par-impar, como Photoshop). */
   selectPath(path: VectorPath, mode: CombineMode = 'replace', feather = 0) {
     const d = this.doc;
@@ -2066,6 +2364,46 @@ export class Engine {
     const patch = st.finish();
     if (patch) this.commit(patch);
     this.invalidate(dirty);
+  }
+
+  /** Valor de la selección en un punto (0..255); lo usa la herramienta Parche. */
+  selectionValueAt(x: number, y: number): number {
+    const sel = this.doc?.selection;
+    return sel ? sel.get(Math.floor(x), Math.floor(y)) : 0;
+  }
+
+  /**
+   * Parche (modo Origen): la zona seleccionada se sustituye por la textura de la zona a la
+   * que se arrastró, adaptando color y luz al entorno (mezcla de Poisson).
+   */
+  async patchSelection(dx: number, dy: number) {
+    const d = this.doc;
+    const L = d?.active();
+    const sel = d?.selection;
+    if (!d || !L || !sel || (!dx && !dy) || this.healing) return;
+    if (!this.ensurePixel(L)) return;
+    const sb = sel.bounds();
+    const R = sb && intersect({ x: sb.x - 4, y: sb.y - 4, w: sb.w + 8, h: sb.h + 8 }, this.docRect());
+    if (!R) return;
+    const src = L.readRegion(R.x + dx - L.x, R.y + dy - L.y, R.w, R.h);
+    const dst = L.readRegion(R.x - L.x, R.y - L.y, R.w, R.h);
+    const m = sel.region(R);
+    const mask = new Float32Array(m.length);
+    for (let i = 0; i < m.length; i++) mask[i] = m[i] / 255;
+    this.healing = true;
+    this.post({ type: 'busy', label: 'Parche…' });
+    try {
+      const out = await this.pool.run({ op: 'heal', src, dst, mask, w: R.w, h: R.h });
+      const patch = new TilePatch('Parche', L);
+      applyRegion(L, patch, R, out, null);
+      this.commit(patch);
+    } finally {
+      this.healing = false;
+      this.post({ type: 'busy', label: null });
+      this.invalidate(R);
+      const queued = this.pointerQueue.splice(0);
+      for (const q of queued) this.pointer(q);
+    }
   }
 
   /** Edición > Relleno según contenido: rellena la selección con textura del entorno. */

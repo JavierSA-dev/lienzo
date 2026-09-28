@@ -6,13 +6,13 @@ import { useStore, toRgba } from './store';
 import { openFile, placeFile, isPaintTool } from './commands';
 import { Home } from './Home';
 import type { CombineMode } from '../engine/selection';
-import { penDown, pathEditDown, penMove, penFinish, penBackspace, PathOverlay, type PenDrag } from './Pen';
+import { penDown, pathEditDown, penMove, penUp, penFinish, penBackspace, PathOverlay, type PenDrag } from './Pen';
 import { isEmpty as isEmptyPath } from '../engine/path';
 
 const CURSORS: Partial<Record<ToolId, string>> = {
   move: 'move', marquee: 'crosshair', marqueeEllipse: 'crosshair', lasso: 'crosshair', polylasso: 'crosshair',
   wand: 'crosshair', crop: 'crosshair', eyedropper: 'crosshair', gradient: 'crosshair', bucket: 'crosshair',
-  text: 'text', shape: 'crosshair', hand: 'grab', zoom: 'zoom-in', pen: 'crosshair', pathSelect: 'default',
+  text: 'text', shape: 'crosshair', hand: 'grab', zoom: 'zoom-in', pen: 'crosshair', pathSelect: 'default', patch: 'crosshair',
 };
 
 type Pt = [number, number];
@@ -26,7 +26,8 @@ type UIDrag =
   | { kind: 'crop'; handle: string; start: Pt; orig: Rect }
   | { kind: 'transform'; handle: string; start: Pt; orig: TParams }
   | { kind: 'brushResize'; x0: number; y0: number; size: number; hardness: number }
-  | { kind: 'pen'; g: PenDrag };
+  | { kind: 'pen'; g: PenDrag }
+  | { kind: 'patchDrag'; start: Pt; cur: Pt };
 
 /** Parámetros de la transformación libre (en coordenadas de documento). */
 interface TParams { tx: number; ty: number; sx: number; sy: number; rot: number }
@@ -108,7 +109,7 @@ export function CanvasArea() {
   }, [tool, doc.open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Cada documento tiene su propio trazado de trabajo.
-  useEffect(() => { useStore.setState({ path: [], penDrawing: null, pathSel: null }); }, [doc.name, doc.open]);
+  useEffect(() => { useStore.setState({ penDrawing: null, pathSel: null }); }, [doc.name, doc.open]);
 
   // Reinicia los parámetros al empezar una transformación.
   useEffect(() => { if (transform) setTparams({ tx: 0, ty: 0, sx: 1, sy: 1, rot: 0 }); }, [transform?.bounds.x, transform?.bounds.y, transform?.bounds.w, !!transform]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -126,6 +127,9 @@ export function CanvasArea() {
           engine.call('selectPath', useStore.getState().path, 'replace', 0); return;
         }
         if ((e.key === 'Enter' || e.key === 'Escape') && penFinish()) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+        if (e.key === 'Escape' && (s.tool === 'pen' || s.tool === 'pathSelect') && s.doc.activePathId != null) {
+          e.preventDefault(); e.stopImmediatePropagation(); engine.call('setActivePath', null); return;
+        }
         if ((e.key === 'Backspace' || e.key === 'Delete') && (s.tool === 'pen' || s.tool === 'pathSelect') && penBackspace()) { e.preventDefault(); e.stopImmediatePropagation(); return; }
       }
       if (poly && e.type === 'keydown') {
@@ -244,6 +248,13 @@ export function CanvasArea() {
           setPoly({ ...poly, pts: [...poly.pts, p] });
           return;
         }
+        case 'patch': {
+          // Dentro de la selección: arrastrar hacia el origen. Fuera: dibujar la zona (como el Lazo).
+          const inside = s.doc.selection && !e.shiftKey && !e.altKey && (await engine.call<number>('selectionValueAt', p[0], p[1])) > 0;
+          if (inside) setUi({ kind: 'patchDrag', start: p, cur: p });
+          else setUi({ kind: 'lasso', pts: [p], mode: modeFrom(e) });
+          return;
+        }
         case 'pen': {
           const g = penDown(p, e, view.zoom);
           if (g) setUi({ kind: 'pen', g });
@@ -358,6 +369,7 @@ export function CanvasArea() {
       }
       case 'transform': moveTransform(g, p, e); return;
       case 'pen': penMove(g.g, p, e, useStore.getState().view.zoom); return;
+      case 'patchDrag': setUi({ ...g, cur: p }); return;
       case 'brushResize': {
         const s = useStore.getState();
         s.setBrush({ size: Math.max(1, g.size + (e.clientX - g.x0)), hardness: Math.min(1, Math.max(0, g.hardness - (e.clientY - g.y0) / 200)) });
@@ -456,6 +468,12 @@ export function CanvasArea() {
             stroke: line || o.shapeStroke ? (line ? color : toRgba(s.bg)) : null,
             strokeWidth: o.strokeWidth, radius: o.cornerRadius, sides: o.sides,
           });
+          return;
+        }
+        case 'pen': penUp(g.g); return;
+        case 'patchDrag': {
+          const dx = Math.round(g.cur[0] - g.start[0]), dy = Math.round(g.cur[1] - g.start[1]);
+          if (dx || dy) engine.call('patchSelection', dx, dy);
           return;
         }
         default: return;
@@ -568,6 +586,11 @@ export function CanvasArea() {
       <canvas ref={canvasRef} />
       <svg className="overlay" width="100%" height="100%">
         {grid}
+        {selectionPath && ui?.kind === 'patchDrag' && (
+          <g className="selection-edges" transform={`translate(${view.panX + (ui.cur[0] - ui.start[0]) * Z} ${view.panY + (ui.cur[1] - ui.start[1]) * Z}) scale(${Z})`}>
+            <path className="ants" d={selectionPath} vectorEffect="non-scaling-stroke" />
+          </g>
+        )}
         {selectionPath && (
           <g className="selection-edges" transform={`translate(${view.panX} ${view.panY}) scale(${Z})`}>
             <path className="ants-under" d={selectionPath} vectorEffect="non-scaling-stroke" />

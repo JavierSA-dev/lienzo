@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Move, SquareDashed, Circle, Lasso, Spline, WandSparkles, Crop, Pipette, Bandage, Brush, Pencil, Stamp, History, Eraser, Blend,
-  PaintBucket, Droplet, Sun, Moon, PenTool, Type, MousePointer2, Shapes, Hand, ZoomIn, ArrowLeftRight, type LucideIcon,
+  PaintBucket, Droplet, Sun, Moon, PenTool, Type, MousePointer2, Shapes, Hand, ZoomIn, ArrowLeftRight, Triangle, Pointer, Puzzle, type LucideIcon,
 } from 'lucide-react';
 import { useStore } from './store';
 import { TOOL_GROUPS, TOOL_NAMES, selectTool, groupOf } from './commands';
@@ -11,14 +11,14 @@ const ICONS: Record<ToolId, LucideIcon> = {
   move: Move, marquee: SquareDashed, marqueeEllipse: Circle, lasso: Lasso, polylasso: Spline, wand: WandSparkles,
   crop: Crop, eyedropper: Pipette, brush: Brush, pencil: Pencil, clone: Stamp, eraser: Eraser, gradient: Blend,
   bucket: PaintBucket, dodge: Sun, burn: Moon, text: Type, shape: Shapes, hand: Hand, zoom: ZoomIn,
-  spotHeal: Bandage, heal: Bandage, pen: PenTool, pathSelect: MousePointer2,
+  spotHeal: Bandage, heal: Bandage, patch: Puzzle, pen: PenTool, pathSelect: MousePointer2, blur: Droplet, sharpen: Triangle, smudge: Pointer,
 };
 
 /** Orden de la barra de Photoshop; los grupos sin herramienta aún se ven atenuados. */
 const LAYOUT: (string | { soon: string; icon: LucideIcon; key: string } | '-')[] = [
   'V', 'M', 'L', 'W', 'C', 'I', '-',
   'J', 'B', 'S', { soon: 'Pincel de historia', icon: History, key: 'Y' }, 'E', 'G',
-  { soon: 'Desenfocar / Enfocar / Dedo', icon: Droplet, key: '' }, 'O', '-',
+  '_R', 'O', '-',
   'P', 'T', 'A', 'U', '-',
   'H', 'Z',
 ];
@@ -61,7 +61,7 @@ export function Toolbar() {
           <button
             key={g.key}
             className={`tool ${active ? 'active' : ''}`}
-            title={`${TOOL_NAMES[current]} (${g.key})${g.tools.length > 1 ? ` · Mayús+${g.key} alterna` : ''}`}
+            title={g.key.startsWith('_') ? TOOL_NAMES[current] : `${TOOL_NAMES[current]} (${g.key})${g.tools.length > 1 ? ` · Mayús+${g.key} alterna` : ''}`}
             aria-label={TOOL_NAMES[current]}
             aria-pressed={active}
             data-tool={current}
@@ -84,7 +84,7 @@ export function Toolbar() {
             const Icon = ICONS[t];
             return (
               <button key={t} className={`menu-item ${t === tool ? 'current' : ''}`} onClick={() => { selectTool(t); setFlyout(null); }}>
-                <span className="fly-label"><Icon size={15} /> {TOOL_NAMES[t]}</span><span className="keys">{groupOf(t).key}</span>
+                <span className="fly-label"><Icon size={15} /> {TOOL_NAMES[t]}</span><span className="keys">{groupOf(t).key.startsWith('_') ? '' : groupOf(t).key}</span>
               </button>
             );
           })}

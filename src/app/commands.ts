@@ -112,11 +112,12 @@ export const TOOL_GROUPS: { key: string; tools: ToolId[] }[] = [
   { key: 'W', tools: ['wand'] },
   { key: 'C', tools: ['crop'] },
   { key: 'I', tools: ['eyedropper'] },
-  { key: 'J', tools: ['spotHeal', 'heal'] },
+  { key: 'J', tools: ['spotHeal', 'heal', 'patch'] },
   { key: 'B', tools: ['brush', 'pencil'] },
   { key: 'S', tools: ['clone'] },
   { key: 'E', tools: ['eraser'] },
   { key: 'G', tools: ['gradient', 'bucket'] },
+  { key: '_R', tools: ['blur', 'sharpen', 'smudge'] },
   { key: 'O', tools: ['dodge', 'burn'] },
   { key: 'P', tools: ['pen'] },
   { key: 'T', tools: ['text'] },
@@ -131,7 +132,8 @@ export const TOOL_NAMES: Record<ToolId, string> = {
   wand: 'Varita mágica', crop: 'Recortar', eyedropper: 'Cuentagotas', brush: 'Pincel', pencil: 'Lápiz', clone: 'Tampón de clonar',
   eraser: 'Borrador', gradient: 'Degradado', bucket: 'Bote de pintura', dodge: 'Sobreexponer', burn: 'Subexponer',
   text: 'Texto horizontal', shape: 'Forma', hand: 'Mano', zoom: 'Zoom',
-  spotHeal: 'Pincel corrector puntual', heal: 'Pincel corrector', pen: 'Pluma', pathSelect: 'Selección de trazado',
+  spotHeal: 'Pincel corrector puntual', heal: 'Pincel corrector', patch: 'Parche', pen: 'Pluma', pathSelect: 'Selección de trazado',
+  blur: 'Desenfocar', sharpen: 'Enfocar', smudge: 'Dedo',
 };
 
 export const groupOf = (t: ToolId) => TOOL_GROUPS.find((g) => g.tools.includes(t))!;
@@ -158,7 +160,7 @@ function toolKey(key: string, cycle: boolean) {
   selectTool(next);
 }
 
-const PAINT_TOOLS = new Set<ToolId>(['brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'spotHeal', 'heal']);
+const PAINT_TOOLS = new Set<ToolId>(['brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'spotHeal', 'heal', 'blur', 'sharpen', 'smudge']);
 export const isPaintTool = (t: ToolId) => PAINT_TOOLS.has(t);
 
 // ------------------------------------------------------------------ capas
@@ -267,6 +269,15 @@ export const COMMANDS: Command[] = [
   { id: 'layer.new', label: 'Nueva capa', keys: ['Ctrl+Shift+N', 'Ctrl+Alt+Shift+N'], needsDoc: true, rec: true, run: call('newLayer') },
   { id: 'layer.viaCopy', label: 'Capa vía copiar', keys: ['Ctrl+J'], needsDoc: true, rec: true, run: call('layerVia', false) },
   { id: 'layer.viaCut', label: 'Capa vía cortar', keys: ['Ctrl+Shift+J'], needsDoc: true, rec: true, run: call('layerVia', true) },
+  { id: 'layer.selectAll', label: 'Seleccionar todas las capas', keys: ['Ctrl+Alt+A'], needsDoc: true, run: call('selectAllLayers') },
+  { id: 'layer.align.left', label: 'Bordes izquierdos', needsDoc: true, rec: true, run: call('alignLayers', 'left') },
+  { id: 'layer.align.hcenter', label: 'Centros horizontales', needsDoc: true, rec: true, run: call('alignLayers', 'hcenter') },
+  { id: 'layer.align.right', label: 'Bordes derechos', needsDoc: true, rec: true, run: call('alignLayers', 'right') },
+  { id: 'layer.align.top', label: 'Bordes superiores', needsDoc: true, rec: true, run: call('alignLayers', 'top') },
+  { id: 'layer.align.vcenter', label: 'Centros verticales', needsDoc: true, rec: true, run: call('alignLayers', 'vcenter') },
+  { id: 'layer.align.bottom', label: 'Bordes inferiores', needsDoc: true, rec: true, run: call('alignLayers', 'bottom') },
+  { id: 'layer.dist.hcenter', label: 'Centros horizontales', needsDoc: true, rec: true, run: call('distributeLayers', 'hcenter') },
+  { id: 'layer.dist.vcenter', label: 'Centros verticales', needsDoc: true, rec: true, run: call('distributeLayers', 'vcenter') },
   { id: 'layer.duplicate', label: 'Duplicar capa', needsDoc: true, rec: true, run: call('duplicateLayer') },
   { id: 'layer.delete', label: 'Eliminar capa', needsDoc: true, rec: true, run: call('deleteLayer') },
   { id: 'layer.adj.brightness', label: 'Brillo/Contraste', needsDoc: true, rec: true, run: newAdjustment('brightness') },
@@ -374,6 +385,7 @@ function brushStep(size: number, dir: 1 | -1) {
 
 // Herramientas: letra y Mayús+letra.
 for (const g of TOOL_GROUPS) {
+  if (g.key.startsWith('_')) continue; // grupo sin atajo (como Desenfocar/Enfocar/Dedo en Photoshop)
   COMMANDS.push({ id: `tool.${g.key}`, label: g.tools.map((t) => TOOL_NAMES[t]).join(' / '), keys: [g.key], run: () => toolKey(g.key, false) });
   if (g.tools.length > 1 || g.key === 'U') COMMANDS.push({ id: `tool.${g.key}.cycle`, label: `Siguiente en el grupo (${TOOL_NAMES[g.tools[0]]}…)`, keys: [`Shift+${g.key}`], run: () => toolKey(g.key, true) });
 }
