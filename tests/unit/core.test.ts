@@ -227,3 +227,36 @@ describe('composición en CPU', () => {
     expect(cpuFlatten([A], { x: 0, y: 0, w: 5, h: 5 })).toBeNull();
   });
 });
+
+import { inpaint, heal } from '../../src/engine/inpaint';
+
+describe('relleno según contenido y corrector', () => {
+  it('inpaint continúa una textura de rayas en el hueco', () => {
+    const w = 96, h = 96;
+    const img = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const v = Math.floor(x / 4) % 2 ? 230 : 30;
+      img.set([v, v, v, 255], (y * w + x) * 4);
+    }
+    const hole = new Uint8Array(w * h);
+    for (let y = 36; y < 60; y++) for (let x = 36; x < 60; x++) hole[y * w + x] = 1;
+    const out = inpaint(img, w, h, hole, 3);
+    // Los píxeles rellenos deben ser claros u oscuros (textura), no un gris medio uniforme.
+    let extremes = 0, total = 0;
+    for (let y = 38; y < 58; y++) for (let x = 38; x < 58; x++) { const v = out[(y * w + x) * 4]; total++; if (v < 80 || v > 180) extremes++; }
+    expect(extremes / total).toBeGreaterThan(0.7);
+    expect(out[0]).toBe(img[0]);
+  });
+
+  it('heal adapta el color del origen al entorno del destino', () => {
+    const w = 40, h = 40, n = w * h;
+    const src = new Uint8ClampedArray(n * 4), dst = new Uint8ClampedArray(n * 4), mask = new Float32Array(n);
+    for (let i = 0; i < n; i++) { src.set([60, 60, 60, 255], i * 4); dst.set([200, 150, 100, 255], i * 4); }
+    for (let y = 10; y < 30; y++) for (let x = 10; x < 30; x++) mask[y * w + x] = 1;
+    const out = heal(src, dst, mask, w, h);
+    const c = (20 * w + 20) * 4;
+    expect(Math.abs(out[c] - 200)).toBeLessThan(6);
+    expect(Math.abs(out[c + 1] - 150)).toBeLessThan(6);
+    expect(Math.abs(out[c + 2] - 100)).toBeLessThan(6);
+  });
+});

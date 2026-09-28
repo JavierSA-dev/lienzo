@@ -425,6 +425,112 @@ try {
   ok('PSD: guarda y reabre máscaras y capas de ajuste', st.doc.layers.length === 3 && st.doc.layers[1].hasMask && st.doc.layers[2].kind === 'adjustment', st.doc.layers.map((l) => `${l.kind}${l.hasMask ? '+m' : ''}`).join(','));
   ok('PSD reabierto se compone igual (blanco invertido = negro)', near(await px(10, 10), [0, 0, 0, 255]), JSON.stringify(await px(10, 10)));
 
+  // =========================================================== FASE 5: GRUPOS
+  await newDoc(400, 300, 'white');
+  await call('newLayer');
+  await call('selectShape', { x: 0, y: 0, w: 200, h: 300 }, 'rect', 'replace', 0); await call('fill', [255, 0, 0, 255]); await call('deselect');
+  await key('Control+g');
+  st = await S();
+  const grp = st.doc.layers.find((l) => l.kind === 'group');
+  ok('Ctrl+G mete la capa en un grupo', grp && st.doc.activeLayerId === grp.id && st.doc.layers.find((l) => l.name === 'Capa 2')?.parent === grp.id);
+  ok('El panel muestra el grupo con su capa sangrada', (await page.locator('[data-testid=layer-row]').count()) === 3 && (await page.locator('[data-testid=layer-row] .indent').count()) === 1);
+  await call('setLayer', grp.id, { opacity: 0.5 }); await wait();
+  ok('Opacidad del grupo', near(await px(100, 100), [255, 128, 128, 255], 2), JSON.stringify(await px(100, 100)));
+  await call('setLayer', grp.id, { opacity: 1 });
+  await page.locator(`[data-layer-id="${grp.id}"] .twisty`).click(); await wait();
+  ok('Plegar el grupo oculta su contenido en el panel', (await page.locator('[data-testid=layer-row]').count()) === 2);
+  await page.locator(`[data-layer-id="${grp.id}"] .twisty`).click(); await wait();
+  await useTool('move');
+  await drag([100, 150], [150, 150], 8);
+  ok('Mover un grupo mueve su contenido', near(await px(230, 150), [255, 0, 0, 255]) && near(await px(20, 150), [255, 255, 255, 255]), JSON.stringify([await px(230, 150), await px(20, 150)]));
+  await key('Control+z');
+  // Máscara de recorte
+  await call('selectLayer', st.doc.layers.find((l) => l.name === 'Capa 2').id);
+  await key('Control+Shift+Alt+n');
+  await call('fill', [0, 0, 255, 255]);
+  const blueId = (await S()).doc.activeLayerId;
+  ok('Capa nueva dentro del grupo', (await active()).parent === grp.id);
+  await page.locator(`[data-layer-id="${blueId}"] .layer-text`).click({ modifiers: ['Alt'] }); await wait();
+  ok('Alt+clic en la capa crea la máscara de recorte', (await active()).clipped && near(await px(100, 100), [0, 0, 255, 255]) && near(await px(300, 100), [255, 255, 255, 255]), JSON.stringify([await px(100, 100), await px(300, 100)]));
+  await call('setLayer', blueId, { blend: 'screen' }); await wait();
+  ok('Modo de fusión dentro del recorte (Trama)', near(await px(100, 100), [255, 0, 255, 255]), JSON.stringify(await px(100, 100)));
+  await call('setLayer', blueId, { blend: 'normal' });
+  await key('Control+Alt+g');
+  ok('Ctrl+Alt+G libera el recorte', !(await active()).clipped && near(await px(300, 100), [0, 0, 255, 255]), JSON.stringify(await px(300, 100)));
+  await key('Control+Alt+g');
+  await call('setLayer', blueId, { blend: 'screen' }); await wait();
+  {
+    const bytes = await page.evaluate(async () => Array.from(await window.__lienzo.call('savePsd')));
+    await page.evaluate(async (b) => { await window.__lienzo.call('open', 'grupos.psd', new Uint8Array(b).buffer, ''); }, bytes);
+    await wait(300);
+    const ls = (await S()).doc.layers;
+    ok('PSD guarda grupos y máscaras de recorte', ls.some((l) => l.kind === 'group') && ls.some((l) => l.clipped) && ls.filter((l) => l.parent != null).length === 2, ls.map((l) => `${l.kind}${l.clipped ? '+clip' : ''}`).join(','));
+    ok('El PSD reabierto se compone igual', near(await px(100, 100), [255, 0, 255, 255]) && near(await px(300, 100), [255, 255, 255, 255]), JSON.stringify(await px(100, 100)));
+  }
+  await call('selectLayer', (await S()).doc.layers.find((l) => l.kind === 'group').id);
+  await key('Control+Shift+g');
+  ok('Ctrl+Mayús+G desagrupa', !(await S()).doc.layers.some((l) => l.kind === 'group'));
+
+  // =========================================================== FASE 5: CORRECTORES Y RELLENO SEGÚN CONTENIDO
+  await newDoc(300, 200, 'white');
+  await call('selectShape', { x: 140, y: 90, w: 16, h: 16 }, 'rect', 'replace', 0); await call('fill', [0, 0, 0, 255]); await call('deselect');
+  await key('j');
+  ok('J → Pincel corrector puntual', (await S()).tool === 'spotHeal');
+  await page.evaluate(() => window.__lienzoStore.getState().setBrush({ size: 36, hardness: 0.6, opacity: 1, flow: 1 }));
+  await drag([140, 98], [156, 98], 6);
+  await page.waitForFunction(() => !window.__lienzoStore.getState().busy, null, { timeout: 15000 }).catch(() => {});
+  await wait(300);
+  ok('El corrector puntual borra la mancha', near(await lpx(148, 98), [255, 255, 255, 255], 12), JSON.stringify(await lpx(148, 98)));
+  ok('Queda un paso en el historial', (await S()).doc.history.at(-1).label === 'Pincel corrector puntual');
+  await newDoc(300, 200, 'white');
+  await call('selectShape', { x: 0, y: 0, w: 100, h: 200 }, 'rect', 'replace', 0); await call('fill', [60, 60, 60, 255]);
+  await call('selectShape', { x: 100, y: 0, w: 200, h: 200 }, 'rect', 'replace', 0); await call('fill', [200, 150, 100, 255]); await call('deselect');
+  await key('Shift+j');
+  ok('Mayús+J → Pincel corrector', (await S()).tool === 'heal');
+  await click([50, 100], ['Alt']);
+  await drag([200, 100], [202, 100], 2);
+  await page.waitForFunction(() => !window.__lienzoStore.getState().busy, null, { timeout: 15000 }).catch(() => {});
+  await wait(300);
+  ok('El corrector adapta la textura al color del destino', near(await lpx(201, 100), [200, 150, 100, 255], 8), JSON.stringify(await lpx(201, 100)));
+  await newDoc(300, 200, 'white');
+  await call('selectShape', { x: 120, y: 80, w: 40, h: 40 }, 'rect', 'replace', 0); await call('fill', [0, 0, 0, 255]);
+  await call('selectShape', { x: 116, y: 76, w: 48, h: 48 }, 'rect', 'replace', 0);
+  await key('Shift+F5'); await wait();
+  await page.locator('.modal select').first().selectOption('content');
+  await page.locator('.modal button[type=submit]').click();
+  await page.waitForFunction(() => window.__lienzoStore.getState().doc.history.at(-1)?.label === 'Relleno según contenido', null, { timeout: 20000 }).catch(() => {});
+  ok('Rellenar > Según el contenido', near(await lpx(140, 100), [255, 255, 255, 255], 6), JSON.stringify(await lpx(140, 100)));
+  await call('deselect');
+
+  // =========================================================== FASE 5: PLUMA
+  await newDoc(400, 300, 'white');
+  await key('p');
+  ok('P → Pluma', (await S()).tool === 'pen');
+  await click([100, 100]);
+  await click([300, 100]);
+  {
+    const [ax, ay] = await scr(300, 250), [bx, by] = await scr(360, 250);
+    await page.mouse.move(ax, ay); await page.mouse.down(); await page.mouse.move(bx, by, { steps: 6 }); await page.mouse.up(); await wait();
+  }
+  await click([100, 250]);
+  await click([100, 100]);
+  st = await page.evaluate(() => window.__lienzoStore.getState().path);
+  ok('Trazado cerrado con 4 puntos y una curva', st.length === 1 && st[0].closed && st[0].points.length === 4 && st[0].points[2].ox > 330, JSON.stringify(st[0]?.points?.[2]));
+  await key('Control+Enter'); await wait();
+  ok('Ctrl+Intro convierte el trazado en selección', (await sel(200, 170)) === 255 && (await sel(200, 240)) === 255 && (await sel(50, 50)) === 0, JSON.stringify([await sel(200, 170), await sel(200, 240), await sel(50, 50)]));
+  await call('deselect');
+  // Ctrl con la pluma: mover un ancla.
+  await drag([100, 250], [80, 270], 6, ['Control']);
+  st = await page.evaluate(() => window.__lienzoStore.getState().path);
+  ok('Ctrl+arrastrar mueve un ancla', Math.abs(st[0].points[3].x - 80) < 1.5 && Math.abs(st[0].points[3].y - 270) < 1.5, JSON.stringify(st[0].points[3]));
+  await page.evaluate(() => window.__lienzoStore.getState().setColors('#00aa00', '#ffffff'));
+  await page.locator('.optionsbar button.chip', { hasText: 'Forma' }).click(); await wait(400);
+  ok('Forma desde el trazado', (await active()).kind === 'shape' && (await active()).shape.shape === 'path' && near(await px(200, 170), [0, 170, 0, 255]), JSON.stringify(await px(200, 170)));
+  await key('Backspace');
+  ok('Retroceso borra el ancla seleccionada', (await page.evaluate(() => window.__lienzoStore.getState().path[0]?.points.length)) === 3);
+  await key('Backspace');
+  ok('Retroceso sin ancla seleccionada borra el trazado', (await page.evaluate(() => window.__lienzoStore.getState().path.length)) === 0);
+
   // =========================================================== RENDIMIENTO
   await call('newDoc', 6000, 4000, 'white', 'grande.psd');
   await call('selectShape', { x: 0, y: 0, w: 3000, h: 4000 }, 'rect', 'replace', 0);

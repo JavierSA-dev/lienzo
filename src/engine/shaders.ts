@@ -132,6 +132,8 @@ uniform ivec2 uSrcOffset;
 uniform ivec2 uDocOrigin;
 uniform float uOpacity;
 uniform int uMode;
+uniform bool uPremul;  // la fuente es un grupo ya compuesto (premultiplicado)
+uniform bool uAtop;    // máscara de recorte: conserva el alfa del fondo
 out vec4 outColor;
 ${BLEND_LIB}
 ${MASK_LIB}
@@ -143,8 +145,9 @@ void main() {
   if (uMode == 1) as = hash(vec2(p + uDocOrigin)) < as ? 1.0 : 0.0;
   float ab = back.a;
   vec3 cb = ab > 0.0 ? back.rgb / ab : vec3(0.0);
-  vec3 cs = src.rgb;
+  vec3 cs = uPremul ? (src.a > 0.0 ? src.rgb / src.a : vec3(0.0)) : src.rgb;
   vec3 B = clamp(blendColor(uMode, cb, cs), 0.0, 1.0);
+  if (uAtop) { outColor = vec4(as * ab * B + (1.0 - as) * back.rgb, ab); return; }
   vec3 co = as * (1.0 - ab) * cs + as * ab * B + (1.0 - as) * back.rgb;
   float ao = as + ab * (1.0 - as);
   outColor = vec4(co, ao);
@@ -156,12 +159,15 @@ precision highp float;
 uniform sampler2D uSrc;
 uniform ivec2 uSrcOffset;
 uniform float uOpacity;
+uniform bool uPremul;
 out vec4 outColor;
 ${MASK_LIB}
 void main() {
   ivec2 q = ivec2(gl_FragCoord.xy) - uSrcOffset;
   vec4 s = texelFetch(uSrc, q, 0);
-  float a = s.a * uOpacity * maskAt(q);
+  float k = uOpacity * maskAt(q);
+  if (uPremul) { outColor = s * k; return; }
+  float a = s.a * k;
   outColor = vec4(s.rgb * a, a);
 }`;
 
@@ -181,6 +187,7 @@ uniform vec4 uP1;
 uniform vec4 uP2;
 uniform float uOpacity;
 uniform int uMode;
+uniform bool uAtop;
 out vec4 outColor;
 ${BLEND_LIB}
 ${MASK_LIB}
@@ -259,12 +266,26 @@ void main() {
   if (uKind == 6) {
     vec3 cs = uP0.rgb;
     vec3 B = clamp(blendColor(uMode, cb, cs), 0.0, 1.0);
+    if (uAtop) { outColor = vec4(k * ab * B + (1.0 - k) * back.rgb, ab); return; }
     outColor = vec4(k * (1.0 - ab) * cs + k * ab * B + (1.0 - k) * back.rgb, k + ab * (1.0 - k));
     return;
   }
   if (ab <= 0.0 || k <= 0.0) { outColor = back; return; }
   vec3 B = clamp(blendColor(uMode, cb, clamp(adjust(cb), 0.0, 1.0)), 0.0, 1.0);
   outColor = vec4(mix(cb, B, k) * ab, ab);
+}`;
+
+/** Grupo "Pasar a través" con opacidad o máscara: mezcla el fondo con el resultado del grupo. */
+export const MIX_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uBack;
+uniform sampler2D uSrc;
+uniform float uOpacity;
+out vec4 outColor;
+${MASK_LIB}
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  outColor = mix(texelFetch(uBack, p, 0), texelFetch(uSrc, p, 0), uOpacity * maskAt(p));
 }`;
 
 /** Muestra una textura (premultiplicada) en pantalla. */

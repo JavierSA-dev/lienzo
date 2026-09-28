@@ -6,11 +6,13 @@ import { useStore, toRgba } from './store';
 import { openFile, placeFile, isPaintTool } from './commands';
 import { Home } from './Home';
 import type { CombineMode } from '../engine/selection';
+import { penDown, pathEditDown, penMove, penFinish, penBackspace, PathOverlay, type PenDrag } from './Pen';
+import { isEmpty as isEmptyPath } from '../engine/path';
 
 const CURSORS: Partial<Record<ToolId, string>> = {
   move: 'move', marquee: 'crosshair', marqueeEllipse: 'crosshair', lasso: 'crosshair', polylasso: 'crosshair',
   wand: 'crosshair', crop: 'crosshair', eyedropper: 'crosshair', gradient: 'crosshair', bucket: 'crosshair',
-  text: 'text', shape: 'crosshair', hand: 'grab', zoom: 'zoom-in',
+  text: 'text', shape: 'crosshair', hand: 'grab', zoom: 'zoom-in', pen: 'crosshair', pathSelect: 'default',
 };
 
 type Pt = [number, number];
@@ -23,7 +25,8 @@ type UIDrag =
   | { kind: 'shape'; start: Pt; cur: Pt }
   | { kind: 'crop'; handle: string; start: Pt; orig: Rect }
   | { kind: 'transform'; handle: string; start: Pt; orig: TParams }
-  | { kind: 'brushResize'; x0: number; y0: number; size: number; hardness: number };
+  | { kind: 'brushResize'; x0: number; y0: number; size: number; hardness: number }
+  | { kind: 'pen'; g: PenDrag };
 
 /** Parámetros de la transformación libre (en coordenadas de documento). */
 interface TParams { tx: number; ty: number; sx: number; sy: number; rot: number }
@@ -104,6 +107,9 @@ export function CanvasArea() {
     if (tool !== 'polylasso' && poly) setPoly(null);
   }, [tool, doc.open]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Cada documento tiene su propio trazado de trabajo.
+  useEffect(() => { useStore.setState({ path: [], penDrawing: null, pathSel: null }); }, [doc.name, doc.open]);
+
   // Reinicia los parámetros al empezar una transformación.
   useEffect(() => { if (transform) setTparams({ tx: 0, ty: 0, sx: 1, sy: 1, rot: 0 }); }, [transform?.bounds.x, transform?.bounds.y, transform?.bounds.w, !!transform]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -113,6 +119,15 @@ export function CanvasArea() {
       const s = useStore.getState();
       if (s.dialog || s.textEdit) return;
       if (e.key === 'CapsLock' || e.getModifierState) setCaps(e.getModifierState?.('CapsLock') ?? false);
+      if (e.type === 'keydown' && !s.transform) {
+        // Pluma: Ctrl+Intro = selección; Intro/Esc terminan; Retroceso borra puntos.
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !isEmptyPath(s.path)) {
+          e.preventDefault(); e.stopImmediatePropagation(); penFinish();
+          engine.call('selectPath', useStore.getState().path, 'replace', 0); return;
+        }
+        if ((e.key === 'Enter' || e.key === 'Escape') && penFinish()) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+        if ((e.key === 'Backspace' || e.key === 'Delete') && (s.tool === 'pen' || s.tool === 'pathSelect') && penBackspace()) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+      }
       if (poly && e.type === 'keydown') {
         if (e.key === 'Enter') { e.preventDefault(); e.stopImmediatePropagation(); finishPoly(); }
         else if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); setPoly(null); }
@@ -211,7 +226,7 @@ export function CanvasArea() {
     }
 
     if (tool === 'hand' || e.button === 1) setGrabbing(true);
-    const uiTool = e.button === 0 && !(e.ctrlKey && tool !== 'move');
+    const uiTool = e.button === 0 && !(e.ctrlKey && tool !== 'move' && tool !== 'pathSelect');
     if (uiTool) {
       switch (tool) {
         case 'marquee':
@@ -227,6 +242,16 @@ export function CanvasArea() {
           const near = Math.hypot((p[0] - x0) * view.zoom, (p[1] - y0) * view.zoom) < 8;
           if (near && poly.pts.length >= 3) { finishPoly(); return; }
           setPoly({ ...poly, pts: [...poly.pts, p] });
+          return;
+        }
+        case 'pen': {
+          const g = penDown(p, e, view.zoom);
+          if (g) setUi({ kind: 'pen', g });
+          return;
+        }
+        case 'pathSelect': {
+          const g = pathEditDown(p, e, view.zoom);
+          if (g) setUi({ kind: 'pen', g });
           return;
         }
         case 'wand':
@@ -332,6 +357,7 @@ export function CanvasArea() {
         return;
       }
       case 'transform': moveTransform(g, p, e); return;
+      case 'pen': penMove(g.g, p, e, useStore.getState().view.zoom); return;
       case 'brushResize': {
         const s = useStore.getState();
         s.setBrush({ size: Math.max(1, g.size + (e.clientX - g.x0)), hardness: Math.min(1, Math.max(0, g.hardness - (e.clientY - g.y0) / 200)) });
@@ -550,6 +576,7 @@ export function CanvasArea() {
         )}
         {preview}
         {polyPreview}
+        <PathOverlay X={X} Y={Y} hover={hover && (tool === 'pen') ? toDoc(hover.x, hover.y) : null} />
         {cropOverlay}
         {transformOverlay}
         {painting && hover && doc.open && !ui && !transform && (

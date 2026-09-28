@@ -1,17 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Eye, EyeOff, Plus, Copy, Trash2, Layers as LayersIcon, CircleDot, SlidersHorizontal, Type, Shapes, Lock, Sparkles,
-  Play, Square, Link,
+  Play, Square, Link, Folder, FolderOpen, ChevronRight, ChevronDown, CornerLeftDown, FolderPlus,
 } from 'lucide-react';
 import { engine } from '../engine/client';
-import { BLEND_GROUPS, type LayerInfo, type AdjustmentType } from '../engine/types';
+import { BLEND_GROUPS, PASS_THROUGH, type LayerInfo, type AdjustmentType } from '../engine/types';
 import { ADJUSTMENT_LABELS } from '../engine/adjust';
 import { FONTS } from '../engine/vector';
 import { useStore, toHex, toRgba } from './store';
 import { AdjustmentEditor } from './Adjustments';
 import { startRecording, stopRecording, playAction, deleteAction, renameAction } from './commands';
 
-const BLEND_LABEL = Object.fromEntries(BLEND_GROUPS.flat().map((b) => [b.id, b.label]));
+const BLEND_LABEL = Object.fromEntries([...BLEND_GROUPS.flat(), PASS_THROUGH].map((b) => [b.id, b.label]));
 
 function PanelTabs({ tabs }: { tabs: { label: string; on?: boolean }[] }) {
   return (
@@ -183,36 +183,41 @@ function Thumb({ id, mask }: { id: number; mask?: boolean }) {
   return <canvas ref={ref} />;
 }
 
-const KIND_ICON = { adjustment: SlidersHorizontal, text: Type, shape: Shapes };
+const KIND_ICON = { adjustment: SlidersHorizontal, text: Type, shape: Shapes, group: Folder };
 
-function LayerRow({ layer, active, editMask, index, onDragIndex }: { layer: LayerInfo; active: boolean; editMask: boolean; index: number; onDragIndex: (from: number, to: number) => void }) {
+type DropPos = 'above' | 'below' | 'inside';
+
+function LayerRow({ layer, active, editMask, depth, isBase }: { layer: LayerInfo; active: boolean; editMask: boolean; depth: number; isBase: boolean }) {
   const [editing, setEditing] = useState(false);
-  const [drop, setDrop] = useState<'above' | 'below' | null>(null);
-  const KindIcon = layer.kind !== 'pixel' ? KIND_ICON[layer.kind] : null;
+  const [drop, setDrop] = useState<DropPos | null>(null);
+  const group = layer.kind === 'group';
+  const KindIcon = layer.kind !== 'pixel' && !group ? KIND_ICON[layer.kind] : null;
   const fx = layer.effects && Object.values(layer.effects).some((e) => e?.enabled);
   return (
     <div
-      className={`layer ${active ? 'active' : ''} ${layer.visible ? '' : 'hidden'} ${drop ? `drop-${drop}` : ''}`}
-      onClick={() => engine.call('selectLayer', layer.id, false)}
+      className={`layer ${active ? 'active' : ''} ${layer.visible ? '' : 'hidden'} ${drop ? `drop-${drop}` : ''} ${layer.clipped ? 'clipped' : ''}`}
+      onClick={(e) => { if (e.altKey) engine.call('toggleClip', layer.id); else engine.call('selectLayer', layer.id, false); }}
+      title={group ? undefined : 'Alt+clic: crear o liberar máscara de recorte'}
       draggable={!editing}
-      onDragStart={(e) => { e.dataTransfer.setData('text/x-layer-index', String(index)); e.dataTransfer.effectAllowed = 'move'; }}
+      onDragStart={(e) => { e.dataTransfer.setData('text/x-layer-id', String(layer.id)); e.dataTransfer.effectAllowed = 'move'; }}
       onDragOver={(e) => {
-        if (!e.dataTransfer.types.includes('text/x-layer-index')) return;
+        if (!e.dataTransfer.types.includes('text/x-layer-id')) return;
         e.preventDefault();
         const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-        setDrop(e.clientY < r.top + r.height / 2 ? 'above' : 'below');
+        const f = (e.clientY - r.top) / r.height;
+        setDrop(group && f > 0.3 && f < 0.7 ? 'inside' : f < 0.5 ? 'above' : 'below');
       }}
       onDragLeave={() => setDrop(null)}
       onDrop={(e) => {
         e.preventDefault();
-        const from = Number(e.dataTransfer.getData('text/x-layer-index'));
-        let to = drop === 'above' ? index + 1 : index;
-        if (from < to) to -= 1;
+        const from = Number(e.dataTransfer.getData('text/x-layer-id'));
+        const pos = drop ?? 'above';
         setDrop(null);
-        onDragIndex(from, to);
+        if (from && from !== layer.id) engine.call('moveLayerTo', from, layer.id, pos);
       }}
       onDoubleClick={() => { if (layer.kind === 'pixel' || layer.kind === 'text' || layer.kind === 'shape') useStore.getState().setDialog({ kind: 'layerStyle' }); }}
       data-testid="layer-row"
+      data-layer-id={layer.id}
     >
       <button
         className="eye"
@@ -221,13 +226,20 @@ function LayerRow({ layer, active, editMask, index, onDragIndex }: { layer: Laye
       >
         {layer.visible ? <Eye size={15} /> : <EyeOff size={15} />}
       </button>
+      {depth > 0 && <span className="indent" style={{ width: depth * 14 }} />}
+      {group ? (
+        <button className="twisty" title={layer.collapsed ? 'Desplegar grupo' : 'Plegar grupo'}
+          onClick={(e) => { e.stopPropagation(); engine.call('setCollapsed', layer.id, !layer.collapsed); }}>
+          {layer.collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+        </button>
+      ) : layer.clipped ? <CornerLeftDown size={12} className="clip-arrow" /> : null}
       <div className="thumbs">
         <div
-          className={`thumb ${active && !editMask ? 'target' : ''}`}
+          className={`thumb ${active && !editMask ? 'target' : ''} ${group ? 'group' : ''}`}
           title="Ctrl+clic: cargar como selección"
           onClick={(e) => { if (e.ctrlKey || e.metaKey) { e.stopPropagation(); engine.call('loadSelectionFromLayer', layer.id, false, e.shiftKey ? 'add' : e.altKey ? 'subtract' : 'replace'); } }}
         >
-          {layer.kind === 'adjustment' ? <SlidersHorizontal size={16} /> : <Thumb id={layer.id} />}
+          {layer.kind === 'adjustment' ? <SlidersHorizontal size={16} /> : group ? (layer.collapsed ? <Folder size={17} /> : <FolderOpen size={17} />) : <Thumb id={layer.id} />}
         </div>
         {layer.hasMask && (
           <>
@@ -254,10 +266,10 @@ function LayerRow({ layer, active, editMask, index, onDragIndex }: { layer: Laye
             <input autoFocus defaultValue={layer.name} onClick={(e) => e.stopPropagation()}
               onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setEditing(false); e.stopPropagation(); }}
               onBlur={(e) => { setEditing(false); if (e.target.value.trim()) engine.call('setLayer', layer.id, { name: e.target.value.trim() }); }} />
-          ) : layer.name}
+          ) : <span className={isBase ? 'clip-base' : ''}>{layer.name}</span>}
         </div>
         <div className="meta">
-          {[layer.blend !== 'normal' ? BLEND_LABEL[layer.blend] : '', layer.opacity < 1 ? `${Math.round(layer.opacity * 100)} %` : ''].filter(Boolean).join(' · ')}
+          {[layer.blend !== 'normal' && layer.blend !== 'pass-through' ? BLEND_LABEL[layer.blend] : '', layer.opacity < 1 ? `${Math.round(layer.opacity * 100)} %` : ''].filter(Boolean).join(' · ')}
           {layer.lockAlpha && <Lock size={10} />}
           {fx && <span className="fx" title="Estilos de capa (doble clic para editar)">fx</span>}
         </div>
@@ -294,7 +306,17 @@ export function LayersPanel() {
   const doc = useStore((s) => s.doc);
   const [adjOpen, setAdjOpen] = useState(false);
   const active = doc.layers.find((l) => l.id === doc.activeLayerId);
-  const rows = [...doc.layers].map((l, i) => ({ l, i })).reverse();
+  // Árbol visible de arriba a abajo (los grupos plegados ocultan su contenido).
+  const rows: { l: LayerInfo; depth: number; isBase: boolean }[] = [];
+  const walk = (pid: number | null, depth: number) => {
+    const kids = doc.layers.filter((l) => l.parent === pid);
+    for (let i = kids.length - 1; i >= 0; i--) {
+      const l = kids[i];
+      rows.push({ l, depth, isBase: !l.clipped && !!kids[i + 1]?.clipped });
+      if (l.kind === 'group' && !l.collapsed) walk(l.id, depth + 1);
+    }
+  };
+  walk(null, 0);
   return (
     <section className="panel grow">
       <PanelTabs tabs={[{ label: 'Capas', on: true }, { label: 'Canales' }, { label: 'Trazados' }]} />
@@ -302,6 +324,7 @@ export function LayersPanel() {
         <>
           <div className="layer-controls">
             <select value={active.blend} aria-label="Modo de fusión" onChange={(e) => engine.call('setLayer', active.id, { blend: e.target.value })}>
+              {active.kind === 'group' && <option value={PASS_THROUGH.id}>{PASS_THROUGH.label}</option>}
               {BLEND_GROUPS.map((g, gi) => <optgroup key={gi} label="──────────">{g.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}</optgroup>)}
             </select>
             <ScrubPercent label="Opac.:" value={active.opacity}
@@ -315,9 +338,8 @@ export function LayersPanel() {
             </button>
           </div>
           <div className="layers" role="list">
-            {rows.map(({ l, i }) => (
-              <LayerRow key={l.id} layer={l} index={i} active={l.id === doc.activeLayerId} editMask={doc.editMask}
-                onDragIndex={(from, to) => engine.call('moveLayer', doc.layers[from].id, to)} />
+            {rows.map(({ l, depth, isBase }) => (
+              <LayerRow key={l.id} layer={l} depth={depth} isBase={isBase} active={l.id === doc.activeLayerId} editMask={doc.editMask} />
             ))}
           </div>
           <div className="panel-foot">
@@ -339,6 +361,7 @@ export function LayersPanel() {
                 </div>
               )}
             </div>
+            <button className="icon-btn" title="Nuevo grupo (Ctrl+G agrupa la capa activa)" onClick={() => engine.call('groupLayers', true)}><FolderPlus size={15} /></button>
             <button className="icon-btn" title="Nueva capa (Ctrl+Mayús+N)" onClick={() => engine.call('newLayer')}><Plus size={16} /></button>
             <button className="icon-btn" title="Duplicar capa" onClick={() => engine.call('duplicateLayer')}><Copy size={15} /></button>
             <button className="icon-btn" title="Eliminar capa" disabled={doc.layers.length <= 1} onClick={() => engine.call('deleteLayer')}><Trash2 size={15} /></button>

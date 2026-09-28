@@ -1,3 +1,4 @@
+import type { VectorPath } from '../engine/path';
 import { create } from 'zustand';
 import { engine } from '../engine/client';
 import type { BrushSettings, DocState, Matrix, Rect, RGBA, ShapeKind, ToolId, ViewState, AdjustmentType } from '../engine/types';
@@ -71,6 +72,12 @@ interface Store {
   recording: boolean;
   actions: { name: string; steps: { id: string; args?: unknown[] }[] }[];
   fullscreen: boolean;
+  /** Trazado de trabajo de la pluma (coordenadas de documento). */
+  path: VectorPath;
+  /** Subtrazado que se está dibujando con la pluma (null = ninguno). */
+  penDrawing: number | null;
+  /** Punto de ancla seleccionado (muestra sus manejadores). */
+  pathSel: { sub: number; idx: number } | null;
 
   setTool(t: ToolId): void;
   pushTempTool(t: ToolId, key: string): void;
@@ -141,6 +148,9 @@ export const useStore = create<Store>((set, get) => ({
   recording: false,
   actions: loadPrefs('actions', { list: [] as Store['actions'] }).list,
   fullscreen: false,
+  path: [],
+  penDrawing: null,
+  pathSel: null,
 
   setTool(t) {
     set({ tool: t, tempTool: null });

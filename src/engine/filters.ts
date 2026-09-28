@@ -4,6 +4,7 @@
  * con alfa directo; los desenfoques trabajan en premultiplicado.
  */
 import { resampleBand, type BandJob } from './resample';
+import { inpaint, heal } from './inpaint';
 
 export type FilterName =
   | 'gaussianBlur' | 'boxBlur' | 'motionBlur' | 'unsharpMask' | 'sharpen' | 'addNoise' | 'mosaic'
@@ -70,7 +71,23 @@ export interface WarpJob {
   y0: number; rows: number;
 }
 
-export type PoolJob = ({ op: 'resample' } & BandJob) | FilterJob | AffineJob | WarpJob;
+/** Relleno según contenido / pincel corrector puntual: `hole` = 1 donde hay que rellenar. */
+export interface InpaintJob {
+  op: 'inpaint';
+  src: Uint8ClampedArray; w: number; h: number;
+  hole: Uint8Array;
+  /** Si se da, el resultado se mezcla con el original según esta máscara (0..1): bordes suaves. */
+  blend?: Float32Array;
+  seed?: number;
+}
+
+/** Pincel corrector: textura de `src`, color del entorno de `dst`, en la zona `mask` (0..1). */
+export interface HealJob {
+  op: 'heal';
+  src: Uint8ClampedArray; dst: Uint8ClampedArray; mask: Float32Array; w: number; h: number;
+}
+
+export type PoolJob = ({ op: 'resample' } & BandJob) | FilterJob | AffineJob | WarpJob | InpaintJob | HealJob;
 
 export function runJob(j: PoolJob): Uint8ClampedArray {
   switch (j.op) {
@@ -78,8 +95,14 @@ export function runJob(j: PoolJob): Uint8ClampedArray {
     case 'filter': return runFilter(j);
     case 'affine': return runAffine(j);
     case 'warp': return runWarp(j);
+    case 'inpaint': {
+      const filled = inpaint(j.src, j.w, j.h, j.hole, j.seed);
+      return j.blend ? heal(filled, j.src, j.blend, j.w, j.h) : filled;
+    }
+    case 'heal': return heal(j.src, j.dst, j.mask, j.w, j.h);
   }
 }
+
 
 // ------------------------------------------------------------------ utilidades
 

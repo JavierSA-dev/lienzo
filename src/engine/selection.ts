@@ -57,10 +57,16 @@ export class Selection {
 
   /** Polígono (lazo) con suavizado: 4 submuestras verticales y cobertura horizontal exacta. */
   static fromPolygon(pts: [number, number][], clip: Rect): Selection {
+    return Selection.fromPolygons([pts], clip);
+  }
+
+  /** Varios contornos con la regla par-impar (agujeros incluidos), como un trazado de la pluma. */
+  static fromPolygons(rings: [number, number][][], clip: Rect): Selection {
     const tiles = new Map<number, Uint8Array>();
-    if (pts.length < 3) return new Selection(tiles);
+    rings = rings.filter((r) => r.length >= 3);
+    if (!rings.length) return new Selection(tiles);
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const [x, y] of pts) { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); }
+    for (const ring of rings) for (const [x, y] of ring) { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); }
     const x0 = Math.max(clip.x, Math.floor(minX)), y0 = Math.max(clip.y, Math.floor(minY));
     const x1 = Math.min(clip.x + clip.w, Math.ceil(maxX)), y1 = Math.min(clip.y + clip.h, Math.ceil(maxY));
     if (x1 <= x0 || y1 <= y0) return new Selection(tiles);
@@ -68,15 +74,17 @@ export class Selection {
     const row = new Float32Array(w + 1);
     const SUB = 4;
     const xs: number[] = [];
-    const n = pts.length;
     for (let y = y0; y < y1; y++) {
       row.fill(0);
       for (let s = 0; s < SUB; s++) {
         const sy = y + (s + 0.5) / SUB;
         xs.length = 0;
-        for (let i = 0, j = n - 1; i < n; j = i++) {
-          const [xi, yi] = pts[i], [xj, yj] = pts[j];
-          if ((yi > sy) !== (yj > sy)) xs.push(xi + ((sy - yi) * (xj - xi)) / (yj - yi));
+        for (const pts of rings) {
+          const n = pts.length;
+          for (let i = 0, j = n - 1; i < n; j = i++) {
+            const [xi, yi] = pts[i], [xj, yj] = pts[j];
+            if ((yi > sy) !== (yj > sy)) xs.push(xi + ((sy - yi) * (xj - xi)) / (yj - yi));
+          }
         }
         xs.sort((a, b) => a - b);
         for (let k = 0; k + 1 < xs.length; k += 2) {

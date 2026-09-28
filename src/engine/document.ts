@@ -104,6 +104,12 @@ export class PixelLayer {
   fxOver: PixelLayer | null = null;
   /** Versión de contenido: cambia al editar (para invalidar cachés como los estilos). */
   version = 0;
+  /** Grupo que la contiene (null = raíz del documento). */
+  parent: number | null = null;
+  /** Máscara de recorte: se recorta a la capa base (la primera no recortada de debajo). */
+  clipped = false;
+  /** Grupo plegado en el panel de capas. */
+  collapsed = false;
 
   constructor(name: string) {
     this.name = name;
@@ -114,6 +120,7 @@ export class PixelLayer {
       id: this.id, name: this.name, kind: this.kind, visible: this.visible, opacity: this.opacity, blend: this.blend,
       x: this.x, y: this.y, hasMask: !!this.mask, maskEnabled: this.maskEnabled, lockAlpha: this.lockAlpha,
       adjustment: this.adjustment, text: this.text, shape: this.shape, effects: this.effects,
+      parent: this.parent, clipped: this.clipped, collapsed: this.kind === 'group' ? this.collapsed : undefined,
     };
   }
 
@@ -181,6 +188,9 @@ export class PixelLayer {
     l.x = this.x;
     l.y = this.y;
     l.kind = this.kind;
+    l.parent = this.parent;
+    l.clipped = this.clipped;
+    l.collapsed = this.collapsed;
     l.lockAlpha = this.lockAlpha;
     l.maskEnabled = this.maskEnabled;
     l.mask = this.mask?.clone() ?? null;
@@ -292,6 +302,53 @@ export class EditorDocument {
 
   indexOf(id: number): number {
     return this.layers.findIndex((l) => l.id === id);
+  }
+
+  // ------------------------------------------------------------ árbol de grupos
+  // doc.layers es el árbol aplanado en profundidad: los hijos de un grupo (de abajo a
+  // arriba) van justo debajo de él. normalize() restablece ese orden tras editarlo.
+
+  /** Hijos directos de un grupo (null = raíz), de abajo a arriba. */
+  children(parent: number | null): PixelLayer[] {
+    return this.layers.filter((l) => l.parent === parent);
+  }
+
+  /** Todos los descendientes de un grupo, en el orden del documento. */
+  descendants(id: number): PixelLayer[] {
+    const out: PixelLayer[] = [];
+    const walk = (pid: number) => { for (const c of this.children(pid)) { if (c.kind === 'group') walk(c.id); out.push(c); } };
+    walk(id);
+    return this.layers.filter((l) => out.includes(l));
+  }
+
+  /** ¿`a` es `b` o está dentro de `b`? */
+  isInside(a: PixelLayer, b: PixelLayer): boolean {
+    for (let l: PixelLayer | undefined = a; l; l = l.parent != null ? this.layer(l.parent) : undefined) if (l === b) return true;
+    return false;
+  }
+
+  /** Visible y con todos sus grupos visibles. */
+  effectivelyVisible(L: PixelLayer): boolean {
+    for (let l: PixelLayer | undefined = L; l; l = l.parent != null ? this.layer(l.parent) : undefined) if (!l.visible) return false;
+    return true;
+  }
+
+  depth(L: PixelLayer): number {
+    let n = 0;
+    for (let l = L; l.parent != null; n++) { const p = this.layer(l.parent); if (!p) break; l = p; }
+    return n;
+  }
+
+  /** Reordena doc.layers en profundidad según parent y el orden relativo actual. */
+  normalize() {
+    const ids = new Set(this.layers.map((l) => l.id));
+    for (const l of this.layers) if (l.parent != null && !ids.has(l.parent)) l.parent = null;
+    const out: PixelLayer[] = [];
+    const walk = (pid: number | null) => {
+      for (const c of this.children(pid)) { if (c.kind === 'group') walk(c.id); out.push(c); }
+    };
+    walk(null);
+    this.layers = out;
   }
 
   /** Rellena una capa entera (o un rectángulo) con un color. */

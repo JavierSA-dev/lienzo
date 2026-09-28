@@ -11,7 +11,7 @@ initializeCanvas(
 );
 
 const PSD_BLEND: Record<string, BlendMode> = Object.fromEntries(
-  BLEND_MODES.map((m) => [m.replace(/-/g, ' '), m]),
+  [...BLEND_MODES, 'pass-through' as BlendMode].map((m) => [m.replace(/-/g, ' '), m]),
 );
 
 const u8 = (d: { buffer: ArrayBufferLike; byteOffset: number; byteLength: number }) =>
@@ -56,24 +56,43 @@ function toPsdAdjustment(a: AdjustmentParams): AdjustmentLayer | null {
   }
 }
 
-/** Abre un PSD/PSB en el worker: capas, máscaras y capas de ajuste. Los grupos se aplanan. */
+/** Abre un PSD/PSB en el worker: grupos, capas, máscaras, máscaras de recorte y capas de ajuste. */
 export function importPsd(name: string, buffer: ArrayBuffer): ImportResult {
   const psd: Psd = readPsd(new Uint8Array(buffer), { useImageData: true, skipThumbnail: true, skipLinkedFilesData: true });
   const doc = new EditorDocument(name, psd.width, psd.height);
   const warnings = new Set<string>();
 
-  const walk = (layers: PsdLayer[], hidden: boolean, opacity: number) => {
-    for (const l of layers) {
-      const lHidden = hidden || !!l.hidden;
-      const lOpacity = opacity * (l.opacity ?? 1);
-      if (l.children) {
-        if (l.blendMode && l.blendMode !== 'pass through' && l.blendMode !== 'normal') warnings.add('modos de fusión de grupo');
-        if (l.mask) warnings.add('máscaras de grupo');
-        walk(l.children, lHidden, lOpacity);
-        continue;
+  const readMask = (l: PsdLayer, L: PixelLayer) => {
+    const m = l.mask;
+    if (!m || m.fromVectorData) return;
+    const mask = new MaskChannel(m.defaultColor ?? 255);
+    const mi = m.imageData;
+    if (mi && mi.width > 0 && mi.height > 0) {
+      const data = u8(mi.data);
+      const ml = m.left ?? 0, mt = m.top ?? 0;
+      // La máscara está en coordenadas de documento; la nuestra, en coordenadas de la capa (x=y=0 aquí).
+      const tmp = new PixelLayer('m');
+      tmp.writeRegion(new Uint8ClampedArray(mi.width * mi.height * 4).map((_, i) => (i % 4 === 3 ? 255 : data[(i >> 2) * 4])), mi.width, mi.height, ml, mt);
+      for (const [k, t] of tmp.tiles) {
+        const mt8 = new Uint8Array(t.length / 4).fill(mask.fill);
+        for (let i = 0; i < mt8.length; i++) if (t[i * 4 + 3]) mt8[i] = t[i * 4];
+        mask.setTile(k, mt8);
       }
+    }
+    L.mask = mask;
+    L.maskEnabled = !m.disabled;
+  };
+
+  const walk = (layers: PsdLayer[], parent: number | null) => {
+    for (const l of layers) {
       let L: PixelLayer;
-      if (l.adjustment) {
+      if (l.children) {
+        L = new PixelLayer(l.name ?? 'Grupo');
+        L.kind = 'group';
+        L.collapsed = !l.opened;
+        L.parent = parent;
+        walk(l.children, L.id);
+      } else if (l.adjustment) {
         const adj = fromPsdAdjustment(l.adjustment);
         if (!adj) { warnings.add(`ajuste "${l.adjustment.type}"`); continue; }
         L = new PixelLayer(l.name ?? 'Ajuste');
@@ -88,35 +107,19 @@ export function importPsd(name: string, buffer: ArrayBuffer): ImportResult {
           ? layerFromPixels(l.name ?? 'Capa', u8(img.data), img.width, img.height, l.left ?? 0, l.top ?? 0)
           : new PixelLayer(l.name ?? 'Capa');
       }
-      // Máscara de capa.
-      const m = l.mask;
-      if (m && !m.fromVectorData) {
-        const mask = new MaskChannel(m.defaultColor ?? 255);
-        const mi = m.imageData;
-        if (mi && mi.width > 0 && mi.height > 0) {
-          const data = u8(mi.data);
-          const ml = m.left ?? 0, mt = m.top ?? 0;
-          // La máscara está en coordenadas de documento; la nuestra, en coordenadas de la capa (x=y=0 aquí).
-          const tmp = new PixelLayer('m');
-          tmp.writeRegion(new Uint8ClampedArray(mi.width * mi.height * 4).map((_, i) => (i % 4 === 3 ? 255 : data[(i >> 2) * 4])), mi.width, mi.height, ml, mt);
-          for (const [k, t] of tmp.tiles) {
-            const mt8 = new Uint8Array(t.length / 4).fill(mask.fill);
-            for (let i = 0; i < mt8.length; i++) if (t[i * 4 + 3]) mt8[i] = t[i * 4];
-            mask.setTile(k, mt8);
-          }
-        }
-        L.mask = mask;
-        L.maskEnabled = !m.disabled;
-      }
-      L.visible = !lHidden;
-      L.opacity = lOpacity;
+      readMask(l, L);
+      L.parent = parent;
+      L.clipped = !!l.clipping && !l.children;
+      L.visible = !l.hidden;
+      L.opacity = l.opacity ?? 1;
       L.blend = PSD_BLEND[l.blendMode ?? 'normal'] ?? 'normal';
+      if (L.blend === 'pass-through' && L.kind !== 'group') L.blend = 'normal';
       if (l.blendMode && !PSD_BLEND[l.blendMode]) warnings.add(`modo "${l.blendMode}"`);
       doc.layers.push(L);
     }
   };
 
-  if (psd.children?.length) walk(psd.children, false, 1);
+  if (psd.children?.length) walk(psd.children, null);
   else if (psd.imageData) {
     const img = psd.imageData;
     doc.layers.push(layerFromPixels('Fondo', u8(img.data), img.width, img.height));
@@ -128,17 +131,21 @@ export function importPsd(name: string, buffer: ArrayBuffer): ImportResult {
 
 /** Guarda PSD (o PSB): capas, opacidad, fusión, visibilidad, máscaras y algunos ajustes. */
 export function exportPsd(doc: EditorDocument, composite: Uint8ClampedArray, psb = false): Uint8Array {
-  const children: PsdLayer[] = [];
-  for (const L of doc.layers) {
+  const toPsd = (L: PixelLayer): PsdLayer | null => {
     const base: PsdLayer = {
       name: L.name,
       opacity: L.opacity,
       blendMode: L.blend.replace(/-/g, ' ') as PsdLayer['blendMode'],
       hidden: !L.visible,
+      clipping: L.clipped,
     };
-    if (L.kind === 'adjustment' && L.adjustment) {
+    if (L.kind === 'group') {
+      base.opened = !L.collapsed;
+      base.children = level(L.id);
+      base.clipping = false;
+    } else if (L.kind === 'adjustment' && L.adjustment) {
       const a = toPsdAdjustment(L.adjustment);
-      if (!a) continue; // ajustes que ag-psd aún no escribe
+      if (!a) return null; // ajustes que ag-psd aún no escribe
       base.adjustment = a;
     } else {
       const b = L.bounds();
@@ -165,8 +172,10 @@ export function exportPsd(doc: EditorDocument, composite: Uint8ClampedArray, psb
         base.mask = { defaultColor: L.mask.fill, disabled: !L.maskEnabled };
       }
     }
-    children.push(base);
-  }
+    return base;
+  };
+  const level = (pid: number | null): PsdLayer[] => doc.children(pid).map(toPsd).filter((x): x is PsdLayer => !!x);
+  const children = level(null);
   const psd: Psd = { width: doc.width, height: doc.height, imageData: { width: doc.width, height: doc.height, data: composite }, children };
   return writePsdUint8Array(psd, { generateThumbnail: false, trimImageData: true, noBackground: true, psb });
 }

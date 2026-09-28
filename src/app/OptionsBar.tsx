@@ -1,5 +1,7 @@
 import { Check, X, Bold, Italic, AlignLeft, AlignCenter, AlignRight } from 'lucide-react';
-import { useStore } from './store';
+import { useStore, toRgba } from './store';
+import { penFinish } from './Pen';
+import { isEmpty as isEmptyPath } from '../engine/path';
 import { engine } from '../engine/client';
 import { TOOL_NAMES } from './commands';
 import { FONTS } from '../engine/vector';
@@ -67,6 +69,16 @@ export function OptionsBar() {
           {doc.editMask && <span className="hint mask-hint">Pintando en la máscara: negro oculta, blanco muestra</span>}
         </>
       )}
+      {(tool === 'spotHeal' || tool === 'heal') && (
+        <>
+          <Slider label="Tamaño" value={brush.size} min={1} max={1000} unit="px" onChange={(v) => setBrush({ size: v })} />
+          <Slider label="Dureza" value={brush.hardness * 100} min={0} max={100} unit="%" onChange={(v) => setBrush({ hardness: v / 100 })} />
+          <span className="hint">{tool === 'spotHeal'
+            ? 'Tipo: según el contenido · pinta sobre la imperfección y suelta'
+            : 'Alt+clic define el origen · la textura se adapta al color y la luz del destino'}</span>
+        </>
+      )}
+      {(tool === 'pen' || tool === 'pathSelect') && <PathActions />}
       {tool === 'move' && (
         <>
           <Toggle on={opts.autoSelect} label="Selección automática" title="Clic sobre el lienzo selecciona la capa (Ctrl+clic hace lo mismo)" onClick={() => setOpts({ autoSelect: !opts.autoSelect })} />
@@ -157,4 +169,23 @@ function applyText(p: Record<string, unknown>) {
   const s = useStore.getState();
   const id = s.textEdit?.layerId ?? s.doc.layers.find((l) => l.id === s.doc.activeLayerId && l.kind === 'text')?.id;
   if (id) engine.call('updateText', id, p, true);
+}
+
+/** Pluma: "Hacer" selección, forma, rellenar o contornear, como la barra de Photoshop. */
+function PathActions() {
+  const path = useStore((s) => s.path);
+  const fg = useStore((s) => s.fg);
+  const empty = isEmptyPath(path);
+  const run = (m: string, ...a: unknown[]) => { penFinish(); engine.call(m, useStore.getState().path, ...a); };
+  return (
+    <>
+      <span className="hint">Hacer:</span>
+      <button className="chip" disabled={empty} title="Ctrl+Intro" onClick={() => run('selectPath', 'replace', useStore.getState().opts.feather)}>Selección</button>
+      <button className="chip" disabled={empty} onClick={() => run('shapeFromPath', toRgba(fg))}>Forma</button>
+      <button className="chip" disabled={empty} onClick={() => run('fillPath')}>Rellenar trazado</button>
+      <button className="chip" disabled={empty} title="Con el pincel y el color frontal" onClick={() => run('strokePath')}>Contornear</button>
+      <button className="chip" disabled={!path.length} onClick={() => useStore.setState({ path: [], penDrawing: null, pathSel: null })}>Borrar trazado</button>
+      <span className="hint">Clic: esquina · arrastrar: curva · Alt: romper manejador · clic en el primer punto: cerrar · Ctrl: mover puntos</span>
+    </>
+  );
 }

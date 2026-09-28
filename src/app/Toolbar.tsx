@@ -11,14 +11,15 @@ const ICONS: Record<ToolId, LucideIcon> = {
   move: Move, marquee: SquareDashed, marqueeEllipse: Circle, lasso: Lasso, polylasso: Spline, wand: WandSparkles,
   crop: Crop, eyedropper: Pipette, brush: Brush, pencil: Pencil, clone: Stamp, eraser: Eraser, gradient: Blend,
   bucket: PaintBucket, dodge: Sun, burn: Moon, text: Type, shape: Shapes, hand: Hand, zoom: ZoomIn,
+  spotHeal: Bandage, heal: Bandage, pen: PenTool, pathSelect: MousePointer2,
 };
 
 /** Orden de la barra de Photoshop; los grupos sin herramienta aún se ven atenuados. */
 const LAYOUT: (string | { soon: string; icon: LucideIcon; key: string } | '-')[] = [
   'V', 'M', 'L', 'W', 'C', 'I', '-',
-  { soon: 'Pincel corrector puntual', icon: Bandage, key: 'J' }, 'B', 'S', { soon: 'Pincel de historia', icon: History, key: 'Y' }, 'E', 'G',
+  'J', 'B', 'S', { soon: 'Pincel de historia', icon: History, key: 'Y' }, 'E', 'G',
   { soon: 'Desenfocar / Enfocar / Dedo', icon: Droplet, key: '' }, 'O', '-',
-  { soon: 'Pluma', icon: PenTool, key: 'P' }, 'T', { soon: 'Selección de trazado', icon: MousePointer2, key: 'A' }, 'U', '-',
+  'P', 'T', 'A', 'U', '-',
   'H', 'Z',
 ];
 

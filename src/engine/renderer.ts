@@ -1,6 +1,6 @@
 import { TILE, type Matrix, type Rect, type ViewState } from './types';
 import { tileKey, keyTx, keyTy, type EditorDocument, type PixelLayer } from './document';
-import { RECT_VS, QUAD_VS, BLEND_FS, NORMAL_FS, ADJ_FS, VIEW_FS, CHECKER_FS, SOLID_FS, BLEND_INDEX } from './shaders';
+import { RECT_VS, QUAD_VS, BLEND_FS, NORMAL_FS, ADJ_FS, VIEW_FS, CHECKER_FS, SOLID_FS, MIX_FS, BLEND_INDEX } from './shaders';
 import { adjustmentUniforms } from './adjust';
 import { apply } from './vector';
 import { cpuFlatten } from './ops';
@@ -14,6 +14,15 @@ interface GpuTile { tex: WebGLTexture; refs: number; opaque: boolean }
 
 /** Elemento de la pila de composición (capa, estilos auxiliares o ajuste). */
 interface Item { L: PixelLayer; blend: string; opacity: number; useMask: boolean; adjust: boolean }
+
+/** Nodo del árbol de composición. */
+type Node =
+  | { t: 'layer'; L: PixelLayer; items: Item[] }
+  | { t: 'group'; L: PixelLayer; children: Node[] }
+  | { t: 'clip'; L: PixelLayer; base: Node; clipped: Node[] };
+
+type Target = { tex: WebGLTexture; fb: WebGLFramebuffer };
+type Frame = [Target, Target];
 
 interface Preview { layerIds: Set<number>; tex: WebGLTexture; src: Rect; matrix: Matrix }
 
@@ -50,7 +59,8 @@ export class Renderer {
   private maskTex = new Map<number, Map<number, WebGLTexture>>();
   private lutTex = new Map<number, { key: string; tex: WebGLTexture | null; u: ReturnType<typeof adjustmentUniforms> }>();
   private comp = new Map<number, CompTile>();
-  private scratch: { tex: WebGLTexture; fb: WebGLFramebuffer }[];
+  private frames: Frame[] = [];
+  private mixProg: Prog;
   private docDirty = new Set<number>();
   private allDirty = true;
   private preview: Preview | null = null;
@@ -72,9 +82,9 @@ export class Renderer {
     const dbg = gl.getExtension('WEBGL_debug_renderer_info');
     this.info = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : 'WebGL2';
     this.maxTexture = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-    this.blendProg = this.program(RECT_VS, BLEND_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uBack', 'uSrc', 'uSrcOffset', 'uDocOrigin', 'uOpacity', 'uMode']);
-    this.normalProg = this.program(RECT_VS, NORMAL_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uSrc', 'uSrcOffset', 'uOpacity']);
-    this.adjProg = this.program(RECT_VS, ADJ_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uBack', 'uLut', 'uKind', 'uP0', 'uP1', 'uP2', 'uOpacity', 'uMode']);
+    this.blendProg = this.program(RECT_VS, BLEND_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uBack', 'uSrc', 'uSrcOffset', 'uDocOrigin', 'uOpacity', 'uMode', 'uPremul', 'uAtop']);
+    this.normalProg = this.program(RECT_VS, NORMAL_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uSrc', 'uSrcOffset', 'uOpacity', 'uPremul']);
+    this.adjProg = this.program(RECT_VS, ADJ_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uBack', 'uLut', 'uKind', 'uP0', 'uP1', 'uP2', 'uOpacity', 'uMode', 'uAtop']);
     this.viewProg = this.program(RECT_VS, VIEW_FS, [...UNIFORMS_BASE, 'uTex', 'uUV', 'uAlpha']);
     this.quadProg = this.program(QUAD_VS, VIEW_FS, ['uP', 'uTarget', 'uTex', 'uUV', 'uAlpha']);
     this.checkerProg = this.program(RECT_VS, CHECKER_FS, [...UNIFORMS_BASE, 'uCell']);
@@ -82,7 +92,8 @@ export class Renderer {
     this.vao = gl.createVertexArray()!;
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
-    this.scratch = [this.makeTarget(1), this.makeTarget(1)];
+    this.mixProg = this.program(RECT_VS, MIX_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uBack', 'uSrc', 'uOpacity']);
+    this.frame(0);
   }
 
   private program(vs: string, fs: string, uniforms: string[]): Prog {
@@ -291,16 +302,54 @@ export class Renderer {
     gl.uniform1i(prog.u.uFlipY, flip ? 1 : 0);
   }
 
-  private items(layers: PixelLayer[]): Item[] {
-    const out: Item[] = [];
-    const skip = this.preview?.layerIds;
+  /**
+   * Árbol de composición a partir de una lista de capas (de abajo a arriba):
+   * grupos anidados y grupos de recorte (capa base + capas recortadas).
+   * Las capas cuyo grupo no está en la lista se tratan como raíz.
+   */
+  private tree(layers: PixelLayer[]): Node[] {
+    const ids = new Set(layers.map((l) => l.id));
+    const byParent = new Map<number | null, PixelLayer[]>();
     for (const L of layers) {
-      if (!L.visible || L.opacity <= 0 || skip?.has(L.id)) continue;
-      if (L.fxUnder) out.push({ L: L.fxUnder, blend: 'normal', opacity: L.opacity, useMask: false, adjust: false });
-      out.push({ L, blend: L.blend, opacity: L.opacity, useMask: !!L.mask && L.maskEnabled, adjust: L.kind === 'adjustment' });
-      if (L.fxOver) out.push({ L: L.fxOver, blend: 'normal', opacity: L.opacity, useMask: false, adjust: false });
+      const p = L.parent != null && ids.has(L.parent) ? L.parent : null;
+      let arr = byParent.get(p);
+      if (!arr) byParent.set(p, (arr = []));
+      arr.push(L);
     }
-    return out;
+    const skip = this.preview?.layerIds;
+    const nodeOf = (L: PixelLayer): Node => {
+      if (L.kind === 'group') return { t: 'group', L, children: build(L.id) };
+      const items: Item[] = [];
+      if (L.fxUnder) items.push({ L: L.fxUnder, blend: 'normal', opacity: L.opacity, useMask: false, adjust: false });
+      items.push({ L, blend: L.blend, opacity: L.opacity, useMask: !!L.mask && L.maskEnabled, adjust: L.kind === 'adjustment' });
+      if (L.fxOver) items.push({ L: L.fxOver, blend: 'normal', opacity: L.opacity, useMask: false, adjust: false });
+      return { t: 'layer', L, items };
+    };
+    const build = (pid: number | null): Node[] => {
+      const out: Node[] = [];
+      let base: number | null | undefined; // índice de la base actual; null = base oculta; undefined = ninguna
+      for (const L of byParent.get(pid) ?? []) {
+        const hidden = !L.visible || L.opacity <= 0 || !!skip?.has(L.id);
+        if (L.clipped && base !== undefined) {
+          if (base === null || hidden) continue; // base oculta: sus capas recortadas tampoco se ven
+          let b = out[base];
+          if (b.t !== 'clip') { b = { t: 'clip', L: b.L, base: b, clipped: [] }; out[base] = b; }
+          b.clipped.push(nodeOf(L));
+          continue;
+        }
+        if (hidden) { base = null; continue; }
+        out.push(nodeOf(L));
+        base = out.length - 1;
+      }
+      return out;
+    };
+    return build(null);
+  }
+
+  /** Pareja de búferes de trabajo de un nivel de anidamiento (grupos). */
+  private frame(level: number): Frame {
+    while (this.frames.length <= level) this.frames.push([this.makeTarget(1), this.makeTarget(1)]);
+    return this.frames[level];
   }
 
   private bindMask(prog: Prog, it: Item, key: number) {
@@ -317,118 +366,233 @@ export class Renderer {
     if (t) { gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, t); }
   }
 
+  /** Copia F[0] en F[1], deja F[1] como destino y F[0] en la unidad 0 (fondo). */
+  private backdrop(F: Frame) {
+    const gl = this.gl;
+    gl.disable(gl.BLEND);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, F[0].fb);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, F[1].fb);
+    gl.blitFramebuffer(0, 0, TILE, TILE, 0, 0, TILE, TILE, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, F[1].fb);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, F[0].tex);
+  }
+
+  private clearFrame(F: Frame, color: [number, number, number, number] = [0, 0, 0, 0]) {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, F[0].fb);
+    gl.viewport(0, 0, TILE, TILE);
+    gl.clearColor(...color);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+
   /**
-   * Compone un tile del documento a partir de `layers` y deja el resultado en scratch[0].
+   * Compone un tile del documento a partir del árbol `nodes` y deja el resultado en frame(0)[0].
    * Devuelve false si el tile queda totalmente vacío.
    */
-  private composeInto(layers: PixelLayer[], tx: number, ty: number, clearColor: [number, number, number, number]): boolean {
+  private composeInto(nodes: Node[], tx: number, ty: number, clearColor: [number, number, number, number]): boolean {
     const gl = this.gl;
-    const P = this.blendProg, N = this.normalProg, J = this.adjProg;
-    let [A, B] = this.scratch;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, A.fb);
-    gl.viewport(0, 0, TILE, TILE);
-    gl.clearColor(...clearColor);
-    gl.clear(gl.COLOR_BUFFER_BIT);
+    this.clearFrame(this.frame(0), clearColor);
     gl.bindVertexArray(this.vao);
-    const dx0 = tx * TILE, dy0 = ty * TILE;
-    let any = clearColor[3] > 0;
-    const list = this.items(layers);
+    const any = this.composeNodes(nodes, 0, tx, ty, false, clearColor[3] > 0);
+    gl.disable(gl.BLEND);
+    return any;
+  }
 
+  private composeNodes(nodes: Node[], lvl: number, tx: number, ty: number, atop: boolean, any: boolean): boolean {
     // Oclusión: una capa Normal opaca al 100 % sin máscara tapa todo lo de debajo.
     let start = 0;
-    for (let i = list.length - 1; i > 0; i--) {
-      const it = list[i];
-      if (it.adjust || it.useMask || it.blend !== 'normal' || it.opacity < 1) continue;
-      const L = it.L;
-      if ((L.x % TILE) !== 0 || (L.y % TILE) !== 0) continue;
-      const e = this.layerTex.get(L.id)?.get(tileKey((dx0 - L.x) / TILE, (dy0 - L.y) / TILE));
-      if (e?.g.opaque) { start = i; break; }
+    if (!atop) {
+      const dx0 = tx * TILE, dy0 = ty * TILE;
+      for (let i = nodes.length - 1; i > 0; i--) {
+        const n = nodes[i];
+        if (n.t !== 'layer' || n.items.length !== 1) continue;
+        const it = n.items[0];
+        if (it.adjust || it.useMask || it.blend !== 'normal' || it.opacity < 1) continue;
+        const L = it.L;
+        if ((L.x % TILE) !== 0 || (L.y % TILE) !== 0) continue;
+        const e = this.layerTex.get(L.id)?.get(tileKey((dx0 - L.x) / TILE, (dy0 - L.y) / TILE));
+        if (e?.g.opaque) { start = i; break; }
+      }
+    }
+    for (let i = start; i < nodes.length; i++) any = this.composeNode(nodes[i], lvl, tx, ty, atop, any);
+    return any;
+  }
+
+  /** `ov`: fuerza modo y opacidad (la base de un grupo de recorte se dibuja aislada, en Normal al 100 %). */
+  private composeNode(n: Node, lvl: number, tx: number, ty: number, atop: boolean, any: boolean, ov?: { blend: string; opacity: number }): boolean {
+    const gl = this.gl;
+    if (n.t === 'layer') {
+      for (const it of n.items) {
+        const item = ov ? { ...it, opacity: 1, blend: it.L === n.L ? ov.blend : it.blend } : it;
+        any = this.drawItem(item, lvl, tx, ty, atop, any);
+      }
+      return any;
+    }
+    if (n.t === 'group') {
+      const G = n.L;
+      const blend = ov?.blend ?? G.blend, opacity = ov?.opacity ?? G.opacity;
+      const gi: Item = { L: G, blend: blend === 'pass-through' ? 'normal' : blend, opacity, useMask: !!G.mask && G.maskEnabled, adjust: false };
+      if (blend === 'pass-through' && !atop) {
+        if (opacity >= 1 && !gi.useMask) return this.composeNodes(n.children, lvl, tx, ty, false, any);
+        // Con opacidad o máscara: se compone sobre una copia del fondo y se mezcla con él.
+        const P = this.frame(lvl), C = this.frame(lvl + 1);
+        gl.disable(gl.BLEND);
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, P[0].fb);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, C[0].fb);
+        gl.blitFramebuffer(0, 0, TILE, TILE, 0, 0, TILE, TILE, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+        const cany = this.composeNodes(n.children, lvl + 1, tx, ty, false, any);
+        if (!cany) return any;
+        gl.disable(gl.BLEND);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, P[1].fb);
+        gl.viewport(0, 0, TILE, TILE);
+        const M = this.mixProg;
+        gl.useProgram(M.p);
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, P[0].tex);
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, C[0].tex);
+        gl.uniform1i(M.u.uBack, 0);
+        gl.uniform1i(M.u.uSrc, 1);
+        gl.uniform1f(M.u.uOpacity, opacity);
+        this.bindMask(M, gi, tileKey(tx - G.x / TILE, ty - G.y / TILE));
+        this.setRect(M, 0, 0, TILE, TILE, TILE, TILE, false);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        [P[0], P[1]] = [P[1], P[0]];
+        return true;
+      }
+      const C = this.frame(lvl + 1);
+      this.clearFrame(C);
+      const cany = this.composeNodes(n.children, lvl + 1, tx, ty, false, false);
+      if (!cany) return any;
+      return this.drawFrame(C[0].tex, gi, lvl, tx, ty, atop, any);
+    }
+    // Grupo de recorte: base aislada + capas recortadas (conservan el alfa de la base);
+    // el resultado se funde con el modo y la opacidad de la base.
+    const bL = n.base.L;
+    const C = this.frame(lvl + 1);
+    this.clearFrame(C);
+    let cany = this.composeNode(n.base, lvl + 1, tx, ty, false, false, { blend: bL.kind === 'group' ? 'pass-through' : 'normal', opacity: 1 });
+    if (!cany) return any;
+    for (const c of n.clipped) cany = this.composeNode(c, lvl + 1, tx, ty, true, cany);
+    const blend = ov?.blend ?? bL.blend, opacity = ov?.opacity ?? bL.opacity;
+    return this.drawFrame(C[0].tex, { L: bL, blend: blend === 'pass-through' ? 'normal' : blend, opacity, useMask: false, adjust: false }, lvl, tx, ty, atop, any);
+  }
+
+  /** Funde un búfer ya compuesto (premultiplicado, alineado con el tile) en el nivel `lvl`. */
+  private drawFrame(tex: WebGLTexture, it: Item, lvl: number, tx: number, ty: number, atop: boolean, any: boolean): boolean {
+    const gl = this.gl;
+    if (atop && !any) return any;
+    const F = this.frame(lvl);
+    const normal = it.blend === 'normal';
+    const prog = normal ? this.normalProg : this.blendProg;
+    if (normal) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, F[0].fb);
+      gl.enable(gl.BLEND);
+      if (atop) gl.blendFuncSeparate(gl.DST_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE);
+      else gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.useProgram(prog.p);
+    } else {
+      this.backdrop(F);
+      gl.useProgram(prog.p);
+      gl.uniform1i(prog.u.uBack, 0);
+      gl.uniform2i(prog.u.uDocOrigin, tx * TILE, ty * TILE);
+      gl.uniform1i(prog.u.uMode, BLEND_INDEX[it.blend] ?? 0);
+      gl.uniform1i(prog.u.uAtop, atop ? 1 : 0);
+    }
+    gl.viewport(0, 0, TILE, TILE);
+    gl.uniform1i(prog.u.uPremul, 1);
+    gl.uniform1i(prog.u.uSrc, 1);
+    gl.uniform1f(prog.u.uOpacity, it.opacity);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    this.bindMask(prog, it, tileKey(tx - Math.floor(it.L.x / TILE), ty - Math.floor(it.L.y / TILE)));
+    gl.uniform2i(prog.u.uSrcOffset, 0, 0);
+    this.setRect(prog, 0, 0, TILE, TILE, TILE, TILE, false);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.disable(gl.BLEND);
+    if (!normal) [F[0], F[1]] = [F[1], F[0]];
+    return true;
+  }
+
+  /** Dibuja una capa (píxeles, estilo auxiliar o ajuste) sobre el nivel `lvl`. */
+  private drawItem(it: Item, lvl: number, tx: number, ty: number, atop: boolean, any: boolean): boolean {
+    const gl = this.gl;
+    const P = this.blendProg, N = this.normalProg, J = this.adjProg;
+    const F = this.frame(lvl);
+    const L = it.L;
+    const dx0 = tx * TILE, dy0 = ty * TILE;
+    gl.viewport(0, 0, TILE, TILE);
+
+    if (it.adjust) {
+      if (!any && (atop || L.adjustment?.type !== 'solidColor')) return any; // nada que ajustar
+      const lut = this.lutTex.get(L.id);
+      if (!lut) return any;
+      this.backdrop(F);
+      gl.useProgram(J.p);
+      gl.uniform1i(J.u.uBack, 0);
+      gl.uniform1i(J.u.uLut, 3);
+      if (lut.tex) { gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, lut.tex); }
+      gl.uniform1i(J.u.uKind, lut.u.kind);
+      gl.uniform4fv(J.u.uP0, lut.u.p0);
+      gl.uniform4fv(J.u.uP1, lut.u.p1);
+      gl.uniform4fv(J.u.uP2, lut.u.p2);
+      gl.uniform1f(J.u.uOpacity, it.opacity);
+      gl.uniform1i(J.u.uMode, BLEND_INDEX[it.blend] ?? 0);
+      gl.uniform1i(J.u.uAtop, atop ? 1 : 0);
+      this.bindMask(J, it, tileKey(tx, ty));
+      this.setRect(J, 0, 0, TILE, TILE, TILE, TILE, false);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      [F[0], F[1]] = [F[1], F[0]];
+      return true;
     }
 
-    const copyAtoB = () => {
-      gl.disable(gl.BLEND);
-      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, A.fb);
-      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, B.fb);
-      gl.blitFramebuffer(0, 0, TILE, TILE, 0, 0, TILE, TILE, gl.COLOR_BUFFER_BIT, gl.NEAREST);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, B.fb);
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, A.tex);
-    };
-
-    for (let li = start; li < list.length; li++) {
-      const it = list[li];
-      const L = it.L;
-
-      if (it.adjust) {
-        if (!any && L.adjustment?.type !== 'solidColor') continue; // nada que ajustar
-        const lut = this.lutTex.get(L.id);
-        if (!lut) continue;
-        any = true;
-        copyAtoB();
-        gl.useProgram(J.p);
-        gl.uniform1i(J.u.uBack, 0);
-        gl.uniform1i(J.u.uLut, 3);
-        if (lut.tex) { gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, lut.tex); }
-        gl.uniform1i(J.u.uKind, lut.u.kind);
-        gl.uniform4fv(J.u.uP0, lut.u.p0);
-        gl.uniform4fv(J.u.uP1, lut.u.p1);
-        gl.uniform4fv(J.u.uP2, lut.u.p2);
-        gl.uniform1f(J.u.uOpacity, it.opacity);
-        gl.uniform1i(J.u.uMode, BLEND_INDEX[it.blend] ?? 0);
-        this.bindMask(J, it, tileKey(tx, ty));
-        this.setRect(J, 0, 0, TILE, TILE, TILE, TILE, false);
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-        [A, B] = [B, A];
-        continue;
+    if (atop && !any) return any;
+    const m = this.layerTex.get(L.id);
+    if (!m || L.tiles.size === 0) return any;
+    const lx0 = dx0 - L.x, ly0 = dy0 - L.y;
+    const ltx0 = Math.floor(lx0 / TILE), lty0 = Math.floor(ly0 / TILE);
+    const ltx1 = Math.floor((lx0 + TILE - 1) / TILE), lty1 = Math.floor((ly0 + TILE - 1) / TILE);
+    const hits: [WebGLTexture, number, number][] = [];
+    for (let lty = lty0; lty <= lty1; lty++) {
+      for (let ltx = ltx0; ltx <= ltx1; ltx++) {
+        const e = m.get(tileKey(ltx, lty));
+        if (e) hits.push([e.g.tex, ltx, lty]);
       }
-
-      const m = this.layerTex.get(L.id);
-      if (!m || L.tiles.size === 0) continue;
-      const lx0 = dx0 - L.x, ly0 = dy0 - L.y;
-      const ltx0 = Math.floor(lx0 / TILE), lty0 = Math.floor(ly0 / TILE);
-      const ltx1 = Math.floor((lx0 + TILE - 1) / TILE), lty1 = Math.floor((ly0 + TILE - 1) / TILE);
-      const hits: [WebGLTexture, number, number][] = [];
-      for (let lty = lty0; lty <= lty1; lty++) {
-        for (let ltx = ltx0; ltx <= ltx1; ltx++) {
-          const e = m.get(tileKey(ltx, lty));
-          if (e) hits.push([e.g.tex, ltx, lty]);
-        }
-      }
-      if (!hits.length) continue;
-      any = true;
-      const normal = it.blend === 'normal';
-      const prog = normal ? N : P;
-      if (normal) {
-        gl.bindFramebuffer(gl.FRAMEBUFFER, A.fb);
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-        gl.useProgram(N.p);
-      } else {
-        copyAtoB();
-        gl.useProgram(P.p);
-        gl.uniform1i(P.u.uBack, 0);
-        gl.uniform2i(P.u.uDocOrigin, dx0, dy0);
-        gl.uniform1i(P.u.uMode, BLEND_INDEX[it.blend] ?? 0);
-      }
-      gl.uniform1i(prog.u.uSrc, 1);
-      gl.uniform1f(prog.u.uOpacity, it.opacity);
-      for (const [tex, ltx, lty] of hits) {
-        const ox = ltx * TILE + L.x - dx0, oy = lty * TILE + L.y - dy0;
-        const x0 = Math.max(0, ox), y0 = Math.max(0, oy);
-        const x1 = Math.min(TILE, ox + TILE), y1 = Math.min(TILE, oy + TILE);
-        if (x1 <= x0 || y1 <= y0) continue;
-        gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, tex);
-        this.bindMask(prog, it, tileKey(ltx, lty));
-        gl.uniform2i(prog.u.uSrcOffset, ox, oy);
-        this.setRect(prog, x0, y0, x1, y1, TILE, TILE, false);
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      }
-      if (!normal) [A, B] = [B, A];
+    }
+    if (!hits.length) return any;
+    const normal = it.blend === 'normal';
+    const prog = normal ? N : P;
+    if (normal) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, F[0].fb);
+      gl.enable(gl.BLEND);
+      if (atop) gl.blendFuncSeparate(gl.DST_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE);
+      else gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.useProgram(N.p);
+    } else {
+      this.backdrop(F);
+      gl.useProgram(P.p);
+      gl.uniform1i(P.u.uBack, 0);
+      gl.uniform2i(P.u.uDocOrigin, dx0, dy0);
+      gl.uniform1i(P.u.uMode, BLEND_INDEX[it.blend] ?? 0);
+      gl.uniform1i(P.u.uAtop, atop ? 1 : 0);
+    }
+    gl.uniform1i(prog.u.uPremul, 0);
+    gl.uniform1i(prog.u.uSrc, 1);
+    gl.uniform1f(prog.u.uOpacity, it.opacity);
+    for (const [tex, ltx, lty] of hits) {
+      const ox = ltx * TILE + L.x - dx0, oy = lty * TILE + L.y - dy0;
+      const x0 = Math.max(0, ox), y0 = Math.max(0, oy);
+      const x1 = Math.min(TILE, ox + TILE), y1 = Math.min(TILE, oy + TILE);
+      if (x1 <= x0 || y1 <= y0) continue;
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      this.bindMask(prog, it, tileKey(ltx, lty));
+      gl.uniform2i(prog.u.uSrcOffset, ox, oy);
+      this.setRect(prog, x0, y0, x1, y1, TILE, TILE, false);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
     gl.disable(gl.BLEND);
-    this.scratch = [A, B];
-    return any;
+    if (!normal) [F[0], F[1]] = [F[1], F[0]];
+    return true;
   }
 
   private compTile(k: number): CompTile {
@@ -456,15 +620,16 @@ export class Renderer {
     }
     this.allDirty = false;
     this.docDirty.clear();
+    const nodes = keys.length ? this.tree(doc.layers) : [];
     for (const k of keys) {
-      const any = this.composeInto(doc.layers, keyTx(k), keyTy(k), [0, 0, 0, 0]);
+      const any = this.composeInto(nodes, keyTx(k), keyTy(k), [0, 0, 0, 0]);
       if (!any) {
         const c = this.comp.get(k);
         if (c) { gl.deleteTexture(c.tex); gl.deleteFramebuffer(c.fb); this.comp.delete(k); }
         continue;
       }
       const c = this.compTile(k);
-      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.scratch[0].fb);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.frame(0)[0].fb);
       gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, c.fb);
       gl.blitFramebuffer(0, 0, TILE, TILE, 0, 0, TILE, TILE, gl.COLOR_BUFFER_BIT, gl.NEAREST);
       c.mipsValid = false;
@@ -615,10 +780,11 @@ export class Renderer {
       : [0, 0, 0, 0];
     const tx0 = Math.floor(region.x / TILE), ty0 = Math.floor(region.y / TILE);
     const tx1 = Math.floor((region.x + region.w - 1) / TILE), ty1 = Math.floor((region.y + region.h - 1) / TILE);
+    const nodes = this.tree(layers);
     for (let ty = ty0; ty <= ty1; ty++) {
       for (let tx = tx0; tx <= tx1; tx++) {
-        if (!this.composeInto(layers, tx, ty, bg)) continue;
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.scratch[0].fb);
+        if (!this.composeInto(nodes, tx, ty, bg)) continue;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.frame(0)[0].fb);
         gl.readPixels(0, 0, TILE, TILE, gl.RGBA, gl.UNSIGNED_BYTE, buf);
         const ox = tx * TILE, oy = ty * TILE;
         const x0 = Math.max(region.x, ox), x1 = Math.min(region.x + region.w, ox + TILE);

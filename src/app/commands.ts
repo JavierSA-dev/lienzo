@@ -23,7 +23,6 @@ export interface Command {
 const S = () => useStore.getState();
 const call = (method: string, ...args: unknown[]) => () => engine.call(method, ...args);
 const dlg = (d: DialogId) => () => S().setDialog(d);
-const soon = (what: string) => () => S().toast(`${what}: próximamente.`, 'info');
 
 // ------------------------------------------------------------------ archivos
 
@@ -113,12 +112,15 @@ export const TOOL_GROUPS: { key: string; tools: ToolId[] }[] = [
   { key: 'W', tools: ['wand'] },
   { key: 'C', tools: ['crop'] },
   { key: 'I', tools: ['eyedropper'] },
+  { key: 'J', tools: ['spotHeal', 'heal'] },
   { key: 'B', tools: ['brush', 'pencil'] },
   { key: 'S', tools: ['clone'] },
   { key: 'E', tools: ['eraser'] },
   { key: 'G', tools: ['gradient', 'bucket'] },
   { key: 'O', tools: ['dodge', 'burn'] },
+  { key: 'P', tools: ['pen'] },
   { key: 'T', tools: ['text'] },
+  { key: 'A', tools: ['pathSelect'] },
   { key: 'U', tools: ['shape'] },
   { key: 'H', tools: ['hand'] },
   { key: 'Z', tools: ['zoom'] },
@@ -129,6 +131,7 @@ export const TOOL_NAMES: Record<ToolId, string> = {
   wand: 'Varita mágica', crop: 'Recortar', eyedropper: 'Cuentagotas', brush: 'Pincel', pencil: 'Lápiz', clone: 'Tampón de clonar',
   eraser: 'Borrador', gradient: 'Degradado', bucket: 'Bote de pintura', dodge: 'Sobreexponer', burn: 'Subexponer',
   text: 'Texto horizontal', shape: 'Forma', hand: 'Mano', zoom: 'Zoom',
+  spotHeal: 'Pincel corrector puntual', heal: 'Pincel corrector', pen: 'Pluma', pathSelect: 'Selección de trazado',
 };
 
 export const groupOf = (t: ToolId) => TOOL_GROUPS.find((g) => g.tools.includes(t))!;
@@ -155,7 +158,7 @@ function toolKey(key: string, cycle: boolean) {
   selectTool(next);
 }
 
-const PAINT_TOOLS = new Set<ToolId>(['brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn']);
+const PAINT_TOOLS = new Set<ToolId>(['brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'spotHeal', 'heal']);
 export const isPaintTool = (t: ToolId) => PAINT_TOOLS.has(t);
 
 // ------------------------------------------------------------------ capas
@@ -219,6 +222,7 @@ export const COMMANDS: Command[] = [
   { id: 'edit.copyMerged', label: 'Copiar combinado', keys: ['Ctrl+Shift+C'], needsDoc: true, run: () => copyToClipboard(true) },
   { id: 'edit.paste', label: 'Pegar', keys: ['Ctrl+V'], run: () => pasteFromMenu(false) },
   { id: 'edit.pasteInPlace', label: 'Pegar en el mismo sitio', keys: ['Ctrl+Shift+V'], run: () => pasteFromMenu(true) },
+  { id: 'edit.contentAware', label: 'Relleno según contenido', needsDoc: true, rec: true, run: call('contentAwareFill') },
   { id: 'edit.fill', label: 'Rellenar…', keys: ['Shift+F5', 'Shift+Backspace'], needsDoc: true, run: dlg({ kind: 'fill' }) },
   { id: 'edit.fillFg', label: 'Rellenar con color frontal', keys: ['Alt+Backspace', 'Alt+Delete'], needsDoc: true, rec: true, run: call('fill', 'fg') },
   { id: 'edit.fillBg', label: 'Rellenar con color de fondo', keys: ['Ctrl+Backspace', 'Ctrl+Delete'], needsDoc: true, rec: true, run: call('fill', 'bg') },
@@ -285,8 +289,10 @@ export const COMMANDS: Command[] = [
   { id: 'layer.mask.apply', label: 'Aplicar máscara', needsDoc: true, rec: true, run: call('deleteMask', true) },
   { id: 'layer.mask.delete', label: 'Eliminar máscara', needsDoc: true, rec: true, run: call('deleteMask', false) },
   { id: 'layer.rasterize', label: 'Rasterizar capa', needsDoc: true, rec: true, run: call('rasterizeLayer') },
-  { id: 'layer.group', label: 'Agrupar capas', keys: ['Ctrl+G'], needsDoc: true, run: soon('Grupos de capas') },
-  { id: 'layer.clip', label: 'Crear máscara de recorte', keys: ['Ctrl+Alt+G'], needsDoc: true, run: soon('Máscaras de recorte') },
+  { id: 'layer.group', label: 'Agrupar capas', keys: ['Ctrl+G'], needsDoc: true, rec: true, run: call('groupLayers') },
+  { id: 'layer.ungroup', label: 'Desagrupar capas', keys: ['Ctrl+Shift+G'], needsDoc: true, rec: true, run: call('ungroupLayers') },
+  { id: 'layer.newGroup', label: 'Nuevo grupo', needsDoc: true, rec: true, run: call('groupLayers', true) },
+  { id: 'layer.clip', label: 'Crear/liberar máscara de recorte', keys: ['Ctrl+Alt+G'], needsDoc: true, rec: true, run: call('toggleClip') },
   { id: 'layer.front', label: 'Traer al frente', keys: ['Ctrl+Shift+]'], needsDoc: true, rec: true, run: call('arrange', 'top') },
   { id: 'layer.forward', label: 'Hacia delante', keys: ['Ctrl+]'], needsDoc: true, rec: true, run: call('arrange', 'up') },
   { id: 'layer.backward', label: 'Hacia atrás', keys: ['Ctrl+['], needsDoc: true, rec: true, run: call('arrange', 'down') },

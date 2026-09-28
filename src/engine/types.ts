@@ -8,7 +8,8 @@ export type BlendMode =
   | 'lighten' | 'screen' | 'color-dodge' | 'linear-dodge' | 'lighter-color'
   | 'overlay' | 'soft-light' | 'hard-light' | 'vivid-light' | 'linear-light' | 'pin-light' | 'hard-mix'
   | 'difference' | 'exclusion' | 'subtract' | 'divide'
-  | 'hue' | 'saturation' | 'color' | 'luminosity';
+  | 'hue' | 'saturation' | 'color' | 'luminosity'
+  | 'pass-through'; // sólo grupos: sus capas se funden directamente con lo de debajo
 
 /** Los 27 modos de fusión en el orden y grupos del menú de Photoshop. */
 export const BLEND_GROUPS: { id: BlendMode; label: string }[][] = [
@@ -40,13 +41,15 @@ export const BLEND_GROUPS: { id: BlendMode; label: string }[][] = [
 ];
 
 export const BLEND_MODES: BlendMode[] = BLEND_GROUPS.flat().map((b) => b.id);
+export const PASS_THROUGH = { id: 'pass-through' as BlendMode, label: 'Pasar a través' };
 
 export type ToolId =
   | 'move' | 'marquee' | 'marqueeEllipse' | 'lasso' | 'polylasso' | 'wand' | 'crop' | 'eyedropper'
   | 'brush' | 'pencil' | 'clone' | 'eraser' | 'gradient' | 'bucket' | 'dodge' | 'burn'
-  | 'text' | 'shape' | 'hand' | 'zoom';
+  | 'text' | 'shape' | 'hand' | 'zoom'
+  | 'spotHeal' | 'heal' | 'pen' | 'pathSelect';
 
-export type LayerKind = 'pixel' | 'adjustment' | 'text' | 'shape';
+export type LayerKind = 'pixel' | 'adjustment' | 'text' | 'shape' | 'group';
 
 export type AdjustmentParams =
   | { type: 'brightness'; brightness: number; contrast: number }
@@ -83,7 +86,7 @@ export interface TextParams {
   matrix: Matrix;
 }
 
-export type ShapeKind = 'rect' | 'ellipse' | 'line' | 'polygon';
+export type ShapeKind = 'rect' | 'ellipse' | 'line' | 'polygon' | 'path';
 
 export interface ShapeParams {
   shape: ShapeKind;
@@ -97,6 +100,8 @@ export interface ShapeParams {
   radius: number;
   sides: number;
   matrix: Matrix;
+  /** Forma libre (pluma): datos SVG en coordenadas de documento. */
+  path?: string;
 }
 
 export interface LayerEffects {
@@ -136,6 +141,12 @@ export interface LayerInfo {
   text?: TextParams;
   shape?: ShapeParams;
   effects?: LayerEffects;
+  /** Grupo que contiene la capa (null = raíz). */
+  parent: number | null;
+  /** Máscara de recorte: la capa se recorta a la capa base de debajo. */
+  clipped: boolean;
+  /** Grupo plegado en el panel. */
+  collapsed?: boolean;
 }
 
 export interface HistoryInfo { label: string }

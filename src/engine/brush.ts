@@ -22,6 +22,8 @@ export interface StrokeOptions {
   /** Lápiz: bordes sin suavizar. */
   aliased?: boolean;
   label?: string;
+  /** Pinceles correctores: sólo cambia el nombre del paso del historial. */
+  healTool?: 'spotHeal' | 'heal';
 }
 
 /**
@@ -38,10 +40,15 @@ export class BrushStroke {
   private last: { x: number; y: number; p: number } | null = null;
   private untilNext = 0;
   dirty: Rect | null = null;
+  /** Zona total tocada por el trazo (coordenadas de documento). */
+  total: Rect | null = null;
+
+  get layerId() { return this.o.layer.id; }
 
   constructor(o: StrokeOptions) {
     this.o = o;
     const names: Record<BrushMode, string> = { paint: 'Pincel', erase: 'Borrador', clone: 'Tampón de clonar', dodge: 'Sobreexponer', burn: 'Subexponer' };
+    if (!o.label && o.healTool) o.label = o.healTool === 'spotHeal' ? 'Pincel corrector puntual' : 'Pincel corrector';
     this.patch = new TilePatch(o.label ?? (o.target === 'mask' ? `${names[o.mode]} (máscara)` : names[o.mode]), o.layer, o.target);
   }
 
@@ -209,6 +216,11 @@ export class BrushStroke {
   }
 
   private grow(r: Rect) {
+    const t = this.total;
+    this.total = !t ? { ...r } : (() => {
+      const x0 = Math.min(t.x, r.x), y0 = Math.min(t.y, r.y);
+      return { x: x0, y: y0, w: Math.max(t.x + t.w, r.x + r.w) - x0, h: Math.max(t.y + t.h, r.y + r.h) - y0 };
+    })();
     if (!this.dirty) { this.dirty = { ...r }; return; }
     const d = this.dirty;
     const x0 = Math.min(d.x, r.x), y0 = Math.min(d.y, r.y);
@@ -220,6 +232,31 @@ export class BrushStroke {
     const d = this.dirty;
     this.dirty = null;
     return d;
+  }
+
+  /** Cobertura acumulada del trazo (0..1) en una región del documento. Antes de finish(). */
+  coverage(r: Rect): Float32Array {
+    const L = this.o.layer;
+    const out = new Float32Array(r.w * r.h);
+    for (let y = 0; y < r.h; y++) {
+      for (let x = 0; x < r.w; x++) {
+        const lx = r.x + x - L.x, ly = r.y + y - L.y;
+        const tx = Math.floor(lx / TILE), ty = Math.floor(ly / TILE);
+        const m = this.acc.get(tileKey(tx, ty));
+        if (m) out[y * r.w + x] = m[(ly - ty * TILE) * TILE + (lx - tx * TILE)] / Math.max(1e-6, this.o.settings.opacity);
+      }
+    }
+    return out;
+  }
+
+  /** Píxeles de la capa tal como estaban antes del trazo. */
+  original(r: Rect): Uint8ClampedArray {
+    const out = new Uint8ClampedArray(r.w * r.h * 4);
+    for (let y = 0; y < r.h; y++) for (let x = 0; x < r.w; x++) {
+      const p = this.sample(r.x + x, r.y + y);
+      out.set(p, (y * r.w + x) * 4);
+    }
+    return out;
   }
 
   /** Cierra el trazo: libera tiles que quedaron vacíos (p. ej. tras borrar). */

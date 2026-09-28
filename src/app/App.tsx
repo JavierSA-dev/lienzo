@@ -17,7 +17,7 @@ const isTyping = (t: EventTarget | null) =>
 /** Herramientas que Alt convierte temporalmente en Cuentagotas (como Photoshop). */
 const ALT_EYEDROPPER = new Set<ToolId>(['brush', 'pencil', 'bucket', 'gradient', 'shape']);
 /** Herramientas que no se cambian por Mover al mantener Ctrl. */
-const NO_CTRL_MOVE = new Set<ToolId>(['move', 'hand', 'zoom', 'text', 'crop']);
+const NO_CTRL_MOVE = new Set<ToolId>(['move', 'hand', 'zoom', 'text', 'crop', 'pathSelect']);
 
 function useShortcuts() {
   useEffect(() => {
@@ -37,7 +37,7 @@ function useShortcuts() {
         return;
       }
       if ((e.key === 'Control' || e.key === 'Meta') && !e.repeat && s.doc.open && !NO_CTRL_MOVE.has(s.tool) && !s.transform) {
-        s.pushTempTool('move', 'Control');
+        s.pushTempTool(s.tool === 'pen' ? 'pathSelect' : 'move', 'Control');
       }
       if (e.key === 'Alt') {
         e.preventDefault(); // evita que el navegador enfoque su menú

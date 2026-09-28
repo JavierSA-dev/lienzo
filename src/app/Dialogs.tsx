@@ -200,6 +200,7 @@ function FillDialog({ close }: { close: () => void }) {
   const [color, setColor] = useState('#808080');
   const [preserve, setPreserve] = useState(false);
   const ok = () => {
+    if (what === 'content') { engine.call('contentAwareFill'); close(); return; }
     const c: RGBA | 'fg' | 'bg' = what === 'fg' ? 'fg' : what === 'bg' ? 'bg' : what === 'gray' ? [128, 128, 128, 255] : what === 'white' ? [255, 255, 255, 255] : what === 'black' ? [0, 0, 0, 255] : toRgba(color);
     engine.call('fill', c, preserve);
     close();
@@ -209,6 +210,7 @@ function FillDialog({ close }: { close: () => void }) {
       <label className="field">Contenido
         <select value={what} onChange={(e) => setWhat(e.target.value)} autoFocus>
           <option value="fg">Color frontal</option><option value="bg">Color de fondo</option><option value="color">Color…</option>
+          <option value="content" disabled={!useStore.getState().doc.selection}>Según el contenido</option>
           <option value="gray">Gris al 50 %</option><option value="black">Negro</option><option value="white">Blanco</option>
         </select>
       </label>

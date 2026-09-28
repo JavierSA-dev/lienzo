@@ -94,6 +94,7 @@ export function shapeBox(s: ShapeParams): Rect {
 }
 
 export function shapePath(s: ShapeParams): Path2D {
+  if (s.shape === 'path') return new Path2D(s.path ?? '');
   const p = new Path2D();
   const x = Math.min(s.x, s.x + s.w), y = Math.min(s.y, s.y + s.h), w = Math.abs(s.w), h = Math.abs(s.h);
   switch (s.shape) {
@@ -124,7 +125,7 @@ export function shapePath(s: ShapeParams): Path2D {
 export function rasterizeShape(s: ShapeParams, limit: Rect): Raster | null {
   return draw(shapeBox(s), s.matrix, limit, (ctx) => {
     const path = shapePath(s);
-    if (s.fill && s.shape !== 'line') { ctx.fillStyle = css(s.fill); ctx.fill(path); }
+    if (s.fill && s.shape !== 'line') { ctx.fillStyle = css(s.fill); ctx.fill(path, 'evenodd'); }
     const stroke = s.shape === 'line' ? (s.stroke ?? s.fill) : s.stroke;
     if (stroke && s.strokeWidth > 0) {
       ctx.strokeStyle = css(stroke);
