@@ -344,7 +344,7 @@ function ScrubPercent({ label, value, onLive, onCommit }: { label: string; value
   );
 }
 
-const ADJ_MENU: AdjustmentType[] = ['solidColor', 'brightness', 'levels', 'curves', 'exposure', 'vibrance', 'hueSat', 'colorBalance', 'blackWhite', 'photoFilter', 'channelMixer', 'invert', 'posterize', 'threshold', 'gradientMap', 'selectiveColor'];
+export const ADJ_MENU: AdjustmentType[] = ['solidColor', 'brightness', 'levels', 'curves', 'exposure', 'vibrance', 'hueSat', 'colorBalance', 'blackWhite', 'photoFilter', 'channelMixer', 'invert', 'posterize', 'threshold', 'gradientMap', 'selectiveColor'];
 
 export function LayersPanel() {
   const doc = useStore((s) => s.doc);

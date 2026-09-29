@@ -3,10 +3,10 @@ import { commandById, formatKeys, runCommand, BROWSER_RESERVED } from './command
 import { useStore } from './store';
 import { APP_NAME } from './brand';
 
-type Item = string | '-' | { label: string; soon: true } | { sub: string; items: Item[] };
+export type Item = string | '-' | { label: string; soon: true } | { sub: string; items: Item[] };
 
 /** Estructura de menús de Photoshop; lo que aún no existe aparece desactivado. */
-const MENUS: { label: string; items: Item[] }[] = [
+export const MENUS: { label: string; items: Item[] }[] = [
   { label: 'Archivo', items: ['file.new', 'file.open', 'file.place', '-', 'file.close', '-', 'file.save', 'file.saveAs', 'file.saveCopy', 'file.savePsb', '-',
     { sub: 'Exportar', items: ['file.quickPng', 'file.export', 'file.saveForWeb'] }] },
   { label: 'Edición', items: ['edit.undo', 'edit.redo', 'edit.toggleLast', '-', 'edit.cut', 'edit.copy', 'edit.copyMerged', 'edit.paste', 'edit.pasteInPlace', 'edit.clear', '-',
@@ -44,7 +44,7 @@ const MENUS: { label: string; items: Item[] }[] = [
     { sub: 'Otro', items: ['filter.highPass'] },
     '-', 'ai.removeBg'] },
   { label: 'Vista', items: ['view.zoomIn', 'view.zoomOut', 'view.fit', 'view.actual', '-', 'view.extras', 'view.grid', 'view.rulers', 'view.guides', '-',
-    'view.snap', 'view.lockGuides', 'view.newGuide', 'view.clearGuides', '-', 'view.fullscreen'] },
+    'view.snap', 'view.lockGuides', 'view.newGuide', 'view.clearGuides', '-', 'view.fullscreen', 'view.mobileUi'] },
   { label: 'Ventana', items: ['view.panels'] },
   { label: 'Ayuda', items: ['help.shortcuts', 'help.about'] },
 ];

@@ -9,6 +9,7 @@ import { Dialogs } from './Dialogs';
 import { useStore } from './store';
 import { commandForEvent, handleDigit, runCommand, onPasteEvent, markPasteInPlace } from './commands';
 import { engine } from '../engine/client';
+import { useIsMobile, MobileTopBar, MobileBottomBar, MobileContextBar, MobileSheets } from './Mobile';
 import type { ToolId } from '../engine/types';
 
 const isTyping = (t: EventTarget | null) =>
@@ -114,20 +115,29 @@ function useShortcuts() {
 export function App() {
   useShortcuts();
   const panelsHidden = useStore((s) => s.panelsHidden);
+  const mobile = useIsMobile();
+  const docOpen = useStore((s) => s.doc.open);
+  // El lienzo ocupa siempre la misma posición del árbol: al cambiar de interfaz no se vuelve a crear
+  // (su canvas ya pertenece al motor del worker).
   return (
-    <div className={`app ${panelsHidden ? 'panels-hidden' : ''}`}>
-      <MenuBar />
-      <OptionsBar />
-      <Toolbar />
+    <div className={`app ${mobile ? 'mobile' : ''} ${panelsHidden && !mobile ? 'panels-hidden' : ''}`}>
+      {mobile ? <MobileTopBar /> : <MenuBar />}
+      {mobile && !docOpen ? null : <OptionsBar />}
+      {mobile ? null : <Toolbar />}
       <CanvasArea />
-      <div className="dock">
-        <ColorPanel />
-        <PropertiesPanel />
-        <HistoryPanel />
-        <ActionsPanel />
-        <LayersPanel />
-      </div>
-      <StatusBar />
+      {mobile ? null : (
+        <div className="dock">
+          <ColorPanel />
+          <PropertiesPanel />
+          <HistoryPanel />
+          <ActionsPanel />
+          <LayersPanel />
+        </div>
+      )}
+      {mobile ? null : <StatusBar />}
+      {mobile ? <MobileContextBar /> : null}
+      {mobile ? <MobileBottomBar /> : null}
+      {mobile ? <MobileSheets /> : null}
       <Dialogs />
       <Toasts />
     </div>

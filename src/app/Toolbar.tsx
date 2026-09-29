@@ -8,7 +8,7 @@ import { engine } from '../engine/client';
 import { TOOL_GROUPS, TOOL_NAMES, selectTool, groupOf } from './commands';
 import type { ToolId } from '../engine/types';
 
-const ICONS: Record<ToolId, LucideIcon> = {
+export const ICONS: Record<ToolId, LucideIcon> = {
   move: Move, marquee: SquareDashed, marqueeEllipse: Circle, lasso: Lasso, polylasso: Spline, wand: WandSparkles,
   crop: Crop, eyedropper: Pipette, brush: Brush, pencil: Pencil, clone: Stamp, eraser: Eraser, gradient: Blend,
   bucket: PaintBucket, dodge: Sun, burn: Moon, text: Type, shape: Shapes, hand: Hand, zoom: ZoomIn,

@@ -12,6 +12,8 @@ export type DialogId =
   | { kind: 'shortcuts' } | { kind: 'liquify' } | { kind: 'generative' } | { kind: 'about' } | { kind: 'confirmClose'; docId: number } | { kind: 'newGuide' } | { kind: 'colorPicker'; which: 'fg' | 'bg' } | { kind: 'applyImage' } | { kind: 'stroke' } | { kind: 'newLayer' }
   | null;
 
+export type MobileSheet = 'menu' | 'layers' | 'adjust' | 'props' | 'history' | 'color' | 'export' | 'tools' | 'select';
+
 export interface Toast { id: number; text: string; kind: 'info' | 'warn' | 'error' }
 
 interface Thumb { w: number; h: number; data: Uint8ClampedArray }
@@ -95,6 +97,10 @@ interface Store {
   pathSel: { sub: number; idx: number } | null;
   /** true mientras se arrastra con la pluma (el trazado local manda). */
   penLocal: boolean;
+  /** Interfaz: automática según la pantalla, o forzada a móvil/escritorio. */
+  layout: 'auto' | 'mobile' | 'desktop';
+  /** Hoja inferior abierta en la interfaz móvil. */
+  sheet: MobileSheet | null;
 
   setTool(t: ToolId): void;
   pushTempTool(t: ToolId, key: string): void;
@@ -206,6 +212,8 @@ export const useStore = create<Store>((set, get) => ({
   penDrawing: null,
   pathSel: null,
   penLocal: false,
+  layout: loadPrefs('layout', 'auto' as 'auto' | 'mobile' | 'desktop'),
+  sheet: null,
 
   setTool(t) {
     set({ tool: t, tempTool: null, ...brushSwap(get(), t) });

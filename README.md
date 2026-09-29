@@ -14,8 +14,10 @@ npm run dev          # http://localhost:5173
 | `npm run dev` | Servidor de desarrollo con recarga en caliente |
 | `npm run build` | Comprueba tipos y genera `dist/` para producción |
 | `npm test` | Tests unitarios del motor (Vitest) |
-| `npm run e2e` | Prueba de la fase 1 en Chromium (pincel, historial, capas, PSD de 50 capas, rendimiento) |
-| `node tests/e2e-full.mjs` | Prueba completa de las fases 2–6: 163 comprobaciones con ratón y teclado reales |
+| `npm run e2e` | Las tres baterías en Chromium: fase 1, escritorio y móvil |
+| `node tests/e2e.mjs` | Fase 1 (pincel, historial, capas, PSD de 50 capas, rendimiento) |
+| `node tests/e2e-full.mjs` | Fases 2–7: 207 comprobaciones con ratón y teclado reales |
+| `npm run e2e:mobile` | Móvil vertical/horizontal y tableta: 47 comprobaciones con toques de varios dedos |
 | `node tests/shots.mjs` | Capturas de la interfaz para revisión visual |
 | `npm run bench` | Compara Lienzo con Photopea en **tu** Chrome y **tu** GPU (`bench/resultados.md`) |
 
@@ -54,6 +56,8 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 **Espacio de trabajo**: varios documentos en pestañas (Ctrl+Tab/Ctrl+F6, cerrar con confirmación, arrastrar una capa a otra pestaña), reglas (Ctrl+R), guías (arrastrar desde la regla, Vista > Nueva guía, bloquear, borrar) y ajuste magnético a guías y bordes (Ctrl+Mayús+;), Selector de color con HSB/RGB/hex, recientes y panel Muestras, panel Canales, instantáneas en el Historial.
 
+**Móvil y tableta**: en pantallas estrechas la misma app cambia a una interfaz táctil (barra de herramientas abajo, hojas de Capas, Propiedades, Historial, Color, Ajustes, Exportar/Compartir y el menú completo, barra contextual con las acciones de la selección y botones OK/Aplicar/Recortar). Gestos: pellizcar para zoom, dos dedos para desplazar, toque con dos dedos = deshacer y con tres = rehacer, mantener pulsado = cuentagotas; con lápiz los dedos no pintan (rechazo de la palma). En tableta se usa la interfaz de escritorio con botones más grandes y los mismos gestos. Vista > Interfaz táctil la fuerza en cualquier pantalla.
+
 **Trazados**: panel Trazados (trazado de trabajo, guardar, renombrar, duplicar, eliminar, hacer trazado desde la selección), cada edición en el historial (Ctrl+Z), pluma con curvas Bézier (esquinas, curvas, romper manejadores con Alt, cerrar), mover anclas y manejadores (A o Ctrl), convertir en selección (Ctrl+Intro), en capa de forma, rellenar o contornear con el pincel.
 
 **Filtros** (con vista previa): desenfoque gaussiano, de cuadro y de movimiento, máscara de enfoque, enfocar, ruido, mosaico, paso alto, hallar bordes, relieve, nubes, mediana y Licuar (deformar, reconstruir, fruncir, inflar).
@@ -78,7 +82,7 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 ## Resultados verificados (entorno de pruebas, GPU emulada por CPU)
 
-- 24/24 tests unitarios, 24/24 de la fase 1 y 207/207 de las fases 2–7 en Chromium.
+- 24/24 tests unitarios, 24/24 de la fase 1, 207/207 de las fases 2–7 y 47/47 de móvil y tableta (toques de varios dedos simulados) en Chromium.
 - Composición GPU igual que la referencia en CPU (diferencia máxima 1/255, PSD de 50 capas).
 - Desenfoque gaussiano de 20 px en 24 MP: la interfaz no se bloquea (tarea larga máxima 0 ms).
 - Quitar fondo con IA local: ~2,5 s en CPU emulada. Relleno según contenido de un hueco de 150 px: ~1–3 s en un hilo.
@@ -87,4 +91,4 @@ Los tiempos absolutos no son representativos en ese entorno; ejecuta `npm run be
 
 ## Pendiente
 
-Ver el plan completo por fases en el documento del proyecto: modo móvil y tableta, objetos inteligentes, fuentes, IA (selección de objeto, Quitar, escalado), Camera Raw, RAW, CMYK y 16 bits, colaboración en tiempo real y app de escritorio (Tauri).
+Ver el plan completo por fases en el documento del proyecto: objetos inteligentes, fuentes, IA (selección de objeto, Quitar, escalado), Camera Raw, RAW, CMYK y 16 bits, colaboración en tiempo real y app de escritorio (Tauri).

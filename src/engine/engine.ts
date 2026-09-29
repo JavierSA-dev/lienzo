@@ -164,6 +164,16 @@ export class Engine {
   zoomOut() { this.stepZoom(-1); }
   zoomTo(z: number) { this.zoomAt(z, this.cw / 2, this.ch / 2); }
   zoomAtPoint(dir: 1 | -1, x: number, y: number) { this.stepZoom(dir, x, y); }
+  /** Vista absoluta (gestos táctiles: pellizcar y arrastrar con dos dedos). */
+  viewTo(zoom: number, panX: number, panY: number) { if (this.doc) this.setView(zoom, panX, panY); }
+  /** Color compuesto en un punto del documento (cuentagotas al mantener pulsado). */
+  pickColor(x: number, y: number): RGBA | null {
+    const d = this.doc;
+    if (!d || x < 0 || y < 0 || x >= d.width || y >= d.height) return null;
+    this.r.compose(d);
+    const c = this.r.readCompositePixel(Math.floor(x), Math.floor(y));
+    return c[3] > 0 ? [c[0], c[1], c[2], 255] : null;
+  }
 
   fit(capAt100: boolean) {
     const d = this.doc;

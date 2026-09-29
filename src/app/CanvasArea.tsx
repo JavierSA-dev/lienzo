@@ -9,6 +9,7 @@ import type { CombineMode } from '../engine/selection';
 import { penDown, pathEditDown, penMove, penUp, penFinish, penBackspace, PathOverlay, type PenDrag } from './Pen';
 import { isEmpty as isEmptyPath } from '../engine/path';
 import { Rulers, GuideLines, hitGuide, snapPoint } from './Rulers';
+import { TouchGestures } from './touch';
 
 const CURSORS: Partial<Record<ToolId, string>> = {
   move: 'move', marquee: 'crosshair', marqueeEllipse: 'crosshair', lasso: 'crosshair', polylasso: 'crosshair',
@@ -170,6 +171,14 @@ export function CanvasArea() {
     return () => { window.removeEventListener('keydown', key, true); window.removeEventListener('keyup', key, true); };
   });
 
+  // Gestos táctiles: llaman siempre a los manejadores más recientes.
+  const latest = useRef({ onDown: (_e: React.PointerEvent) => {}, onMove: (_e: React.PointerEvent) => {}, onUp: (_e: React.PointerEvent) => {}, toDoc: (x: number, y: number): Pt => [x, y] });
+  const touch = useRef<TouchGestures>(null as unknown as TouchGestures);
+  if (!touch.current) touch.current = new TouchGestures({
+    down: (e) => latest.current.onDown(e), move: (e) => latest.current.onMove(e), up: (e) => latest.current.onUp(e),
+    rect: () => (rectRef.current = wrap.current!.getBoundingClientRect()), toDoc: (x, y) => latest.current.toDoc(x, y),
+  });
+
   const tparamsRef = useRef(tparams);
   tparamsRef.current = tparams;
 
@@ -223,6 +232,14 @@ export function CanvasArea() {
   }
 
   // ---------------------------------------------------------------- puntero
+  // Puntero que está usando la herramienta. Con un toque corto el "down" se reproduce cuando el dedo
+  // ya se ha levantado y la captura ya no es posible: se sigue por su identificador.
+  const downPointer = useRef<number | null>(null);
+  const capture = (e: React.PointerEvent) => {
+    downPointer.current = e.pointerId;
+    try { (e.target as Element).setPointerCapture(e.pointerId); } catch { /* el puntero ya no está activo */ }
+  };
+  const owns = (e: React.PointerEvent) => downPointer.current === e.pointerId || !!(e.target as Element)?.hasPointerCapture?.(e.pointerId);
   const onDown = async (e: React.PointerEvent) => {
     if (!doc.open) return;
     const s = useStore.getState();
@@ -235,13 +252,13 @@ export function CanvasArea() {
     // Alt + botón derecho: tamaño (horizontal) y dureza (vertical) del pincel, como Photoshop.
     if (e.button === 2 && e.altKey && isPaintTool(tool)) {
       e.preventDefault();
-      (e.target as Element).setPointerCapture(e.pointerId);
+      capture(e);
       setUi({ kind: 'brushResize', x0: e.clientX, y0: e.clientY, size: s.brush.size, hardness: s.brush.hardness });
       return;
     }
     if (e.button !== 0 && e.button !== 1) return;
     e.preventDefault();
-    (e.target as Element).setPointerCapture(e.pointerId);
+    capture(e);
 
     // Mover guías con la herramienta Mover (soltar fuera del documento la elimina).
     if (tool === 'move' && e.button === 0 && !s.transform) {
@@ -350,7 +367,7 @@ export function CanvasArea() {
       moveUi(ui, p, e);
       return;
     }
-    if (!(e.target as Element).hasPointerCapture?.(e.pointerId)) return;
+    if (!owns(e)) return;
     const native = e.nativeEvent;
     const list = typeof native.getCoalescedEvents === 'function' ? native.getCoalescedEvents() : [];
     const points = list.length ? list.map(sample) : [s];
@@ -477,8 +494,9 @@ export function CanvasArea() {
   }
 
   const onUp = async (e: React.PointerEvent) => {
-    if (!(e.target as Element).hasPointerCapture?.(e.pointerId)) return;
-    (e.target as Element).releasePointerCapture(e.pointerId);
+    if (!owns(e)) return;
+    downPointer.current = null;
+    try { (e.target as Element).releasePointerCapture(e.pointerId); } catch { /* ya liberado */ }
     setGrabbing(false);
     const g = ui;
     if (g) {
@@ -532,6 +550,8 @@ export function CanvasArea() {
     }
     engine.pointer({ phase: 'up', points: [sample(e)], button: e.button, ...mods(e) });
   };
+
+  latest.current = { onDown: (e) => { void onDown(e); }, onMove, onUp: (e) => { void onUp(e); }, toDoc };
 
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -625,10 +645,10 @@ export function CanvasArea() {
       className="canvas-area"
       ref={wrap}
       style={{ cursor: doc.open ? cursor : 'default' }}
-      onPointerDown={onDown}
-      onPointerMove={onMove}
-      onPointerUp={onUp}
-      onPointerCancel={onUp}
+      onPointerDown={(e) => { if (!doc.open || !touch.current.onDown(e)) onDown(e); }}
+      onPointerMove={(e) => { if (!touch.current.onMove(e)) onMove(e); }}
+      onPointerUp={(e) => { if (e.pointerType === 'touch') setHover(null); if (!touch.current.onUp(e)) onUp(e); }}
+      onPointerCancel={(e) => { if (!touch.current.onUp(e)) onUp(e); }}
       onDoubleClick={() => { if (poly) finishPoly(); if (transform) commitTransform(); }}
       onPointerLeave={() => { setHover(null); useStore.setState({ cursor: null }); }}
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -713,6 +733,15 @@ function invertM(m: Matrix): Matrix {
 }
 
 /** Cuadro de edición de texto sobre el lienzo (el texto real se ve renderizado debajo). */
+/** Termina la edición de texto en curso (Esc, Ctrl+Intro o el botón OK de la interfaz móvil). */
+export function finishTextEdit() {
+  const cur = useStore.getState().textEdit;
+  useStore.setState({ textEdit: null });
+  if (!cur || cur.layerId == null) return;
+  if (!cur.text.trim()) engine.call('deleteLayer', cur.layerId);
+  else engine.call('updateText', cur.layerId, { text: cur.text }, true);
+}
+
 function TextEditor() {
   const te = useStore((s) => s.textEdit)!;
   const view = useStore((s) => s.view);
@@ -745,11 +774,7 @@ function TextEditor() {
         e.stopPropagation();
         if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
           e.preventDefault();
-          const cur = useStore.getState().textEdit;
-          useStore.setState({ textEdit: null });
-          if (!cur || cur.layerId == null) return;
-          if (!cur.text.trim()) engine.call('deleteLayer', cur.layerId);
-          else engine.call('updateText', cur.layerId, { text: cur.text }, true);
+          finishTextEdit();
         }
       }}
     />

@@ -445,3 +445,122 @@ button.color-big { border: 1px solid #000; cursor: pointer; }
 .adj-radio { display: flex; gap: 16px; }
 .adj-radio label { display: flex; align-items: center; gap: 4px; }
 .redeye-box { fill: none; stroke: #fff; stroke-dasharray: 4 3; }
+
+/* =====================================================================
+   Interfaz móvil (misma app, controles táctiles)
+   ===================================================================== */
+.app.mobile {
+  grid-template-rows: 48px auto 1fr auto calc(60px + env(safe-area-inset-bottom));
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: 'menu' 'opts' 'canvas' 'context' 'bottom';
+  width: 100vw; overflow: hidden;
+  font-size: 14px;
+}
+.m-top {
+  grid-area: menu; display: flex; align-items: center; gap: 2px; padding: 0 4px 0 2px;
+  padding-top: env(safe-area-inset-top); background: var(--bg-bar); border-bottom: 1px solid var(--border);
+}
+.m-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: #fff; padding: 0 4px; }
+.m-icon { width: 44px; height: 44px; display: grid; place-items: center; background: none; border: 0; border-radius: 10px; color: var(--text); flex: none; }
+.m-icon:active:not(:disabled) { background: var(--bg-hover); }
+.m-icon.accent { color: var(--accent); }
+.m-icon-space { width: 44px; }
+.app.mobile .optionsbar { height: 46px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; gap: 12px; padding: 0 10px; }
+.app.mobile .optionsbar::-webkit-scrollbar { display: none; }
+.app.mobile .optionsbar .opt input[type='range'] { width: 120px; height: 28px; }
+.app.mobile .optionsbar .opt-tool { display: none; }
+.app.mobile .optionsbar .hint { display: none; }
+.app.mobile .optionsbar button { min-height: 32px; }
+.app.mobile .doc-tabs { height: 30px; overflow-x: auto; scrollbar-width: none; }
+.app.mobile .doc-tab { font-size: 12px; }
+.m-context {
+  grid-area: context; display: flex; gap: 8px; padding: 8px 10px; overflow-x: auto; scrollbar-width: none;
+  background: var(--bg-panel); border-top: 1px solid var(--border);
+}
+.m-context .chip { flex: none; padding: 8px 14px; border-radius: 18px; font-size: 13px; }
+.m-context .chip.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.m-bottom {
+  grid-area: bottom; display: flex; align-items: center; gap: 4px; padding: 0 8px env(safe-area-inset-bottom) 4px;
+  background: var(--bg-bar); border-top: 1px solid var(--border);
+}
+.m-tools { flex: 1; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
+.m-tools::-webkit-scrollbar { display: none; }
+.m-tool {
+  flex: none; width: 48px; height: 48px; display: grid; place-items: center; border: 0; border-radius: 12px;
+  background: none; color: var(--text); position: relative;
+}
+.m-tool.active { background: var(--bg-active); color: #fff; box-shadow: inset 0 0 0 1px #666; }
+.m-tool .corner { position: absolute; right: 6px; bottom: 6px; border-left: 5px solid transparent; border-bottom: 5px solid currentColor; opacity: .6; }
+.m-color { flex: none; width: 36px; height: 36px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px #000; margin-left: 4px; }
+
+.m-veil { position: fixed; inset: 0; z-index: 90; background: #0007; display: flex; align-items: flex-end; animation: m-fade .15s ease-out; }
+.m-sheet {
+  width: 100%; max-height: 62vh; display: flex; flex-direction: column; background: #2a2a2a;
+  border-radius: 16px 16px 0 0; box-shadow: 0 -8px 30px #0008; padding-bottom: env(safe-area-inset-bottom);
+  animation: m-up .2s ease-out;
+}
+.m-sheet.tall { max-height: 84vh; height: 84vh; }
+.m-grip { width: 40px; height: 4px; border-radius: 2px; background: #666; margin: 8px auto 2px; flex: none; }
+.m-sheet header { display: flex; align-items: center; padding: 0 4px; flex: none; }
+.m-sheet h2 { flex: 1; text-align: center; margin: 0; font-size: 15px; font-weight: 600; color: #fff; }
+.m-sheet-body { overflow-y: auto; min-height: 0; flex: 1; padding: 4px 0 12px; }
+@keyframes m-up { from { transform: translateY(40%); opacity: .4; } }
+@keyframes m-fade { from { opacity: 0; } }
+.m-list { display: flex; flex-direction: column; }
+.m-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; padding: 0 18px;
+  background: none; border: 0; text-align: left; font-size: 15px; color: var(--text);
+}
+.m-row:active:not(:disabled) { background: var(--bg-hover); }
+.m-row.on { color: #fff; background: var(--accent-soft); }
+.m-row small { color: var(--text-faint); }
+.m-row-icon { display: flex; align-items: center; gap: 12px; }
+.m-sep { height: 1px; background: #3c3c3c; margin: 4px 16px; }
+.m-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; padding: 6px 12px; }
+.m-tile {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; min-height: 72px; padding: 8px;
+  background: var(--bg-panel); border: 1px solid var(--border-soft); border-radius: 12px; font-size: 12px; text-align: center; color: var(--text);
+}
+.m-tile:active { border-color: var(--accent); }
+.m-panel { display: flex; flex-direction: column; height: 100%; }
+.m-panel .panel { flex: 1; min-height: 0; background: transparent; }
+.m-panel .panel.props .panel-body { max-height: none; }
+.m-panel .panel-tabs { height: 36px; }
+.m-panel .panel-tab { padding: 0 16px; font-size: 14px; }
+.m-panel .layer { min-height: 56px; }
+.m-panel .icon-btn { width: 40px; height: 40px; }
+.m-panel .panel-foot { gap: 6px; padding: 6px 10px; }
+.m-panel .adj-row input[type='range'] { height: 30px; }
+.m-panel .color-slider input[type='range'] { height: 30px; }
+.m-panel .palette button { width: 34px; height: 34px; }
+
+.app.mobile .toasts { left: 12px; right: 12px; top: calc(56px + env(safe-area-inset-top)); bottom: auto; }
+.app.mobile .toast { max-width: none; }
+.app.mobile .home-inner { width: 92%; }
+.app.mobile .home-actions { flex-wrap: wrap; }
+.app.mobile .home-actions .btn { flex: 1; justify-content: center; min-height: 44px; }
+.app.mobile .drop { display: none; }
+.app.mobile .presets { grid-template-columns: repeat(2, 1fr); }
+.app.mobile .preset { min-height: 56px; }
+
+/* Diálogos en pantallas pequeñas: a lo ancho. */
+@media (max-width: 760px) {
+  .modal, .modal.wide { width: calc(100vw - 16px) !important; max-width: none; }
+  .modal .body { max-height: 70vh; }
+  .field { grid-template-columns: 1fr 1.2fr; }
+  .modal footer .btn { min-height: 40px; min-width: 88px; justify-content: center; }
+}
+
+/* Tableta y pantallas táctiles con la interfaz de escritorio: objetivos más grandes. */
+@media (pointer: coarse) {
+  .app:not(.mobile) { grid-template-columns: 52px 1fr auto; grid-template-rows: 34px 44px 1fr 24px; }
+  .app:not(.mobile) .tool { width: 42px; height: 38px; flex: none; }
+  .app:not(.mobile) .menu-btn { padding: 6px 12px; }
+  .app:not(.mobile) .menu-item { padding: 10px 12px; }
+  .app:not(.mobile) .icon-btn { min-width: 32px; min-height: 32px; }
+  .app:not(.mobile) .dock { width: 320px; }
+  .app:not(.mobile) .layer { min-height: 48px; }
+}
+.m-veil { touch-action: none; } .m-sheet-body { touch-action: pan-y; }
+.app.mobile > * { min-width: 0; }
+.m-tools { -webkit-mask-image: linear-gradient(to right, #000 85%, transparent); mask-image: linear-gradient(to right, #000 85%, transparent); padding-right: 24px; }

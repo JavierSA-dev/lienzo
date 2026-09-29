@@ -396,6 +396,11 @@ export const COMMANDS: Command[] = [
   { id: 'view.clearGuides', label: 'Borrar guías', needsDoc: true, run: call('clearGuides') },
   { id: 'view.panels', label: 'Ocultar paneles', keys: ['Tab'], run: () => useStore.setState({ panelsHidden: !S().panelsHidden }) },
   { id: 'view.fullscreen', label: 'Modo de pantalla completa', keys: ['F'], run: () => toggleFullscreen() },
+  { id: 'view.mobileUi', label: 'Interfaz táctil (móvil)', checked: () => S().layout === 'mobile', run: () => {
+    const layout = S().layout === 'mobile' ? 'desktop' : 'mobile';
+    useStore.setState({ layout, sheet: null });
+    savePrefs('layout', layout);
+  } },
 
   // Ayuda
   { id: 'help.shortcuts', label: 'Atajos de teclado', keys: ['F1'], run: dlg({ kind: 'shortcuts' }) },
