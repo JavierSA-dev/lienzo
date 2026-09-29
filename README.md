@@ -42,15 +42,17 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 ## Qué incluye
 
-**Herramientas**: Mover (selección automática), Marco rectangular/elíptico, Lazo, Lazo poligonal, Varita mágica, Recortar, Cuentagotas, Pincel corrector puntual, Pincel corrector, Parche, Pincel, Lápiz, Tampón de clonar, Borrador, Degradado (lineal, radial, angular, reflejado, rombo), Bote de pintura, Desenfocar/Enfocar/Dedo, Sobreexponer/Subexponer, Pluma y Selección directa, Texto, Formas (rectángulo, redondeado, elipse, línea, polígono), Mano y Zoom.
+**Herramientas**: Mover (selección automática), Marco rectangular/elíptico, Lazo, Lazo poligonal, Varita mágica, Recortar, Cuentagotas, Pincel corrector puntual, Pincel corrector, Parche, Pupilas rojas, Pincel, Lápiz, Tampón de clonar, Borrador, Degradado (lineal, radial, angular, reflejado, rombo), Bote de pintura, Desenfocar/Enfocar/Dedo, Sobreexponer/Subexponer, Pincel de historia, Pluma y Selección directa, Texto, Formas (rectángulo, redondeado, elipse, línea, polígono), Mano, Rotar vista (R) y Zoom. Cada herramienta recuerda su tamaño, dureza y opacidad.
 
-**Selección**: añadir/restar/intersecar con Mayús/Alt, calar, expandir/contraer, invertir, volver a seleccionar, mover con flechas, cargar desde capa (Ctrl+clic en la miniatura), seleccionar sujeto con IA.
+**Selección**: añadir/restar/intersecar con Mayús/Alt, calar, expandir/contraer, invertir, volver a seleccionar, mover con flechas, cargar desde capa (Ctrl+clic en la miniatura), seleccionar sujeto con IA, Máscara rápida (Q), guardar/cargar selección como canal alfa, cargar la luminosidad (Ctrl+clic en RGB o Ctrl+Alt+2) y cada canal.
 
-**Capas**: selección de varias capas (Ctrl+clic, Mayús+clic, Ctrl+Alt+A) para mover, transformar, agrupar, combinar, duplicar, eliminar, cambiar opacidad/modo, alinear y distribuir; grupos anidados (Pasar a través o aislados, con opacidad, modo y máscara; plegar, arrastrar dentro y fuera, mover y transformar el grupo entero), máscaras de recorte, máscaras (pintar, desactivar, aplicar, invertir), capas de ajuste no destructivas (Niveles, Curvas, Tono/Saturación, Equilibrio de color, Blanco y negro, Brillo/Contraste, Exposición, Intensidad, Invertir, Posterizar, Umbral, Mapa de degradado, Color sólido), estilos (sombra paralela, resplandor exterior, trazo, superposición de color), texto y formas editables, bloquear transparencia, combinar, estampar, acoplar.
+**Capas**: selección de varias capas (Ctrl+clic, Mayús+clic, Ctrl+Alt+A) para mover, transformar, agrupar, combinar, duplicar, eliminar, cambiar opacidad/modo, alinear y distribuir; grupos anidados (Pasar a través o aislados, con opacidad, modo y máscara; plegar, arrastrar dentro y fuera, mover y transformar el grupo entero), máscaras de recorte, máscaras (pintar, desactivar, aplicar, invertir), capas de ajuste no destructivas (Niveles, Curvas, Tono/Saturación, Equilibrio de color, Blanco y negro, Brillo/Contraste, Exposición, Intensidad, Invertir, Posterizar, Umbral, Mapa de degradado, Filtro de fotografía, Corrección selectiva, Mezclador de canales, Color sólido), estilos (sombra paralela, resplandor exterior, trazo, superposición de color), texto y formas editables, bloquear transparencia, combinar, estampar, acoplar.
 
-**Imagen y edición**: tamaño de imagen y de lienzo, recortar, rotar/voltear, transformación libre (Ctrl+T con escala, rotación y numérico), copiar/pegar con el portapapeles del sistema, rellenar, ajustes destructivos con vista previa.
+**Imagen y edición**: tamaño de imagen y de lienzo, recortar, rotar/voltear, transformación libre (Ctrl+T con escala, rotación y numérico), copiar/pegar con el portapapeles del sistema, rellenar (incluido gris al 50 % y según el contenido), Contornear, Nueva capa con relleno neutro para esquivar y quemar, Aplicar imagen (separación de frecuencias), ajustes destructivos con vista previa.
 
 **Retoque**: pincel corrector puntual y relleno según contenido (síntesis de textura con PatchMatch y fusión de Poisson, en local), pincel corrector con Alt+clic de origen.
+
+**Espacio de trabajo**: varios documentos en pestañas (Ctrl+Tab/Ctrl+F6, cerrar con confirmación, arrastrar una capa a otra pestaña), reglas (Ctrl+R), guías (arrastrar desde la regla, Vista > Nueva guía, bloquear, borrar) y ajuste magnético a guías y bordes (Ctrl+Mayús+;), Selector de color con HSB/RGB/hex, recientes y panel Muestras, panel Canales, instantáneas en el Historial.
 
 **Trazados**: panel Trazados (trazado de trabajo, guardar, renombrar, duplicar, eliminar, hacer trazado desde la selección), cada edición en el historial (Ctrl+Z), pluma con curvas Bézier (esquinas, curvas, romper manejadores con Alt, cerrar), mover anclas y manejadores (A o Ctrl), convertir en selección (Ctrl+Intro), en capa de forma, rellenar o contornear con el pincel.
 
@@ -76,7 +78,7 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 ## Resultados verificados (entorno de pruebas, GPU emulada por CPU)
 
-- 21/21 tests unitarios, 24/24 de la fase 1 y 163/163 de las fases 2–6 en Chromium.
+- 24/24 tests unitarios, 24/24 de la fase 1 y 207/207 de las fases 2–7 en Chromium.
 - Composición GPU igual que la referencia en CPU (diferencia máxima 1/255, PSD de 50 capas).
 - Desenfoque gaussiano de 20 px en 24 MP: la interfaz no se bloquea (tarea larga máxima 0 ms).
 - Quitar fondo con IA local: ~2,5 s en CPU emulada. Relleno según contenido de un hueco de 150 px: ~1–3 s en un hilo.
@@ -85,4 +87,4 @@ Los tiempos absolutos no son representativos en ese entorno; ejecuta `npm run be
 
 ## Pendiente
 
-Ver el plan completo por fases en el documento del proyecto: varios documentos, guías, canales, modo móvil, objetos inteligentes, fuentes, IA (selección de objeto, Quitar, escalado), Camera Raw, RAW, CMYK y 16 bits, relleno según contenido local, colaboración en tiempo real y app de escritorio (Tauri).
+Ver el plan completo por fases en el documento del proyecto: modo móvil y tableta, objetos inteligentes, fuentes, IA (selección de objeto, Quitar, escalado), Camera Raw, RAW, CMYK y 16 bits, colaboración en tiempo real y app de escritorio (Tauri).

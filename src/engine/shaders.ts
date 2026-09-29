@@ -185,6 +185,7 @@ uniform int uKind;
 uniform vec4 uP0;
 uniform vec4 uP1;
 uniform vec4 uP2;
+uniform vec4 uSel[9];
 uniform float uOpacity;
 uniform int uMode;
 uniform bool uAtop;
@@ -255,6 +256,39 @@ vec3 adjust(vec3 c) {
     return clamp(mix(vec3(lum(r)), r, 1.0 + uP0.y), 0.0, 1.0);
   }
   if (uKind == 7) return vec3(lum(c) >= uP0.x ? 1.0 : 0.0);
+  if (uKind == 8) {
+    // Corrección selectiva: cada gama pesa según su pureza y añade/quita tinta CMYK.
+    float mx = max(max(c.r, c.g), c.b), mn = min(min(c.r, c.g), c.b);
+    float mid = c.r + c.g + c.b - mx - mn;
+    float w[9];
+    w[0] = mx == c.r && mx > mn ? mx - mid : 0.0;
+    w[1] = mn == c.b && mx > mn ? mid - mn : 0.0;
+    w[2] = mx == c.g && mx > mn && mx != c.r ? mx - mid : 0.0;
+    w[3] = mn == c.r && mx > mn && mn != c.b ? mid - mn : 0.0;
+    w[4] = mx == c.b && mx > mn && mx != c.r && mx != c.g ? mx - mid : 0.0;
+    w[5] = mn == c.g && mx > mn && mn != c.b && mn != c.r ? mid - mn : 0.0;
+    w[6] = max(0.0, mn - 0.5) * 2.0;
+    w[8] = max(0.0, 0.5 - mx) * 2.0;
+    w[7] = max(0.0, 1.0 - abs(mx - 0.5) - abs(mn - 0.5));
+    vec3 ink = 1.0 - c;
+    vec3 d = vec3(0.0);
+    for (int i = 0; i < 9; i++) {
+      if (w[i] <= 0.0) continue;
+      vec4 a = uSel[i];
+      vec3 k1 = uP0.x > 0.5 ? ink + a.rgb * ink : ink + a.rgb;
+      k1 = clamp(k1, 0.0, 1.0);
+      k1 = a.a >= 0.0 ? k1 + (1.0 - k1) * a.a * (uP0.x > 0.5 ? (1.0 - mx * 0.5) : 1.0) : k1 * (1.0 + a.a);
+      d += (clamp(k1, 0.0, 1.0) - ink) * w[i];
+    }
+    return clamp(c - d, 0.0, 1.0);
+  }
+  if (uKind == 9) {
+    vec3 r = mix(c, c * uP0.rgb, uP0.a);
+    return uP1.x > 0.5 ? setLum(r, lum(c)) : r;
+  }
+  if (uKind == 10) {
+    return clamp(vec3(dot(c, uP0.rgb) + uP0.a, dot(c, uP1.rgb) + uP1.a, dot(c, uP2.rgb) + uP2.a), 0.0, 1.0);
+  }
   return c;
 }
 void main() {
@@ -294,9 +328,14 @@ precision highp float;
 uniform sampler2D uTex;
 uniform vec4 uUV;
 uniform float uAlpha;
+uniform int uChannel; // 0 = RGB; 1..3 = ver un solo canal en grises (panel Canales)
 in vec2 vUV;
 out vec4 outColor;
-void main() { outColor = texture(uTex, mix(uUV.xy, uUV.zw, vUV)) * uAlpha; }`;
+void main() {
+  vec4 c = texture(uTex, mix(uUV.xy, uUV.zw, vUV)) * uAlpha;
+  if (uChannel > 0) { float g = c.a > 0.0 ? c[uChannel - 1] / c.a : 0.0; c = vec4(vec3(g) * c.a, c.a); }
+  outColor = c;
+}`;
 
 /** Damero de transparencia, de tamaño fijo en pantalla como en Photoshop. */
 export const CHECKER_FS = `#version 300 es
@@ -323,8 +362,10 @@ uniform sampler2D uTex;
 uniform vec4 uUV;
 in vec2 vUV;
 out vec4 outColor;
+uniform float uFill;   // sin textura: valor fijo de la máscara
+uniform bool uHasTex;
 void main() {
-  float m = texture(uTex, mix(uUV.xy, uUV.zw, vUV)).r;
+  float m = uHasTex ? texture(uTex, mix(uUV.xy, uUV.zw, vUV)).r : uFill;
   float a = (1.0 - m) * 0.5;
   outColor = vec4(1.0 * a, 0.0, 0.0, a);
 }`;

@@ -1,6 +1,6 @@
 import { TILE, type Matrix, type Rect, type ViewState } from './types';
-import { tileKey, keyTx, keyTy, type EditorDocument, type PixelLayer } from './document';
-import { RECT_VS, QUAD_VS, BLEND_FS, NORMAL_FS, ADJ_FS, VIEW_FS, CHECKER_FS, SOLID_FS, MIX_FS, BLEND_INDEX } from './shaders';
+import { tileKey, keyTx, keyTy, type EditorDocument, type PixelLayer, type MaskChannel } from './document';
+import { RECT_VS, QUAD_VS, BLEND_FS, NORMAL_FS, ADJ_FS, VIEW_FS, CHECKER_FS, SOLID_FS, MIX_FS, MASKVIEW_FS, BLEND_INDEX } from './shaders';
 import { adjustmentUniforms } from './adjust';
 import { apply } from './vector';
 import { cpuFlatten } from './ops';
@@ -60,6 +60,13 @@ export class Renderer {
   private lutTex = new Map<number, { key: string; tex: WebGLTexture | null; u: ReturnType<typeof adjustmentUniforms> }>();
   private comp = new Map<number, CompTile>();
   private frames: Frame[] = [];
+  private maskViewProg: Prog;
+  private maskQuadProg: Prog;
+  private checkerQuadProg: Prog;
+  /** Superposición roja de una máscara (Máscara rápida). */
+  private overlay: { mask: MaskChannel; tex: Map<number, WebGLTexture> } | null = null;
+  /** Canal visible (panel Canales): 0 = RGB, 1 R, 2 G, 3 B. */
+  viewChannel = 0;
   private mixProg: Prog;
   private docDirty = new Set<number>();
   private allDirty = true;
@@ -84,9 +91,12 @@ export class Renderer {
     this.maxTexture = gl.getParameter(gl.MAX_TEXTURE_SIZE);
     this.blendProg = this.program(RECT_VS, BLEND_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uBack', 'uSrc', 'uSrcOffset', 'uDocOrigin', 'uOpacity', 'uMode', 'uPremul', 'uAtop']);
     this.normalProg = this.program(RECT_VS, NORMAL_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uSrc', 'uSrcOffset', 'uOpacity', 'uPremul']);
-    this.adjProg = this.program(RECT_VS, ADJ_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uBack', 'uLut', 'uKind', 'uP0', 'uP1', 'uP2', 'uOpacity', 'uMode', 'uAtop']);
-    this.viewProg = this.program(RECT_VS, VIEW_FS, [...UNIFORMS_BASE, 'uTex', 'uUV', 'uAlpha']);
-    this.quadProg = this.program(QUAD_VS, VIEW_FS, ['uP', 'uTarget', 'uTex', 'uUV', 'uAlpha']);
+    this.adjProg = this.program(RECT_VS, ADJ_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uBack', 'uLut', 'uKind', 'uP0', 'uP1', 'uP2', 'uSel', 'uOpacity', 'uMode', 'uAtop']);
+    this.viewProg = this.program(RECT_VS, VIEW_FS, [...UNIFORMS_BASE, 'uTex', 'uUV', 'uAlpha', 'uChannel']);
+    this.quadProg = this.program(QUAD_VS, VIEW_FS, ['uP', 'uTarget', 'uTex', 'uUV', 'uAlpha', 'uChannel']);
+    this.maskViewProg = this.program(RECT_VS, MASKVIEW_FS, [...UNIFORMS_BASE, 'uTex', 'uUV', 'uFill', 'uHasTex']);
+    this.maskQuadProg = this.program(QUAD_VS, MASKVIEW_FS, ['uP', 'uTarget', 'uTex', 'uUV', 'uFill', 'uHasTex']);
+    this.checkerQuadProg = this.program(QUAD_VS, CHECKER_FS, ['uP', 'uTarget', 'uCell']);
     this.checkerProg = this.program(RECT_VS, CHECKER_FS, [...UNIFORMS_BASE, 'uCell']);
     this.solidProg = this.program(RECT_VS, SOLID_FS, [...UNIFORMS_BASE, 'uColor']);
     this.vao = gl.createVertexArray()!;
@@ -535,6 +545,7 @@ export class Renderer {
       gl.uniform4fv(J.u.uP0, lut.u.p0);
       gl.uniform4fv(J.u.uP1, lut.u.p1);
       gl.uniform4fv(J.u.uP2, lut.u.p2);
+      if (lut.u.sel) gl.uniform4fv(J.u.uSel, lut.u.sel);
       gl.uniform1f(J.u.uOpacity, it.opacity);
       gl.uniform1i(J.u.uMode, BLEND_INDEX[it.blend] ?? 0);
       gl.uniform1i(J.u.uAtop, atop ? 1 : 0);
@@ -664,6 +675,32 @@ export class Renderer {
     this.allDirty = true;
   }
 
+  // ------------------------------------------------------------ máscara rápida
+
+  setMaskOverlay(mask: MaskChannel | null) {
+    const gl = this.gl;
+    if (this.overlay) for (const t of this.overlay.tex.values()) gl.deleteTexture(t);
+    this.overlay = mask ? { mask, tex: new Map() } : null;
+    if (mask) for (const k of mask.tiles.keys()) mask.gpuDirty.add(k);
+  }
+
+  private syncOverlay() {
+    const o = this.overlay;
+    if (!o) return;
+    const gl = this.gl, m = o.mask;
+    for (const k of m.gpuRemoved) { const t = o.tex.get(k); if (t) { gl.deleteTexture(t); o.tex.delete(k); } }
+    m.gpuRemoved.clear();
+    for (const k of m.gpuDirty) {
+      const data = m.tiles.get(k);
+      if (!data) continue;
+      let t = o.tex.get(k);
+      if (!t) { t = gl.createTexture()!; gl.bindTexture(gl.TEXTURE_2D, t); gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R8, TILE, TILE); this.texParams(false, true); o.tex.set(k, t); }
+      else gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TILE, TILE, gl.RED, gl.UNSIGNED_BYTE, data);
+    }
+    m.gpuDirty.clear();
+  }
+
   // ------------------------------------------------------------ vista
 
   draw(doc: EditorDocument | null, view: ViewState) {
@@ -680,24 +717,40 @@ export class Renderer {
     const ox = view.panX * view.dpr, oy = view.panY * view.dpr;
     const X = (dx: number) => ox + dx * s, Y = (dy: number) => oy + dy * s;
     const dX0 = X(0), dY0 = Y(0), dX1 = X(doc.width), dY1 = Y(doc.height);
+    // Vista girada (Rotar vista): cada rectángulo se dibuja como un cuadrilátero rotado.
+    const rot = view.rot ?? 0, rc = Math.cos(rot), rs = Math.sin(rot), rcx = W / 2, rcy = H / 2;
+    const R = (x: number, y: number) => [rcx + (x - rcx) * rc - (y - rcy) * rs, rcy + (x - rcx) * rs + (y - rcy) * rc];
+    const quad = (prog: Prog, x0: number, y0: number, x1: number, y1: number) => {
+      gl.uniform2fv(prog.u.uP, [...R(x0, y0), ...R(x1, y0), ...R(x0, y1), ...R(x1, y1)]);
+      gl.uniform2f(prog.u.uTarget, W, H);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    };
 
     gl.disable(gl.BLEND);
-    gl.useProgram(this.checkerProg.p);
-    gl.uniform1f(this.checkerProg.u.uCell, 8 * view.dpr);
-    this.setRect(this.checkerProg, dX0, dY0, dX1, dY1, W, H, true);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    if (rot) {
+      gl.useProgram(this.checkerQuadProg.p);
+      gl.uniform1f(this.checkerQuadProg.u.uCell, 8 * view.dpr);
+      quad(this.checkerQuadProg, dX0, dY0, dX1, dY1);
+    } else {
+      gl.useProgram(this.checkerProg.p);
+      gl.uniform1f(this.checkerProg.u.uCell, 8 * view.dpr);
+      this.setRect(this.checkerProg, dX0, dY0, dX1, dY1, W, H, true);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
 
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-    const P = this.viewProg;
+    const P = rot ? this.quadProg : this.viewProg;
     gl.useProgram(P.p);
     gl.uniform1i(P.u.uTex, 0);
     gl.uniform1f(P.u.uAlpha, 1);
+    gl.uniform1i(P.u.uChannel, this.viewChannel);
     gl.activeTexture(gl.TEXTURE0);
     const minify = s < 1;
-    const vtx0 = Math.max(0, Math.floor(-ox / s / TILE)), vty0 = Math.max(0, Math.floor(-oy / s / TILE));
-    const vtx1 = Math.min(doc.tilesX - 1, Math.floor((W - ox) / s / TILE));
-    const vty1 = Math.min(doc.tilesY - 1, Math.floor((H - oy) / s / TILE));
+    // Con la vista girada se dibujan todos los tiles (el recorte a pantalla es rectangular).
+    const vtx0 = rot ? 0 : Math.max(0, Math.floor(-ox / s / TILE)), vty0 = rot ? 0 : Math.max(0, Math.floor(-oy / s / TILE));
+    const vtx1 = rot ? doc.tilesX - 1 : Math.min(doc.tilesX - 1, Math.floor((W - ox) / s / TILE));
+    const vty1 = rot ? doc.tilesY - 1 : Math.min(doc.tilesY - 1, Math.floor((H - oy) / s / TILE));
     for (let ty = vty0; ty <= vty1; ty++) {
       for (let tx = vtx0; tx <= vtx1; tx++) {
         const c = this.comp.get(tileKey(tx, ty));
@@ -707,8 +760,35 @@ export class Renderer {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minify ? gl.LINEAR_MIPMAP_LINEAR : gl.NEAREST);
         const pw = Math.min(TILE, doc.width - tx * TILE), ph = Math.min(TILE, doc.height - ty * TILE);
         gl.uniform4f(P.u.uUV, 0, 0, pw / TILE, ph / TILE);
-        this.setRect(P, X(tx * TILE), Y(ty * TILE), X(tx * TILE + pw), Y(ty * TILE + ph), W, H, true);
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        if (rot) quad(P, X(tx * TILE), Y(ty * TILE), X(tx * TILE + pw), Y(ty * TILE + ph));
+        else {
+          this.setRect(P, X(tx * TILE), Y(ty * TILE), X(tx * TILE + pw), Y(ty * TILE + ph), W, H, true);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        }
+      }
+    }
+
+    // Máscara rápida: rojo translúcido donde no hay selección.
+    if (this.overlay) {
+      this.syncOverlay();
+      const M = rot ? this.maskQuadProg : this.maskViewProg, o = this.overlay;
+      gl.useProgram(M.p);
+      gl.uniform1i(M.u.uTex, 0);
+      gl.uniform1f(M.u.uFill, o.mask.fill / 255);
+      for (let ty = vty0; ty <= vty1; ty++) {
+        for (let tx = vtx0; tx <= vtx1; tx++) {
+          const t = o.tex.get(tileKey(tx, ty));
+          if (!t && o.mask.fill >= 255) continue;
+          gl.uniform1i(M.u.uHasTex, t ? 1 : 0);
+          if (t) gl.bindTexture(gl.TEXTURE_2D, t);
+          const pw = Math.min(TILE, doc.width - tx * TILE), ph = Math.min(TILE, doc.height - ty * TILE);
+          gl.uniform4f(M.u.uUV, 0, 0, pw / TILE, ph / TILE);
+          if (rot) quad(M, X(tx * TILE), Y(ty * TILE), X(tx * TILE + pw), Y(ty * TILE + ph));
+          else {
+            this.setRect(M, X(tx * TILE), Y(ty * TILE), X(tx * TILE + pw), Y(ty * TILE + ph), W, H, true);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          }
+        }
       }
     }
 
@@ -717,12 +797,13 @@ export class Renderer {
       const pv = this.preview, Q = this.quadProg, r = pv.src;
       const corners = [[r.x, r.y], [r.x + r.w, r.y], [r.x, r.y + r.h], [r.x + r.w, r.y + r.h]].map(([x, y]) => {
         const [px, py] = apply(pv.matrix, x, y);
-        return [X(px), Y(py)];
+        return R(X(px), Y(py));
       });
       gl.useProgram(Q.p);
       gl.uniform2fv(Q.u.uP, corners.flat());
       gl.uniform2f(Q.u.uTarget, W, H);
       gl.uniform1i(Q.u.uTex, 0);
+      gl.uniform1i(Q.u.uChannel, this.viewChannel);
       gl.uniform4f(Q.u.uUV, 0, 0, 1, 1);
       gl.uniform1f(Q.u.uAlpha, 1);
       gl.bindTexture(gl.TEXTURE_2D, pv.tex);
@@ -730,6 +811,7 @@ export class Renderer {
     }
     gl.disable(gl.BLEND);
 
+    if (rot) return; // el borde fino sólo se dibuja con la vista recta
     const S = this.solidProg;
     gl.useProgram(S.p);
     gl.uniform4f(S.u.uColor, 0, 0, 0, 1);

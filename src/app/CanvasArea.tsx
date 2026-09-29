@@ -3,16 +3,17 @@ import { X as XIcon } from 'lucide-react';
 import { engine } from '../engine/client';
 import type { Matrix, PointerSample, Rect, ToolId } from '../engine/types';
 import { useStore, toRgba } from './store';
-import { openFile, placeFile, isPaintTool } from './commands';
+import { openFile, placeFile, isPaintTool, closeDocAsk } from './commands';
 import { Home } from './Home';
 import type { CombineMode } from '../engine/selection';
 import { penDown, pathEditDown, penMove, penUp, penFinish, penBackspace, PathOverlay, type PenDrag } from './Pen';
 import { isEmpty as isEmptyPath } from '../engine/path';
+import { Rulers, GuideLines, hitGuide, snapPoint } from './Rulers';
 
 const CURSORS: Partial<Record<ToolId, string>> = {
   move: 'move', marquee: 'crosshair', marqueeEllipse: 'crosshair', lasso: 'crosshair', polylasso: 'crosshair',
   wand: 'crosshair', crop: 'crosshair', eyedropper: 'crosshair', gradient: 'crosshair', bucket: 'crosshair',
-  text: 'text', shape: 'crosshair', hand: 'grab', zoom: 'zoom-in', pen: 'crosshair', pathSelect: 'default', patch: 'crosshair',
+  text: 'text', shape: 'crosshair', hand: 'grab', zoom: 'zoom-in', pen: 'crosshair', pathSelect: 'default', patch: 'crosshair', rotateView: 'grab', redEye: 'crosshair',
 };
 
 type Pt = [number, number];
@@ -27,7 +28,10 @@ type UIDrag =
   | { kind: 'transform'; handle: string; start: Pt; orig: TParams }
   | { kind: 'brushResize'; x0: number; y0: number; size: number; hardness: number }
   | { kind: 'pen'; g: PenDrag }
-  | { kind: 'patchDrag'; start: Pt; cur: Pt };
+  | { kind: 'patchDrag'; start: Pt; cur: Pt }
+  | { kind: 'guide'; id: number; dir: 'h' | 'v'; pos: number }
+  | { kind: 'rotate'; a0: number; rot0: number }
+  | { kind: 'redEye'; start: Pt; cur: Pt };
 
 /** Parámetros de la transformación libre (en coordenadas de documento). */
 interface TParams { tx: number; ty: number; sx: number; sy: number; rot: number }
@@ -60,6 +64,9 @@ export function CanvasArea() {
   const [poly, setPoly] = useState<{ pts: Pt[]; mode: CombineMode } | null>(null);
   const [tparams, setTparams] = useState<TParams>({ tx: 0, ty: 0, sx: 1, sy: 1, rot: 0 });
   const [caps, setCaps] = useState(false);
+  const [area, setArea] = useState({ w: 0, h: 0 });
+  const [overGuide, setOverGuide] = useState<'h' | 'v' | null>(null);
+  const showRulers = useStore((s) => s.opts.rulers);
   const doc = useStore((s) => s.doc);
   const view = useStore((s) => s.view);
   const tool = useStore((s) => s.tool);
@@ -83,6 +90,7 @@ export function CanvasArea() {
     const ro = new ResizeObserver(() => {
       const rr = el.getBoundingClientRect();
       rectRef.current = rr;
+      setArea({ w: rr.width, h: rr.height });
       engine.send({ type: 'resize', width: rr.width, height: rr.height, dpr: window.devicePixelRatio || 1 });
     });
     ro.observe(el);
@@ -120,6 +128,9 @@ export function CanvasArea() {
       const s = useStore.getState();
       if (s.dialog || s.textEdit) return;
       if (e.key === 'CapsLock' || e.getModifierState) setCaps(e.getModifierState?.('CapsLock') ?? false);
+      if (e.type === 'keydown' && e.key === 'Escape' && s.tool === 'rotateView' && s.view.rot) {
+        e.preventDefault(); e.stopImmediatePropagation(); engine.call('setRotation', 0); return;
+      }
       if (e.type === 'keydown' && !s.transform) {
         // Pluma: Ctrl+Intro = selección; Intro/Esc terminan; Retroceso borra puntos.
         if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !isEmptyPath(s.path)) {
@@ -168,7 +179,15 @@ export function CanvasArea() {
     const pressure = e.pointerType === 'mouse' ? 1 : e.pressure || 0.5;
     return { x: e.clientX - r.left, y: e.clientY - r.top, p: pressure, t: e.timeStamp };
   };
-  const toDoc = (x: number, y: number): Pt => [(x - view.panX) / view.zoom, (y - view.panY) / view.zoom];
+  const rot = view.rot ?? 0;
+  const toDoc = (x: number, y: number): Pt => {
+    if (rot) {
+      // La vista gira alrededor del centro del área: se deshace el giro antes de pasar a documento.
+      const r = rectRef.current, cx = (r?.width ?? 0) / 2, cy = (r?.height ?? 0) / 2, c = Math.cos(-rot), sn = Math.sin(-rot);
+      [x, y] = [cx + (x - cx) * c - (y - cy) * sn, cy + (x - cx) * sn + (y - cy) * c];
+    }
+    return [(x - view.panX) / view.zoom, (y - view.panY) / view.zoom];
+  };
   const docPt = (e: React.PointerEvent): Pt => { const s = sample(e); return toDoc(s.x, s.y); };
   const mods = (e: React.PointerEvent) => ({ alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey });
 
@@ -209,7 +228,9 @@ export function CanvasArea() {
     const s = useStore.getState();
     if (s.textEdit && tool !== 'text') await commitText();
     rectRef.current = wrap.current!.getBoundingClientRect();
-    const p = docPt(e);
+    const raw = docPt(e);
+    // Ajuste magnético a guías y bordes para herramientas de dibujo y selección.
+    const p: Pt = ['marquee', 'marqueeEllipse', 'shape', 'crop', 'pen', 'gradient'].includes(tool) ? snapPoint(raw) : raw;
 
     // Alt + botón derecho: tamaño (horizontal) y dureza (vertical) del pincel, como Photoshop.
     if (e.button === 2 && e.altKey && isPaintTool(tool)) {
@@ -221,6 +242,12 @@ export function CanvasArea() {
     if (e.button !== 0 && e.button !== 1) return;
     e.preventDefault();
     (e.target as Element).setPointerCapture(e.pointerId);
+
+    // Mover guías con la herramienta Mover (soltar fuera del documento la elimina).
+    if (tool === 'move' && e.button === 0 && !s.transform) {
+      const sp = sample(e), hg = hitGuide(sp.x, sp.y);
+      if (hg) { setUi({ kind: 'guide', id: hg.id, dir: hg.dir, pos: hg.dir === 'h' ? p[1] : p[0] }); return; }
+    }
 
     // Transformación libre activa: asas.
     if (s.transform && e.button === 0) {
@@ -248,6 +275,11 @@ export function CanvasArea() {
           setPoly({ ...poly, pts: [...poly.pts, p] });
           return;
         }
+        case 'rotateView': {
+          const sp = sample(e), r = rectRef.current!;
+          setUi({ kind: 'rotate', a0: Math.atan2(sp.y - r.height / 2, sp.x - r.width / 2), rot0: rot });
+          return;
+        }
         case 'patch': {
           // Dentro de la selección: arrastrar hacia el origen. Fuera: dibujar la zona (como el Lazo).
           const inside = s.doc.selection && !e.shiftKey && !e.altKey && (await engine.call<number>('selectionValueAt', p[0], p[1])) > 0;
@@ -267,6 +299,9 @@ export function CanvasArea() {
         }
         case 'wand':
           engine.call('magicWand', p[0], p[1], s.opts.wandTolerance, s.opts.contiguous, s.opts.sampleAll, modeFrom(e));
+          return;
+        case 'redEye':
+          setUi({ kind: 'redEye', start: p, cur: p });
           return;
         case 'bucket':
           engine.call('bucketFill', p[0], p[1], s.opts.wandTolerance, s.opts.contiguous, s.opts.sampleAll);
@@ -308,7 +343,9 @@ export function CanvasArea() {
     setCaps(e.getModifierState?.('CapsLock') ?? false);
     const v = useStore.getState().view;
     useStore.setState({ cursor: { x: Math.floor((s.x - v.panX) / v.zoom), y: Math.floor((s.y - v.panY) / v.zoom) } });
-    const p = toDoc(s.x, s.y);
+    const raw = toDoc(s.x, s.y);
+    const p: Pt = ui && ['marquee', 'shape', 'crop', 'pen', 'gradient'].includes(ui.kind) && !(ui.kind === 'crop' && ui.handle === 'move') ? snapPoint(raw) : raw;
+    if (!ui && tool === 'move') { const hg = hitGuide(s.x, s.y); setOverGuide(hg ? hg.dir : null); }
     if (ui) {
       moveUi(ui, p, e);
       return;
@@ -369,7 +406,15 @@ export function CanvasArea() {
       }
       case 'transform': moveTransform(g, p, e); return;
       case 'pen': penMove(g.g, p, e, useStore.getState().view.zoom); return;
-      case 'patchDrag': setUi({ ...g, cur: p }); return;
+      case 'patchDrag': case 'redEye': setUi({ ...g, cur: p }); return;
+      case 'guide': setUi({ ...g, pos: Math.round(g.dir === 'h' ? p[1] : p[0]) }); return;
+      case 'rotate': {
+        const r = rectRef.current!, sp = sample(e), a = Math.atan2(sp.y - r.height / 2, sp.x - r.width / 2);
+        let v = g.rot0 + a - g.a0;
+        if (e.shiftKey) v = Math.round(v / (Math.PI / 12)) * (Math.PI / 12);
+        engine.call('setRotation', v);
+        return;
+      }
       case 'brushResize': {
         const s = useStore.getState();
         s.setBrush({ size: Math.max(1, g.size + (e.clientX - g.x0)), hardness: Math.min(1, Math.max(0, g.hardness - (e.clientY - g.y0) / 200)) });
@@ -471,6 +516,12 @@ export function CanvasArea() {
           return;
         }
         case 'pen': penUp(g.g); return;
+        case 'guide': engine.call('moveGuide', g.id, g.pos); return;
+        case 'redEye': {
+          const o = useStore.getState().opts;
+          engine.call('redEye', g.start[0], g.start[1], g.cur[0], g.cur[1], o.pupilSize, o.darkenAmount);
+          return;
+        }
         case 'patchDrag': {
           const dx = Math.round(g.cur[0] - g.start[0]), dy = Math.round(g.cur[1] - g.start[1]);
           if (dx || dy) engine.call('patchSelection', dx, dy);
@@ -496,7 +547,7 @@ export function CanvasArea() {
   const X = (x: number) => view.panX + x * Z, Y = (y: number) => view.panY + y * Z;
   const painting = isPaintTool(tool);
   const r = Math.max(1, (brushSize / 2) * Z);
-  const cursor = grabbing ? 'grabbing' : painting ? (caps ? 'crosshair' : 'none') : CURSORS[tool] ?? 'default';
+  const cursor = ui?.kind === 'guide' || overGuide ? ((ui?.kind === 'guide' ? ui.dir : overGuide) === 'h' ? 'row-resize' : 'col-resize') : grabbing ? 'grabbing' : painting ? (caps ? 'crosshair' : 'none') : CURSORS[tool] ?? 'default';
 
   let preview: React.ReactNode = null;
   if (ui?.kind === 'marquee') {
@@ -504,6 +555,9 @@ export function CanvasArea() {
     preview = ui.ellipse
       ? <ellipse className="ants" cx={X(rr.x + rr.w / 2)} cy={Y(rr.y + rr.h / 2)} rx={(rr.w / 2) * Z} ry={(rr.h / 2) * Z} />
       : <rect className="ants" x={X(rr.x)} y={Y(rr.y)} width={rr.w * Z} height={rr.h * Z} />;
+  } else if (ui?.kind === 'redEye') {
+    const rr = normRect(ui.start, ui.cur);
+    preview = <rect className="redeye-box" x={X(rr.x)} y={Y(rr.y)} width={rr.w * Z} height={rr.h * Z} />;
   } else if (ui?.kind === 'lasso') {
     preview = <polyline className="ants" points={ui.pts.map(([x, y]) => `${X(x)},${Y(y)}`).join(' ')} />;
   } else if (ui?.kind === 'gradient') {
@@ -585,6 +639,7 @@ export function CanvasArea() {
     >
       <canvas ref={canvasRef} />
       <svg className="overlay" width="100%" height="100%">
+        <g transform={rot ? `rotate(${(rot * 180) / Math.PI} ${area.w / 2} ${area.h / 2})` : undefined}>
         {grid}
         {selectionPath && ui?.kind === 'patchDrag' && (
           <g className="selection-edges" transform={`translate(${view.panX + (ui.cur[0] - ui.start[0]) * Z} ${view.panY + (ui.cur[1] - ui.start[1]) * Z}) scale(${Z})`}>
@@ -597,11 +652,13 @@ export function CanvasArea() {
             <path className="ants" d={selectionPath} vectorEffect="non-scaling-stroke" />
           </g>
         )}
+        <GuideLines width={area.w} height={area.h} moving={ui?.kind === 'guide' ? ui : null} />
         {preview}
         {polyPreview}
         <PathOverlay X={X} Y={Y} hover={hover && (tool === 'pen') ? toDoc(hover.x, hover.y) : null} />
         {cropOverlay}
         {transformOverlay}
+        </g>
         {painting && hover && doc.open && !ui && !transform && (
           caps
             ? null
@@ -611,13 +668,26 @@ export function CanvasArea() {
             </g>
         )}
       </svg>
-      {textEdit && <TextEditor />}
+      {textEdit && (rot
+        ? <div className="rot-wrap" style={{ transform: `rotate(${rot}rad)`, transformOrigin: `${area.w / 2}px ${area.h / 2}px` }}><TextEditor /></div>
+        : <TextEditor />)}
+      {doc.open && showRulers && <Rulers width={area.w} height={area.h} />}
       {doc.open && (
-        <div className="doc-tabs" onPointerDown={(e) => e.stopPropagation()}>
-          <div className="doc-tab">
-            <span>{doc.name} @ {Math.round(view.zoom * 1000) / 10}% ({doc.editMask ? 'Máscara de capa' : 'RGB/8'}){doc.dirty ? '*' : ''}</span>
-            <button title="Cerrar (Ctrl+F4)" onClick={() => engine.call('closeDoc')}><XIcon size={13} /></button>
-          </div>
+        <div className="doc-tabs" role="tablist" onPointerDown={(e) => e.stopPropagation()}>
+          {doc.docs.map((t) => {
+            const on = t.id === doc.activeDocId;
+            return (
+              <div key={t.id} role="tab" aria-selected={on} className={`doc-tab ${on ? 'on' : ''}`} data-testid="doc-tab"
+                title={on ? undefined : 'Clic: cambiar a este documento · suelta aquí una capa para copiarla'}
+                onClick={() => engine.call('switchDoc', t.id)}
+                onAuxClick={(e) => { if (e.button === 1) closeDocAsk(t.id); }}
+                onDragOver={(e) => { if (e.dataTransfer.types.includes('text/x-layer-id') && !on) e.preventDefault(); }}
+                onDrop={(e) => { const id = Number(e.dataTransfer.getData('text/x-layer-id')); if (id && !on) engine.call('copyLayerToDoc', t.id, id); }}>
+                <span>{t.name}{on ? ` @ ${Math.round(view.zoom * 1000) / 10}% (${doc.quickMask ? 'Máscara rápida' : doc.editMask ? 'Máscara de capa' : doc.viewChannel ? ['', 'Rojo', 'Verde', 'Azul'][doc.viewChannel] : 'RGB/8'})` : ''}{t.dirty ? '*' : ''}</span>
+                <button title="Cerrar (Ctrl+F4)" onClick={(e) => { e.stopPropagation(); closeDocAsk(t.id); }}><XIcon size={13} /></button>
+              </div>
+            );
+          })}
         </div>
       )}
       {!doc.open && <Home dragOver={dragOver} />}

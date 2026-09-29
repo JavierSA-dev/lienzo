@@ -83,6 +83,14 @@ export function OptionsBar() {
         </>
       )}
       {(tool === 'pen' || tool === 'pathSelect') && <PathActions />}
+      {tool === 'rotateView' && <RotateOptions />}
+      {tool === 'redEye' && (
+        <>
+          <Slider label="Tamaño de pupila" value={opts.pupilSize} min={1} max={100} unit="%" width={90} onChange={(v) => setOpts({ pupilSize: v })} />
+          <Slider label="Cantidad de oscurecimiento" value={opts.darkenAmount} min={1} max={100} unit="%" width={90} onChange={(v) => setOpts({ darkenAmount: v })} />
+          <span className="hint">Clic en el ojo o arrastra un rectángulo alrededor</span>
+        </>
+      )}
       {tool === 'patch' && <span className="hint">Parche · Origen: rodea la zona a corregir y arrástrala hasta una zona limpia (Mayús añade, Alt resta)</span>}
       {tool === 'move' && (
         <>
@@ -217,5 +225,19 @@ function AlignButtons() {
         <button className="icon-btn" title="Distribuir centros verticales" aria-label="Distribuir en vertical" onClick={() => engine.call('distributeLayers', 'vcenter')}><AlignVerticalDistributeCenter size={15} /></button>
       </>}
     </span>
+  );
+}
+
+function RotateOptions() {
+  const rot = useStore((s) => s.view.rot ?? 0);
+  const deg = Math.round((rot * 180) / Math.PI);
+  return (
+    <>
+      <label className="opt">Ángulo de rotación:
+        <input className="num" type="number" value={deg} onKeyDown={(e) => e.stopPropagation()} onChange={(e) => engine.call('setRotation', ((Number(e.target.value) || 0) * Math.PI) / 180)} />°
+      </label>
+      <button className="chip" onClick={() => engine.call('setRotation', 0)}>Restablecer vista</button>
+      <span className="hint">Arrastra para girar el lienzo · Mayús: pasos de 15° · Esc: restablecer</span>
+    </>
   );
 }

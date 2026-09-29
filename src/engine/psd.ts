@@ -1,6 +1,6 @@
 import { readPsd, writePsdUint8Array, initializeCanvas, type Layer as PsdLayer, type Psd, type AdjustmentLayer } from 'ag-psd';
 import { EditorDocument, PixelLayer, MaskChannel } from './document';
-import { BLEND_MODES, type AdjustmentParams, type BlendMode } from './types';
+import { BLEND_MODES, SELECTIVE_RANGES, type AdjustmentParams, type BlendMode, type RGBA } from './types';
 import { layerFromPixels } from './ops';
 import type { ImportResult } from './io';
 
@@ -39,6 +39,23 @@ function fromPsdAdjustment(a: AdjustmentLayer): AdjustmentParams | null {
     case 'invert': return { type: 'invert' };
     case 'posterize': return { type: 'posterize', levels: a.levels ?? 4 };
     case 'threshold': return { type: 'threshold', level: a.level ?? 128 };
+    case 'photo filter': {
+      const c = a.color as { r?: number; g?: number; b?: number; fr?: number; fg?: number; fb?: number } | undefined;
+      const color: RGBA = c && c.r !== undefined ? [c.r, c.g ?? 0, c.b ?? 0, 255] : c && c.fr !== undefined ? [c.fr * 255, (c.fg ?? 0) * 255, (c.fb ?? 0) * 255, 255] : [236, 138, 0, 255];
+      return { type: 'photoFilter', color, density: a.density ?? 25, preserveLuminosity: a.preserveLuminosity ?? true };
+    }
+    case 'selective color': {
+      const ranges = Object.fromEntries(SELECTIVE_RANGES.map(([k]) => {
+        const v = a[k];
+        return [k, v ? [v.c, v.m, v.y, v.k] : [0, 0, 0, 0]];
+      })) as Record<string, [number, number, number, number]>;
+      return { type: 'selectiveColor', relative: a.mode !== 'absolute', ranges } as AdjustmentParams;
+    }
+    case 'channel mixer': {
+      const ch = (c: { red: number; green: number; blue: number; constant: number } | undefined, d: [number, number, number, number]): [number, number, number, number] => c ? [c.red, c.green, c.blue, c.constant] : d;
+      if (a.monochrome) { const g = ch(a.gray ?? a.red, [40, 40, 20, 0]); return { type: 'channelMixer', red: g, green: g, blue: g, monochrome: true }; }
+      return { type: 'channelMixer', red: ch(a.red, [100, 0, 0, 0]), green: ch(a.green, [0, 100, 0, 0]), blue: ch(a.blue, [0, 0, 100, 0]), monochrome: false };
+    }
     default: return null;
   }
 }
@@ -52,6 +69,17 @@ function toPsdAdjustment(a: AdjustmentParams): AdjustmentLayer | null {
     case 'invert': return { type: 'invert' };
     case 'posterize': return { type: 'posterize', levels: a.levels };
     case 'threshold': return { type: 'threshold', level: a.level };
+    case 'photoFilter': return { type: 'photo filter', color: { r: a.color[0], g: a.color[1], b: a.color[2] }, density: a.density, preserveLuminosity: a.preserveLuminosity };
+    case 'selectiveColor': {
+      const out: AdjustmentLayer = { type: 'selective color', mode: a.relative ? 'relative' : 'absolute' };
+      for (const [k] of SELECTIVE_RANGES) { const [c, m, y, kk] = a.ranges[k]; (out as unknown as Record<string, unknown>)[k] = { c, m, y, k: kk }; }
+      return out;
+    }
+    case 'channelMixer': {
+      const ch = (v: [number, number, number, number]) => ({ red: v[0], green: v[1], blue: v[2], constant: v[3] });
+      return a.monochrome ? { type: 'channel mixer', monochrome: true, gray: ch(a.red), red: ch(a.red), green: ch(a.red), blue: ch(a.red) }
+        : { type: 'channel mixer', monochrome: false, red: ch(a.red), green: ch(a.green), blue: ch(a.blue) };
+    }
     default: return null;
   }
 }

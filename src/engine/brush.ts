@@ -19,6 +19,8 @@ export interface StrokeOptions {
   maskValue?: number;
   /** Tampón de clonar: desplazamiento origen - destino en píxeles. */
   cloneOffset?: { dx: number; dy: number };
+  /** Pincel de historia: pinta los píxeles de esta capa (estado de una instantánea). */
+  sourceLayer?: PixelLayer;
   /** Lápiz: bordes sin suavizar. */
   aliased?: boolean;
   label?: string;
@@ -111,6 +113,7 @@ export class BrushStroke {
       if (k !== selKey) { selKey = k; selTile = sel.tiles.get(k); }
       return selTile ? selTile[(dy - ty * TILE) * TILE + (dx - tx * TILE)] : 0;
     };
+    if (mode === 'smudge' && !mask) { this.smudgeDab(cx, cy, r, x0, y0, x1, y1, cap, hard, invSoft, selAt); return; }
 
     for (let ty = ty0; ty <= ty1; ty++) {
       for (let tx = tx0; tx <= tx1; tx++) {
@@ -149,27 +152,6 @@ export class BrushStroke {
             const sv = selAt(docX, docY);
             if (!sv) continue;
             const i = py * TILE + px;
-            if (mode === 'smudge' && !mask) {
-              // Dedo: arrastra el color que "lleva el dedo" (búfer) sobre el píxel actual.
-              const T = t as Uint8ClampedArray, j = i * 4;
-              const bi = this.smudgeIndex(docX - cx, docY - cy);
-              if (bi < 0) continue;
-              const B = this.smudgeBuf!;
-              const k = a * cap * (sv / 255);
-              if (!this.smudgeInit[bi >> 2]) { this.smudgeInit[bi >> 2] = 1; B[bi] = T[j]; B[bi + 1] = T[j + 1]; B[bi + 2] = T[j + 2]; B[bi + 3] = T[j + 3]; }
-              const o0 = T[j], o1 = T[j + 1], o2 = T[j + 2], o3 = T[j + 3];
-              const ta = T[j + 3] / 255, ba = B[bi + 3] / 255;
-              const na = ta + (ba - ta) * k;
-              for (let c = 0; c < 3; c++) {
-                const v = na > 0 ? (T[j + c] * ta + (B[bi + c] * ba - T[j + c] * ta) * k) / na : B[bi + c];
-                T[j + c] = v;
-              }
-              T[j + 3] = na * 255;
-              // El dedo recoge parte del color nuevo (se va diluyendo, como en Photoshop).
-              const pick = (1 - cap) * a;
-              B[bi] += (o0 - B[bi]) * pick; B[bi + 1] += (o1 - B[bi + 1]) * pick; B[bi + 2] += (o2 - B[bi + 2]) * pick; B[bi + 3] += (o3 - B[bi + 3]) * pick;
-              continue;
-            }
             const limit = cap * (sv / 255);
             const prev = m[i];
             if (prev >= limit) continue;
@@ -218,7 +200,16 @@ export class BrushStroke {
               continue;
             }
             let sr = cr, sg = cg, sb = cb, sa = 1;
-            if (clone) {
+            if (this.o.sourceLayer) {
+              const src = this.o.sourceLayer.pixel(docX, docY);
+              sr = src[0]; sg = src[1]; sb = src[2]; sa = src[3] / 255;
+              // Donde el estado de origen es transparente, el pincel de historia borra.
+              if (sa <= 0) {
+                const O2 = orig as Uint8ClampedArray | null, T2 = t as Uint8ClampedArray, j2 = i * 4;
+                if (O2) { T2[j2] = O2[j2]; T2[j2 + 1] = O2[j2 + 1]; T2[j2 + 2] = O2[j2 + 2]; T2[j2 + 3] = O2[j2 + 3] * (1 - nm); }
+                continue;
+              }
+            } else if (clone) {
               const src = this.sample(docX + clone.dx, docY + clone.dy);
               sr = src[0]; sg = src[1]; sb = src[2]; sa = src[3] / 255;
               if (sa <= 0) continue;
@@ -245,21 +236,70 @@ export class BrushStroke {
     }
   }
 
-  private smudgeBuf: Float32Array | null = null;
-  private smudgeInit = new Uint8Array(0);
-  private smudgeR = 0;
+  private lastSmudge: { x: number; y: number } | null = null;
 
-  /** Índice en el búfer del dedo para un desplazamiento respecto al centro del toque. */
-  private smudgeIndex(dx: number, dy: number): number {
-    if (!this.smudgeBuf) {
-      this.smudgeR = Math.ceil(this.o.settings.size / 2) + 2;
-      const side = this.smudgeR * 2 + 1;
-      this.smudgeBuf = new Float32Array(side * side * 4);
-      this.smudgeInit = new Uint8Array(side * side);
+  /**
+   * Dedo: cada toque desplaza el contenido de debajo en la dirección del trazo
+   * (muestreo bilineal del contenido actual), así que el color se arrastra y se va diluyendo.
+   */
+  private smudgeDab(cx: number, cy: number, r: number, x0: number, y0: number, x1: number, y1: number, cap: number,
+    hard: number, invSoft: number, selAt: (x: number, y: number) => number) {
+    const L = this.o.layer;
+    const last = this.lastSmudge;
+    this.lastSmudge = { x: cx, y: cy };
+    if (!last) return;
+    const ddx = cx - last.x, ddy = cy - last.y;
+    const w = x1 - x0, h = y1 - y0;
+    const out = new Float32Array(w * h * 4), k = new Float32Array(w * h);
+    const px = (x: number, y: number, c: number) => {
+      const lx = x - L.x, ly = y - L.y;
+      const tx = Math.floor(lx / TILE), ty = Math.floor(ly / TILE);
+      const t = L.getTile(tileKey(tx, ty));
+      return t ? t[((ly - ty * TILE) * TILE + (lx - tx * TILE)) * 4 + c] : 0;
+    };
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const dx = x + 0.5 - cx, dy = y + 0.5 - cy, dist = Math.sqrt(dx * dx + dy * dy);
+        let a = r + 0.5 - dist;
+        if (a <= 0) continue;
+        if (a > 1) a = 1;
+        const nd = dist / r;
+        if (nd > hard) { const f = 1 - (nd - hard) * invSoft; a *= f <= 0 ? 0 : f * f * (3 - 2 * f); }
+        const sv = selAt(x, y);
+        if (a <= 0 || !sv) continue;
+        const i = (y - y0) * w + (x - x0);
+        k[i] = a * cap * (sv / 255);
+        // Origen: el punto de donde viene el dedo (bilineal, premultiplicado).
+        const sx = x - ddx, sy = y - ddy;
+        const ix = Math.floor(sx), iy = Math.floor(sy), fx = sx - ix, fy = sy - iy;
+        let ar = 0, ag = 0, ab = 0, aa = 0;
+        for (const [ox, oy, wgt] of [[0, 0, (1 - fx) * (1 - fy)], [1, 0, fx * (1 - fy)], [0, 1, (1 - fx) * fy], [1, 1, fx * fy]] as const) {
+          if (!wgt) continue;
+          const al = px(ix + ox, iy + oy, 3) / 255;
+          ar += px(ix + ox, iy + oy, 0) * al * wgt; ag += px(ix + ox, iy + oy, 1) * al * wgt; ab += px(ix + ox, iy + oy, 2) * al * wgt; aa += al * wgt;
+        }
+        out[i * 4] = ar; out[i * 4 + 1] = ag; out[i * 4 + 2] = ab; out[i * 4 + 3] = aa;
+      }
     }
-    const R = this.smudgeR, x = Math.round(dx) + R, y = Math.round(dy) + R, side = R * 2 + 1;
-    if (x < 0 || y < 0 || x >= side || y >= side) return -1;
-    return (y * side + x) * 4;
+    // Escritura (después de leer todo, para no arrastrar lo recién escrito).
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const i = (y - y0) * w + (x - x0), kk = k[i];
+        if (!kk) continue;
+        const lx = x - L.x, ly = y - L.y;
+        const tx = Math.floor(lx / TILE), ty = Math.floor(ly / TILE), key = tileKey(tx, ty);
+        this.patch.capture(L, key);
+        const T = L.ensureTile(key), j = ((ly - ty * TILE) * TILE + (lx - tx * TILE)) * 4;
+        const ta = T[j + 3] / 255;
+        const na = ta + (out[i * 4 + 3] - ta) * kk;
+        for (let c = 0; c < 3; c++) {
+          const pre = T[j + c] * ta + (out[i * 4 + c] - T[j + c] * ta) * kk;
+          T[j + c] = na > 0 ? pre / na : 0;
+        }
+        T[j + 3] = na * 255;
+        L.touch(key);
+      }
+    }
   }
 
   /** Lee el píxel de origen para el tampón: siempre del contenido previo al trazo. */

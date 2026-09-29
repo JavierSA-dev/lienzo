@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { engine } from '../engine/client';
 import { useStore, toHex, toRgba } from './store';
-import { exportImage, COMMANDS, formatKeys, BROWSER_RESERVED } from './commands';
+import { exportImage, savePsd, COMMANDS, formatKeys, BROWSER_RESERVED } from './commands';
 import { PRESETS } from './Home';
 import { AdjustmentEditor } from './Adjustments';
 import { defaultAdjustment, ADJUSTMENT_LABELS } from '../engine/adjust';
-import type { AdjustmentParams, AdjustmentType, LayerEffects, RGBA } from '../engine/types';
+import { BLEND_GROUPS, type AdjustmentParams, type AdjustmentType, type BlendMode, type LayerEffects, type RGBA } from '../engine/types';
 import type { FilterName, FilterParams } from '../engine/filters';
 import { LiquifyDialog } from './Liquify';
+import { ColorPickerDialog } from './ColorPicker';
 import { GenerativeDialog } from './Generative';
 
 export function Modal({ title, children, onOk, okLabel = 'OK', onClose, wide }: { title: string; children: ReactNode; onOk: () => void; okLabel?: string; onClose: () => void; wide?: boolean }) {
@@ -317,9 +318,155 @@ export function Dialogs() {
     case 'grow': return <NumberDialog title={dialog.dir > 0 ? 'Expandir selección' : 'Contraer selección'} label={`${dialog.dir > 0 ? 'Expandir' : 'Contraer'} (px)`} initial={5} min={1} max={100} onOk={(v) => engine.call('growSelection', v * dialog.dir)} close={close} />;
     case 'fill': return <FillDialog close={close} />;
     case 'layerStyle': return <LayerStyleDialog close={close} />;
+    case 'newGuide': return <NewGuideDialog close={close} />;
+    case 'applyImage': return <ApplyImageDialog close={close} />;
+    case 'stroke': return <StrokeDialog close={close} />;
+    case 'newLayer': return <NewLayerDialog close={close} />;
+    case 'colorPicker': return <ColorPickerDialog which={dialog.which} close={close} />;
+    case 'confirmClose': return <ConfirmCloseDialog docId={dialog.docId} close={close} />;
     case 'shortcuts': return <ShortcutsDialog close={close} />;
     case 'liquify': return <LiquifyDialog close={close} />;
     case 'generative': return <GenerativeDialog close={close} />;
     case 'about': return <AboutDialog close={close} />;
   }
+}
+
+/** ¿Guardar los cambios antes de cerrar? (Guardar / No guardar / Cancelar, como Photoshop). */
+function ConfirmCloseDialog({ docId, close }: { docId: number; close: () => void }) {
+  const tab = useStore((s) => s.doc.docs.find((x) => x.id === docId));
+  useEffect(() => { if (!tab) close(); }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!tab) return null;
+  const save = async () => {
+    if (useStore.getState().doc.activeDocId !== docId) await engine.call('switchDoc', docId);
+    close();
+    if (await savePsd()) await engine.call('closeDoc', docId);
+  };
+  return (
+    <Modal title="Lienzo" okLabel="Guardar" onClose={close} onOk={save}>
+      <p className="confirm-text">¿Quieres guardar los cambios de «{tab.name}» antes de cerrarlo?</p>
+      <button type="button" className="btn" data-testid="dont-save" onClick={() => { close(); engine.call('closeDoc', docId); }}>No guardar</button>
+    </Modal>
+  );
+}
+
+/** Vista > Nueva guía… */
+function NewGuideDialog({ close }: { close: () => void }) {
+  const [dir, setDir] = useState<'h' | 'v'>('v');
+  const [pos, setPos] = useState(0);
+  return (
+    <Modal title="Nueva guía" onClose={close} onOk={() => { engine.call('addGuide', dir, pos); useStore.getState().setOpts({ guides: true }); close(); }}>
+      <div className="field">Orientación
+        <span>
+          <label><input type="radio" checked={dir === 'h'} onChange={() => setDir('h')} /> Horizontal</label>{' '}
+          <label><input type="radio" checked={dir === 'v'} onChange={() => setDir('v')} /> Vertical</label>
+        </span>
+      </div>
+      <label className="field">Posición (px)<input type="number" step="any" autoFocus value={pos} onChange={(e) => setPos(num(e.target.value, 0))} /></label>
+    </Modal>
+  );
+}
+
+const APPLY_MODES: [string, string][] = [
+  ['normal', 'Normal'], ['multiply', 'Multiplicar'], ['screen', 'Trama'], ['overlay', 'Superponer'], ['soft-light', 'Luz suave'],
+  ['hard-light', 'Luz fuerte'], ['linear-light', 'Luz lineal'], ['darken', 'Oscurecer'], ['lighten', 'Aclarar'],
+  ['color-dodge', 'Sobreexposición de color'], ['color-burn', 'Subexposición de color'], ['linear-burn', 'Subexposición lineal'],
+  ['difference', 'Diferencia'], ['exclusion', 'Exclusión'], ['add', 'Añadir'], ['subtract', 'Restar'], ['divide', 'Dividir'],
+];
+
+/** Imagen > Aplicar imagen… (base de la separación de frecuencias y de los cálculos de canales). */
+function ApplyImageDialog({ close }: { close: () => void }) {
+  const doc = useStore((s) => s.doc);
+  const layers = doc.layers.filter((l) => l.kind !== 'group' && l.kind !== 'adjustment');
+  const [source, setSource] = useState<string>('merged');
+  const [channel, setChannel] = useState(0);
+  const [invert, setInvert] = useState(false);
+  const [blend, setBlend] = useState('multiply');
+  const [opacity, setOpacity] = useState(100);
+  const [scale, setScale] = useState(1);
+  const [offset, setOffset] = useState(0);
+  const [preserve, setPreserve] = useState(false);
+  const scaled = blend === 'add' || blend === 'subtract';
+  return (
+    <Modal title="Aplicar imagen" onClose={close} onOk={() => {
+      engine.call('applyImage', { source: source === 'merged' ? 'merged' : Number(source), channel, invert, blend, opacity: opacity / 100, scale, offset, preserve });
+      close();
+    }}>
+      <label className="field">Capa de origen
+        <select value={source} aria-label="Capa de origen" onChange={(e) => setSource(e.target.value)} autoFocus>
+          <option value="merged">Combinado</option>
+          {[...layers].reverse().map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+        </select>
+      </label>
+      <label className="field">Canal
+        <select value={channel} aria-label="Canal" onChange={(e) => setChannel(Number(e.target.value))}>
+          <option value={0}>RGB</option><option value={1}>Rojo</option><option value={2}>Verde</option><option value={3}>Azul</option>
+        </select>
+      </label>
+      <label className="field">Invertir<span><input type="checkbox" checked={invert} onChange={(e) => setInvert(e.target.checked)} /></span></label>
+      <label className="field">Fusión
+        <select value={blend} aria-label="Fusión" onChange={(e) => setBlend(e.target.value)}>{APPLY_MODES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+      </label>
+      <label className="field">Opacidad (%)<input type="number" min={0} max={100} value={opacity} onChange={(e) => setOpacity(num(e.target.value, 100))} /></label>
+      {scaled && <>
+        <label className="field">Escala<input type="number" step="any" min={1} max={2} value={scale} onChange={(e) => setScale(Math.max(1, Math.min(2, num(e.target.value, 1))))} /></label>
+        <label className="field">Desplazamiento<input type="number" min={-255} max={255} value={offset} onChange={(e) => setOffset(num(e.target.value, 0))} /></label>
+      </>}
+      <label className="field">Conservar transparencia<span><input type="checkbox" checked={preserve} onChange={(e) => setPreserve(e.target.checked)} /></span></label>
+      <span className="hint">Separación de frecuencias (8 bits): capa de detalle ← Aplicar imagen de la capa original, Restar, escala 2, desplazamiento 128; después, modo Luz lineal.</span>
+    </Modal>
+  );
+}
+
+/** Edición > Contornear… (anchura, color y posición del trazo alrededor de la selección). */
+function StrokeDialog({ close }: { close: () => void }) {
+  const fg = useStore((s) => s.fg);
+  const [width, setWidth] = useState(3);
+  const [color, setColor] = useState(fg);
+  const [location, setLocation] = useState<'inside' | 'center' | 'outside'>('center');
+  const [opacity, setOpacity] = useState(100);
+  const [preserve, setPreserve] = useState(false);
+  return (
+    <Modal title="Contornear" onClose={close} onOk={() => { engine.call('strokeSelection', { width, color: toRgba(color), location, opacity: opacity / 100, preserve }); close(); }}>
+      <label className="field">Anchura (px)<input type="number" autoFocus min={1} max={250} value={width} onChange={(e) => setWidth(Math.max(1, Math.min(250, num(e.target.value, 1))))} /></label>
+      <label className="field">Color<input type="color" value={color} onChange={(e) => setColor(e.target.value)} /></label>
+      <fieldset className="field-radios"><legend>Posición</legend>
+        {([['inside', 'Interior'], ['center', 'Centro'], ['outside', 'Exterior']] as const).map(([v, l]) => (
+          <label key={v}><input type="radio" name="stroke-loc" checked={location === v} onChange={() => setLocation(v)} /> {l}</label>
+        ))}
+      </fieldset>
+      <label className="field">Opacidad (%)<input type="number" min={1} max={100} value={opacity} onChange={(e) => setOpacity(Math.max(1, Math.min(100, num(e.target.value, 100))))} /></label>
+      <label className="field">Conservar transparencia<span><input type="checkbox" checked={preserve} onChange={(e) => setPreserve(e.target.checked)} /></span></label>
+    </Modal>
+  );
+}
+
+/** Modos con color neutro (gris 50 %, blanco o negro) para "Rellenar con color neutro". */
+const NEUTRAL_LABEL: Partial<Record<BlendMode, string>> = {
+  overlay: 'gris al 50 %', 'soft-light': 'gris al 50 %', 'hard-light': 'gris al 50 %', 'vivid-light': 'gris al 50 %', 'linear-light': 'gris al 50 %', 'pin-light': 'gris al 50 %',
+  multiply: 'blanco', 'color-burn': 'blanco', 'linear-burn': 'blanco', darken: 'blanco', divide: 'blanco', 'darker-color': 'blanco',
+  screen: 'negro', 'color-dodge': 'negro', 'linear-dodge': 'negro', lighten: 'negro', difference: 'negro', exclusion: 'negro', subtract: 'negro', 'lighter-color': 'negro',
+};
+
+/** Capa > Nueva > Capa… (Ctrl+Mayús+N): nombre, recorte, modo, opacidad y relleno neutro. */
+function NewLayerDialog({ close }: { close: () => void }) {
+  const [name, setName] = useState('');
+  const [clip, setClip] = useState(false);
+  const [blend, setBlend] = useState<BlendMode>('normal');
+  const [opacity, setOpacity] = useState(100);
+  const [neutral, setNeutral] = useState(false);
+  const nl = NEUTRAL_LABEL[blend];
+  return (
+    <Modal title="Nueva capa" onClose={close} onOk={() => { engine.call('newLayerWith', { name, blend, opacity: opacity / 100, clip, neutral: neutral && !!nl }); close(); }}>
+      <label className="field">Nombre<input autoFocus value={name} placeholder="Capa" onChange={(e) => setName(e.target.value)} /></label>
+      <label className="field">Usar la capa anterior para crear una máscara de recorte<span><input type="checkbox" checked={clip} onChange={(e) => setClip(e.target.checked)} /></span></label>
+      <label className="field">Modo
+        <select value={blend} aria-label="Modo" onChange={(e) => setBlend(e.target.value as BlendMode)}>
+          {BLEND_GROUPS.map((g, i) => <optgroup key={i} label="—">{g.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}</optgroup>)}
+        </select>
+      </label>
+      <label className="field">Opacidad (%)<input type="number" min={0} max={100} value={opacity} onChange={(e) => setOpacity(Math.max(0, Math.min(100, num(e.target.value, 100))))} /></label>
+      <label className={`field ${nl ? '' : 'disabled'}`}>{nl ? `Rellenar con color neutro para ${BLEND_GROUPS.flat().find((b) => b.id === blend)?.label} (${nl})` : 'No existe color neutro para este modo'}
+        <span><input type="checkbox" disabled={!nl} checked={neutral && !!nl} onChange={(e) => setNeutral(e.target.checked)} aria-label="Rellenar con color neutro" /></span></label>
+    </Modal>
+  );
 }

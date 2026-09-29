@@ -10,20 +10,20 @@ const MENUS: { label: string; items: Item[] }[] = [
   { label: 'Archivo', items: ['file.new', 'file.open', 'file.place', '-', 'file.close', '-', 'file.save', 'file.saveAs', 'file.saveCopy', 'file.savePsb', '-',
     { sub: 'Exportar', items: ['file.quickPng', 'file.export', 'file.saveForWeb'] }] },
   { label: 'Edición', items: ['edit.undo', 'edit.redo', 'edit.toggleLast', '-', 'edit.cut', 'edit.copy', 'edit.copyMerged', 'edit.paste', 'edit.pasteInPlace', 'edit.clear', '-',
-    'edit.fill', 'edit.fillFg', 'edit.fillBg', '-', 'edit.freeTransform',
+    'edit.fill', 'edit.stroke', 'edit.fillFg', 'edit.fillBg', '-', 'edit.freeTransform',
     { sub: 'Transformar', items: ['edit.rot180', 'edit.rot90', 'edit.rot-90', '-', 'edit.flipH', 'edit.flipV'] },
     '-', 'edit.contentAware', 'ai.generative', '-', 'edit.shortcuts'] },
   { label: 'Imagen', items: [
     { sub: 'Ajustes', items: ['image.brightness', 'image.levels', 'image.curves', 'image.exposure', '-', 'image.vibrance', 'image.hueSat', 'image.colorBalance', 'image.blackWhite', '-',
-      'image.invert', 'image.posterize', 'image.threshold', 'image.gradientMap', '-', 'image.desaturate'] },
-    '-', 'image.autoTone', 'image.autoContrast', 'image.autoColor', '-', 'image.size', 'image.canvasSize',
+      'image.invert', 'image.posterize', 'image.threshold', 'image.gradientMap', 'image.selectiveColor', '-', 'image.photoFilter', 'image.channelMixer', '-', 'image.desaturate'] },
+    '-', 'image.autoTone', 'image.autoContrast', 'image.autoColor', '-', 'image.size', 'image.canvasSize', '-', 'image.applyImage',
     { sub: 'Rotación de imagen', items: ['image.rot180', 'image.rot90', 'image.rot-90', '-', 'image.flipH', 'image.flipV'] },
     'image.crop'] },
   { label: 'Capa', items: [
-    { sub: 'Nueva', items: ['layer.new', 'layer.newGroup', '-', 'layer.viaCopy', 'layer.viaCut'] }, 'layer.duplicate', 'layer.delete', '-',
+    { sub: 'Nueva', items: ['layer.newDialog', 'layer.new', 'layer.newGroup', '-', 'layer.viaCopy', 'layer.viaCut'] }, 'layer.duplicate', 'layer.delete', '-',
     'layer.style', '-',
     { sub: 'Nueva capa de relleno', items: ['layer.fill.solid'] },
-    { sub: 'Nueva capa de ajuste', items: ['layer.adj.brightness', 'layer.adj.levels', 'layer.adj.curves', 'layer.adj.exposure', '-', 'layer.adj.vibrance', 'layer.adj.hueSat', 'layer.adj.colorBalance', 'layer.adj.blackWhite', '-', 'layer.adj.invert', 'layer.adj.posterize', 'layer.adj.threshold', 'layer.adj.gradientMap'] },
+    { sub: 'Nueva capa de ajuste', items: ['layer.adj.brightness', 'layer.adj.levels', 'layer.adj.curves', 'layer.adj.exposure', '-', 'layer.adj.vibrance', 'layer.adj.hueSat', 'layer.adj.colorBalance', 'layer.adj.blackWhite', 'layer.adj.photoFilter', 'layer.adj.channelMixer', '-', 'layer.adj.invert', 'layer.adj.posterize', 'layer.adj.threshold', 'layer.adj.gradientMap', 'layer.adj.selectiveColor'] },
     '-',
     { sub: 'Máscara de capa', items: ['layer.mask.reveal', 'layer.mask.hide', 'layer.mask.selection', '-', 'layer.mask.apply', 'layer.mask.delete'] },
     'layer.clip', '-', 'layer.rasterize', '-', 'layer.group', 'layer.ungroup', '-',
@@ -32,7 +32,7 @@ const MENUS: { label: string; items: Item[] }[] = [
     { sub: 'Distribuir', items: ['layer.dist.vcenter', 'layer.dist.hcenter'] },
     'layer.lockAlpha', '-', 'layer.mergeDown', 'layer.mergeVisible', 'layer.stamp', 'layer.flatten'] },
   { label: 'Texto', items: ['type.tool', { label: 'Deformar texto', soon: true }, { label: 'Convertir en forma', soon: true }] },
-  { label: 'Selección', items: ['select.all', 'select.none', 'select.reselect', 'select.invert', 'layer.selectAll', '-', 'select.subject', { label: 'Cielo', soon: true }, '-',
+  { label: 'Selección', items: ['select.all', 'select.none', 'select.reselect', 'select.invert', 'layer.selectAll', '-', 'select.quickMask', 'select.save', 'select.luminosity', '-', 'select.subject', { label: 'Cielo', soon: true }, '-',
     { sub: 'Modificar', items: ['select.feather', 'select.expand', 'select.contract'] }, 'select.fromLayer'] },
   { label: 'Filtro', items: ['filter.last', '-', 'filter.liquify', '-',
     { sub: 'Desenfocar', items: ['filter.gaussianBlur', 'filter.boxBlur', 'filter.motionBlur'] },
@@ -43,7 +43,8 @@ const MENUS: { label: string; items: Item[] }[] = [
     { sub: 'Estilizar', items: ['filter.findEdges', 'filter.emboss'] },
     { sub: 'Otro', items: ['filter.highPass'] },
     '-', 'ai.removeBg'] },
-  { label: 'Vista', items: ['view.zoomIn', 'view.zoomOut', 'view.fit', 'view.actual', '-', 'view.extras', 'view.grid', '-', 'view.fullscreen'] },
+  { label: 'Vista', items: ['view.zoomIn', 'view.zoomOut', 'view.fit', 'view.actual', '-', 'view.extras', 'view.grid', 'view.rulers', 'view.guides', '-',
+    'view.snap', 'view.lockGuides', 'view.newGuide', 'view.clearGuides', '-', 'view.fullscreen'] },
   { label: 'Ventana', items: ['view.panels'] },
   { label: 'Ayuda', items: ['help.shortcuts', 'help.about'] },
 ];
@@ -73,7 +74,7 @@ function MenuItems({ items, close }: { items: Item[]; close: () => void }) {
         const alt = k && BROWSER_RESERVED.has(k) ? c.keys?.[1] : undefined;
         return (
           <button key={j} className="menu-item" disabled={disabled} onClick={() => { close(); runCommand(c); }}>
-            <span>{c.label}</span>
+            <span>{c.checked && <span className="check">{c.checked() ? '✓' : ''}</span>}{c.label}</span>
             <span className="keys" title={alt ? `El navegador reserva ${formatKeys(k)} (funciona en pantalla completa). Alternativa: ${formatKeys(alt)}` : undefined}>
               {formatKeys(k)}{alt ? ` · ${formatKeys(alt)}` : ''}
             </span>

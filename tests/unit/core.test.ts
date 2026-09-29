@@ -260,3 +260,37 @@ describe('relleno según contenido y corrector', () => {
     expect(Math.abs(out[c + 2] - 100)).toBeLessThan(6);
   });
 });
+
+describe('retoques (pupilas rojas y contornear)', () => {
+  it('distanceTo mide la distancia euclídea al objetivo', async () => {
+    const { distanceTo } = await import('../../src/engine/retouch');
+    const t = new Uint8Array(25); t[12] = 1; // centro de 5×5
+    const d = distanceTo(t, 5, 5);
+    expect(d[12]).toBe(0);
+    expect(d[13]).toBeCloseTo(1);
+    expect(d[0]).toBeCloseTo(Math.hypot(2, 2));
+  });
+  it('strokeCoverage respeta anchura y posición', async () => {
+    const { strokeCoverage } = await import('../../src/engine/retouch');
+    const w = 40, h = 40, m = new Uint8Array(w * h);
+    for (let y = 10; y < 30; y++) for (let x = 10; x < 30; x++) m[y * w + x] = 255;
+    const out = strokeCoverage(m, w, h, 3, 'outside');
+    expect(out[20 * w + 8]).toBe(255);   // 2 px fuera
+    expect(out[20 * w + 5]).toBe(0);     // 5 px fuera
+    expect(out[20 * w + 12]).toBe(0);    // dentro
+    const ins = strokeCoverage(m, w, h, 3, 'inside');
+    expect(ins[20 * w + 11]).toBe(255);
+    expect(ins[20 * w + 8]).toBe(0);
+  });
+  it('fixRedEye oscurece la pupila roja y no toca la piel', async () => {
+    const { fixRedEye } = await import('../../src/engine/retouch');
+    const w = 40, h = 40, px = new Uint8ClampedArray(w * h * 4);
+    for (let i = 0; i < w * h; i++) {
+      const x = i % w, y = (i / w) | 0, eye = Math.hypot(x - 20, y - 20) < 8;
+      px.set(eye ? [200, 30, 40, 255] : [224, 172, 140, 255], i * 4);
+    }
+    expect(fixRedEye(px, w, h)).toBeGreaterThan(100);
+    expect(px[(20 * w + 20) * 4]).toBeLessThan(60);
+    expect([...px.slice(0, 4)]).toEqual([224, 172, 140, 255]);
+  });
+});

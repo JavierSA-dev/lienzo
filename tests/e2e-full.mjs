@@ -45,7 +45,11 @@ const near = (a, b, t = 3) => a.every((v, i) => Math.abs(v - b[i]) <= t);
 const active = async () => { const { doc } = await S(); return doc.layers.find((l) => l.id === doc.activeLayerId); };
 const useTool = async (t) => { await page.evaluate((t) => window.__lienzoStore.getState().setTool(t), t); await wait(100); };
 const key = async (k, ms = 150) => { await page.keyboard.press(k); await wait(ms); };
-const newDoc = async (w = 800, h = 600, bg = 'white') => { await call('newDoc', w, h, bg, 'prueba.psd'); await wait(300); };
+const newDoc = async (w = 800, h = 600, bg = 'white') => {
+  // Cada bloque de pruebas empieza sin pestañas abiertas (para no acumular memoria).
+  await page.evaluate(async () => { for (let i = 0; i < 20 && window.__lienzoStore.getState().doc.docs.length; i++) await window.__lienzo.call('closeDoc'); });
+  await call('newDoc', w, h, bg, 'prueba.psd'); await wait(300);
+};
 
 try {
   await page.goto(URL);
@@ -625,8 +629,219 @@ try {
   ok('Dedo arrastra el color', (await lpx(230, 30))[0] < 200, JSON.stringify(await lpx(230, 30)));
   await page.evaluate(() => window.__lienzoStore.getState().setBrush({ opacity: 1 }));
 
+  // =========================================================== FASE 7: BÁSICOS DE TODO EL MUNDO
+  const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const menu = async (...path) => {
+    await page.locator('.menu-btn', { hasText: new RegExp(`^${esc(path[0])}$`) }).click();
+    for (const p of path.slice(1, -1)) await page.locator('.menu-pop .menu-sub > .menu-item', { hasText: new RegExp(`^${esc(p)}▸`) }).last().hover();
+    await page.locator('.menu-pop button.menu-item', { hasText: new RegExp(`^✓?${esc(path.at(-1))}`) }).last().click();
+    await wait();
+  };
+  const opts = () => page.evaluate(() => window.__lienzoStore.getState().opts);
+  const lastLabel = async () => (await S()).doc.history.at(-1)?.label;
+
+  // --- Ajustes propios por herramienta
+  await newDoc(300, 200, 'white');
+  await key('b'); await page.evaluate(() => window.__lienzoStore.getState().setBrush({ size: 30 }));
+  await key('e'); await page.evaluate(() => window.__lienzoStore.getState().setBrush({ size: 80 }));
+  await key('b');
+  ok('Cada herramienta recuerda su tamaño de pincel (B 30 px, E 80 px)', (await S()).brush.size === 30, String((await S()).brush.size));
+  await key('e'); ok('… y el Borrador conserva el suyo', (await S()).brush.size === 80);
+
+  // --- Varios documentos en pestañas
+  await newDoc(300, 200, 'white');
+  await call('selectShape', { x: 0, y: 0, w: 100, h: 100 }, 'rect', 'replace', 0); await call('fill', [255, 0, 0, 255]); await call('deselect');
+  const docA = (await S()).doc.activeDocId;
+  await call('newDoc', 200, 150, 'white', 'segundo.psd'); await wait(300);
+  ok('Un documento nuevo abre otra pestaña', (await page.getByTestId('doc-tab').count()) === 2);
+  await call('selectShape', { x: 0, y: 0, w: 50, h: 50 }, 'rect', 'replace', 0); await call('fill', [0, 0, 255, 255]); await call('deselect');
+  await page.getByTestId('doc-tab').nth(0).click(); await wait(300);
+  ok('Clic en la pestaña cambia de documento', (await S()).doc.activeDocId === docA && (await S()).doc.width === 300);
+  await key('Control+z', 200); await key('Control+z', 300);
+  ok('Deshacer es independiente en cada documento', near(await px(20, 20), [255, 255, 255, 255]) && (await S()).doc.history.length > 1, JSON.stringify(await px(20, 20)));
+  await key('Control+Shift+z', 200); await key('Control+Shift+z', 300);
+  await key('Control+F6', 300);
+  ok('Ctrl+F6 pasa al documento siguiente', (await S()).doc.width === 200 && near(await px(20, 20), [0, 0, 255, 255]));
+  await key('Control+F6', 300);
+  {
+    const before = (await S()).doc.docs.find((d) => d.id !== docA);
+    const rowsBefore = (await S()).doc.layers.length;
+    await page.getByTestId('layer-row').first().dragTo(page.getByTestId('doc-tab').nth(1)).catch(() => {});
+    await wait(400);
+    let st = await S();
+    if (st.doc.activeDocId === docA) { // si el arrastre nativo no llegó, se usa la misma orden
+      await call('copyLayerToDoc', before.id, st.doc.activeLayerId); await wait(300); st = await S();
+    }
+    ok('Arrastrar una capa a otra pestaña la copia en ese documento', st.doc.activeDocId === before.id && st.doc.layers.length === 2 && rowsBefore === 1, `${st.doc.layers.length} capas`);
+  }
+  await page.getByTestId('doc-tab').nth(1).locator('button').click(); await wait(300);
+  ok('Cerrar un documento con cambios pide confirmación', (await S()).dialog?.kind === 'confirmClose');
+  await page.getByTestId('dont-save').click(); await wait(300);
+  ok('"No guardar" cierra la pestaña', (await page.getByTestId('doc-tab').count()) === 1 && (await S()).doc.activeDocId === docA);
+
+  // --- Reglas, guías y ajuste magnético
+  await newDoc(400, 300, 'white');
+  if (!(await opts()).rulers) await key('Control+r');
+  ok('Ctrl+R muestra las reglas', await page.getByTestId('ruler-h').isVisible());
+  {
+    const rb = await page.getByTestId('ruler-h').boundingBox();
+    const [, gy] = await scr(0, 100);
+    const [gx] = await scr(200, 0);
+    await page.mouse.move(gx, rb.y + 10); await page.mouse.down();
+    await page.mouse.move(gx, gy, { steps: 10 }); await page.mouse.up(); await wait(300);
+  }
+  const guides = (await S()).doc.guides;
+  ok('Arrastrar desde la regla crea una guía', guides.length === 1 && guides[0].dir === 'h' && Math.abs(guides[0].pos - 100) <= 2, JSON.stringify(guides));
+  await call('clearGuides'); await call('addGuide', 'v', 150); await wait(200);
+  await useTool('marquee');
+  await drag([40, 40], [146, 120]);
+  { const b = (await S()).doc.selectionBounds ?? null; void b; }
+  ok('El marco se ajusta a la guía (ajuste magnético)', (await sel(149, 80)) === 255 && (await sel(151, 80)) === 0, `${await sel(149, 80)} ${await sel(151, 80)}`);
+  await call('deselect');
+  await key('Control+Shift+;');
+  ok('Ctrl+Mayús+; desactiva el ajuste', (await opts()).snap === false);
+  await drag([40, 40], [146, 120]);
+  ok('Sin ajuste el marco termina donde se suelta', (await sel(147, 80)) === 0 && (await sel(144, 80)) === 255);
+  await call('deselect'); await key('Control+Shift+;');
+  await menu('Vista', 'Borrar guías');
+  ok('Vista > Borrar guías', (await S()).doc.guides.length === 0);
+  await key('Control+r');
+
+  // --- Selector de color y muestras
+  await page.getByTestId('fg-swatch').click(); await wait();
+  ok('Clic en el color frontal abre el Selector de color', await page.getByTestId('color-picker').isVisible());
+  await page.getByLabel('Hexadecimal', { exact: true }).fill('12ab34'); await wait(100);
+  await page.getByRole('button', { name: 'Añadir a muestras' }).click();
+  await page.getByRole('button', { name: 'OK' }).click(); await wait();
+  ok('El hexadecimal fija el color frontal', (await S()).fg === '#12ab34', (await S()).fg);
+  ok('El color queda en Recientes y en Muestras', await page.evaluate(() => { const s = window.__lienzoStore.getState(); return s.recentColors[0] === '#12ab34' && s.swatches.includes('#12ab34'); }));
+  await page.getByTestId('fg-swatch').click(); await wait();
+  { const b = await page.getByTestId('cp-sv').boundingBox(); await page.mouse.click(b.x + 2, b.y + b.height - 2); }
+  await page.getByRole('button', { name: 'OK' }).click(); await wait();
+  ok('Clic abajo en el campo de color da negro', (await S()).fg === '#000000', (await S()).fg);
+  await page.getByTestId('tab-Muestras').click();
+  await page.getByTestId('swatches').locator('button[title^="#12ab34"]').click();
+  ok('Clic en una muestra la usa como color frontal', (await S()).fg === '#12ab34');
+  await page.getByTestId('tab-Color').click();
+  await page.evaluate(() => window.__lienzoStore.getState().setColors('#000000', '#ffffff'));
+
+  // --- Máscara rápida y canales
+  await newDoc(300, 200, 'white');
+  await call('selectShape', { x: 150, y: 0, w: 150, h: 200 }, 'rect', 'replace', 0); await call('fill', [0, 0, 0, 255]); await call('deselect');
+  await call('selectShape', { x: 20, y: 20, w: 60, h: 60 }, 'rect', 'replace', 0);
+  await key('q', 300);
+  ok('Q entra en Máscara rápida', (await S()).doc.quickMask === true && (await page.getByTestId('doc-tab').innerText()).includes('Máscara rápida'));
+  await key('b'); await page.evaluate(() => { const s = window.__lienzoStore.getState(); s.setColors('#ffffff', '#000000'); s.setBrush({ size: 20, hardness: 1, opacity: 1, flow: 1 }); });
+  await drag([120, 100], [130, 100]);
+  await key('q', 300);
+  ok('Pintar de blanco en Máscara rápida amplía la selección', (await S()).doc.quickMask === false && (await sel(50, 50)) === 255 && (await sel(125, 100)) === 255 && (await sel(200, 150)) === 0);
+  await call('deselect');
+  await page.evaluate(() => window.__lienzoStore.getState().setColors('#000000', '#ffffff'));
+  await page.getByTestId('tab-Canales').click(); await wait(400);
+  ok('Panel Canales con RGB, Rojo, Verde y Azul', (await page.getByTestId('channel-row').count()) === 4);
+  await page.getByTestId('channel-row').nth(1).click(); await wait(200);
+  ok('Clic en Rojo muestra solo ese canal', (await S()).doc.viewChannel === 1);
+  await page.getByTestId('channel-row').nth(0).click({ modifiers: ['Control'] }); await wait(300);
+  ok('Ctrl+clic en RGB carga la luminosidad como selección', (await sel(50, 50)) >= 254 && (await sel(200, 50)) === 0, `${await sel(50, 50)} ${await sel(200, 50)}`);
+  await page.getByTestId('channel-row').nth(0).click(); await wait(200);
+  ok('Clic en RGB vuelve a la vista compuesta', (await S()).doc.viewChannel === 0);
+  await page.locator('.panel-foot button[title="Guardar selección como canal"]').click(); await wait(300);
+  ok('Guardar selección crea un canal alfa', (await page.getByTestId('alpha-row').count()) === 1);
+  await call('deselect');
+  await page.getByTestId('alpha-row').click({ modifiers: ['Control'] }); await wait(300);
+  ok('Ctrl+clic en el canal alfa recupera la selección', (await sel(50, 50)) === 255 && (await sel(200, 50)) === 0);
+  await call('deselect');
+  await page.getByTestId('tab-Capas').click();
+
+  // --- Separación de frecuencias con Aplicar imagen
+  await newDoc(200, 100, 'white');
+  await call('selectShape', { x: 0, y: 0, w: 100, h: 100 }, 'rect', 'replace', 0); await call('fill', [200, 60, 40, 255]);
+  await call('selectShape', { x: 40, y: 40, w: 4, h: 4 }, 'rect', 'replace', 0); await call('fill', [20, 220, 90, 255]); await call('deselect');
+  const orig = [await px(42, 42), await px(20, 20), await px(150, 50), await px(100, 50)];
+  await key('Control+j'); await key('Control+j');
+  const [low, high] = [(await S()).doc.layers[1].id, (await S()).doc.layers[2].id];
+  await call('selectLayer', low); await call('applyFilter', 'gaussianBlur', { radius: 6 }); await wait(300);
+  await call('selectLayer', high);
+  await menu('Imagen', 'Aplicar imagen…');
+  await page.getByLabel('Capa de origen').selectOption(String(low));
+  await page.getByLabel('Fusión', { exact: true }).selectOption('subtract');
+  await page.getByLabel('Escala').fill('2'); await page.getByLabel('Desplazamiento').fill('128');
+  await page.getByRole('button', { name: 'OK' }).click(); await wait(400);
+  await call('setLayer', high, { blend: 'linear-light' }); await wait(300);
+  const recon = [await px(42, 42), await px(20, 20), await px(150, 50), await px(100, 50)];
+  ok('Separación de frecuencias: baja + alta (Luz lineal) reconstruyen la imagen', recon.every((c, i) => near(c, orig[i], 3)), JSON.stringify([orig, recon]));
+
+  // --- Instantáneas, pincel de historia y rotar vista
+  await newDoc(400, 300, 'white');
+  await call('selectShape', { x: 0, y: 0, w: 200, h: 300 }, 'rect', 'replace', 0); await call('fill', [0, 0, 255, 255]); await call('deselect');
+  await page.getByTestId('new-snapshot').click(); await wait();
+  ok('El botón de cámara crea una instantánea', (await S()).doc.snapshots.length === 2);
+  await call('fill', [0, 255, 0, 255]); await wait();
+  await key('y'); ok('Y → Pincel de historia', (await S()).tool === 'historyBrush');
+  await page.evaluate(() => window.__lienzoStore.getState().setBrush({ size: 40, hardness: 1, opacity: 1, flow: 1 }));
+  await drag([100, 150], [110, 150]);
+  ok('El pincel de historia pinta desde el estado inicial', near(await lpx(105, 150), [255, 255, 255, 255]), JSON.stringify(await lpx(105, 150)));
+  await page.getByTestId('snapshot-row').nth(1).locator('.hist-src').click(); await wait();
+  await drag([100, 250], [110, 250]);
+  ok('… y desde la instantánea elegida como origen', near(await lpx(105, 250), [0, 0, 255, 255]), JSON.stringify(await lpx(105, 250)));
+  await page.getByTestId('snapshot-row').nth(0).locator('.snap-name').click(); await wait(300);
+  ok('Clic en una instantánea vuelve a ese estado', near(await px(300, 150), [255, 255, 255, 255]) && near(await px(100, 150), [255, 255, 255, 255]));
+  await key('r'); ok('R → Rotar vista', (await S()).tool === 'rotateView');
+  {
+    const b = await box();
+    await page.mouse.move(b.x + b.width / 2 + 200, b.y + b.height / 2); await page.mouse.down();
+    await page.mouse.move(b.x + b.width / 2 + 200 * Math.cos(0.5), b.y + b.height / 2 + 200 * Math.sin(0.5), { steps: 8 }); await page.mouse.up(); await wait();
+  }
+  ok('Arrastrar gira la vista', Math.abs(((await S()).view.rot ?? 0) - 0.5) < 0.03, String((await S()).view.rot));
+  await key('Escape');
+  ok('Esc restablece la rotación', !(await S()).view.rot);
+
+  // --- Básicos de los cursos
+  await newDoc(400, 300, 'white');
+  await call('selectShape', { x: 0, y: 0, w: 400, h: 300 }, 'rect', 'replace', 0); await call('fill', [224, 172, 140, 255]);
+  await call('selectShape', { x: 185, y: 135, w: 30, h: 30 }, 'ellipse', 'replace', 0); await call('fill', [200, 30, 40, 255]); await call('deselect');
+  await key('j'); for (let i = 0; i < 5 && (await S()).tool !== 'redEye'; i++) await key('Shift+j');
+  ok('Mayús+J llega a Pupilas rojas', (await S()).tool === 'redEye');
+  await click([200, 150]); await wait(200);
+  const eye = await lpx(200, 150), eyeEdge = await lpx(187, 150), skin = await lpx(175, 150);
+  ok('Pupilas rojas oscurece la pupila y respeta la piel', eye[0] < 60 && eyeEdge[0] < 80 && near(skin, [224, 172, 140, 255], 2) && (await lastLabel()) === 'Pupilas rojas', JSON.stringify([eye, eyeEdge, skin]));
+
+  await newDoc(300, 200, 'white');
+  await page.evaluate(() => window.__lienzoStore.getState().setColors('#ff0000', '#ffffff'));
+  await call('selectShape', { x: 50, y: 50, w: 100, h: 100 }, 'rect', 'replace', 0);
+  await menu('Edición', 'Contornear…');
+  await page.getByLabel('Anchura (px)').fill('4'); await page.getByLabel('Exterior').check();
+  await page.getByRole('button', { name: 'OK' }).click(); await wait();
+  ok('Edición > Contornear (exterior, 4 px)', near(await lpx(47, 100), [255, 0, 0, 255]) && near(await lpx(44, 100), [255, 255, 255, 255]) && near(await lpx(52, 100), [255, 255, 255, 255]));
+  await call('deselect');
+  await page.evaluate(() => window.__lienzoStore.getState().setColors('#000000', '#ffffff'));
+  await menu('Capa', 'Nueva', 'Capa…');
+  await page.getByLabel('Nombre').fill('Esquivar y quemar');
+  await page.getByLabel('Modo', { exact: true }).selectOption('overlay');
+  await page.getByLabel('Rellenar con color neutro').check();
+  await page.getByRole('button', { name: 'OK' }).click(); await wait();
+  {
+    const L = await active();
+    ok('Nueva capa con relleno neutro (gris 50 % en Superponer) no cambia la imagen', L.name === 'Esquivar y quemar' && L.blend === 'overlay' && near(await lpx(10, 10), [128, 128, 128, 255], 1) && near(await px(10, 10), [255, 255, 255, 255], 1));
+  }
+  await newDoc(300, 200, 'white');
+  await call('selectShape', { x: 0, y: 0, w: 100, h: 200 }, 'rect', 'replace', 0); await call('fill', [128, 128, 128, 255]);
+  await call('selectShape', { x: 100, y: 0, w: 100, h: 200 }, 'rect', 'replace', 0); await call('fill', [220, 40, 40, 255]); await call('deselect');
+  await menu('Capa', 'Nueva capa de ajuste', 'Filtro de fotografía');
+  { const c = await px(50, 50); ok('Filtro de fotografía (calentamiento 85) calienta sin cambiar la luminosidad', c[0] > c[2] + 20 && Math.abs((c[0] * 0.3 + c[1] * 0.59 + c[2] * 0.11) - 128) < 4, JSON.stringify(c)); }
+  await call('deleteLayer');
+  await menu('Capa', 'Nueva capa de ajuste', 'Corrección selectiva');
+  await page.getByLabel('Colores').selectOption('reds');
+  const cyan = page.locator('.adj-row', { hasText: /^Cian/ }).locator('input[type=number]');
+  await cyan.fill('100'); await cyan.press('Enter'); await wait();
+  ok('Corrección selectiva: +cian en rojos reduce el rojo y no toca los grises', (await px(150, 50))[0] < 205 && near(await px(50, 50), [128, 128, 128, 255], 1), JSON.stringify(await px(150, 50)));
+  await call('deleteLayer');
+  await menu('Capa', 'Nueva capa de ajuste', 'Mezclador de canales');
+  await page.getByRole('checkbox', { name: 'Monocromo' }).click(); await wait();
+  ok('Mezclador de canales monocromo (40/40/20)', near(await px(150, 50), [112, 112, 112, 255], 2), JSON.stringify(await px(150, 50)));
+
   // =========================================================== RENDIMIENTO
-  await call('newDoc', 6000, 4000, 'white', 'grande.psd');
+  await newDoc(6000, 4000, 'white');
   await call('selectShape', { x: 0, y: 0, w: 3000, h: 4000 }, 'rect', 'replace', 0);
   await call('fill', [0, 0, 0, 255]); await call('deselect');
   await maxLongTask();

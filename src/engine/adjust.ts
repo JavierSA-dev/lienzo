@@ -1,4 +1,4 @@
-import type { AdjustmentParams, AdjustmentType, RGBA } from './types';
+import { SELECTIVE_RANGES, type AdjustmentParams, type AdjustmentType, type RGBA } from './types';
 
 /** Parámetros por defecto de cada capa de ajuste (los mismos que Photoshop). */
 export function defaultAdjustment(type: AdjustmentType, fg: RGBA = [0, 0, 0, 255], bg: RGBA = [255, 255, 255, 255]): AdjustmentParams {
@@ -16,6 +16,9 @@ export function defaultAdjustment(type: AdjustmentType, fg: RGBA = [0, 0, 0, 255
     case 'gradientMap': return { type, from: fg, to: bg };
     case 'vibrance': return { type, vibrance: 0, saturation: 0 };
     case 'solidColor': return { type, color: fg };
+    case 'photoFilter': return { type, color: [236, 138, 0, 255], density: 25, preserveLuminosity: true };
+    case 'selectiveColor': return { type, relative: true, ranges: Object.fromEntries(SELECTIVE_RANGES.map(([k]) => [k, [0, 0, 0, 0]])) as Record<string, [number, number, number, number]> } as AdjustmentParams;
+    case 'channelMixer': return { type, red: [100, 0, 0, 0], green: [0, 100, 0, 0], blue: [0, 0, 100, 0], monochrome: false };
   }
 }
 
@@ -23,9 +26,19 @@ export const ADJUSTMENT_LABELS: Record<AdjustmentType, string> = {
   brightness: 'Brillo/Contraste', levels: 'Niveles', curves: 'Curvas', exposure: 'Exposición',
   vibrance: 'Intensidad', hueSat: 'Tono/Saturación', colorBalance: 'Equilibrio de color', blackWhite: 'Blanco y negro',
   invert: 'Invertir', posterize: 'Posterizar', threshold: 'Umbral', gradientMap: 'Mapa de degradado', solidColor: 'Color sólido',
+  photoFilter: 'Filtro de fotografía', selectiveColor: 'Corrección selectiva', channelMixer: 'Mezclador de canales',
 };
 
-export interface AdjUniforms { kind: number; lut: Uint8Array | null; p0: number[]; p1: number[]; p2: number[] }
+/** Filtros de fotografía predefinidos de Photoshop. */
+export const PHOTO_FILTERS: [string, string][] = [
+  ['Filtro de calentamiento (85)', '#ec8a00'], ['Filtro de calentamiento (LBA)', '#fa9600'], ['Filtro de calentamiento (81)', '#ebb113'],
+  ['Filtro de enfriamiento (80)', '#006dff'], ['Filtro de enfriamiento (LBB)', '#005dff'], ['Filtro de enfriamiento (82)', '#00b5ff'],
+  ['Rojo', '#ea1a1a'], ['Naranja', '#f38417'], ['Amarillo', '#f9e31c'], ['Verde', '#19c919'], ['Cian', '#1dcbea'],
+  ['Azul', '#1d35ea'], ['Violeta', '#9b1dea'], ['Magenta', '#e318e3'], ['Sepia', '#ac7a33'],
+  ['Subacuático', '#00c2b1'],
+];
+
+export interface AdjUniforms { kind: number; lut: Uint8Array | null; p0: number[]; p1: number[]; p2: number[]; sel?: number[] }
 
 const clamp255 = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
 
@@ -117,6 +130,14 @@ export function adjustmentUniforms(a: AdjustmentParams): AdjUniforms {
       return { kind: 5, lut: null, p0: [a.vibrance / 100, a.saturation / 100, 0, 0], p1: z, p2: z };
     case 'solidColor':
       return { kind: 6, lut: null, p0: [a.color[0] / 255, a.color[1] / 255, a.color[2] / 255, 1], p1: z, p2: z };
+    case 'selectiveColor':
+      return { kind: 8, lut: null, p0: [a.relative ? 1 : 0, 0, 0, 0], p1: z, p2: z, sel: SELECTIVE_RANGES.flatMap(([k]) => a.ranges[k].map((v) => v / 100)) };
+    case 'photoFilter':
+      return { kind: 9, lut: null, p0: [a.color[0] / 255, a.color[1] / 255, a.color[2] / 255, a.density / 100], p1: [a.preserveLuminosity ? 1 : 0, 0, 0, 0], p2: z };
+    case 'channelMixer': {
+      const m = a.monochrome ? [a.red, a.red, a.red] : [a.red, a.green, a.blue];
+      return { kind: 10, lut: null, p0: m[0].map((v) => v / 100), p1: m[1].map((v) => v / 100), p2: m[2].map((v) => v / 100) };
+    }
   }
 }
 

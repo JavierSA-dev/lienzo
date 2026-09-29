@@ -273,6 +273,25 @@ export class PixelLayer {
   }
 }
 
+export interface Snapshot {
+  id: number;
+  name: string;
+  width: number;
+  height: number;
+  layers: PixelLayer[];
+  /** id de la capa del documento -> su copia en la instantánea (para el pincel de historia). */
+  map: Map<number, PixelLayer>;
+  activeIndex: number;
+}
+
+/** Copia capas conservando la jerarquía de grupos (los tiles se comparten, copia en escritura). */
+export function cloneLayers(list: PixelLayer[]): { copies: PixelLayer[]; map: Map<number, PixelLayer> } {
+  const map = new Map<number, PixelLayer>();
+  const copies = list.map((l) => { const c = l.clone(l.name); map.set(l.id, c); return c; });
+  for (const c of copies) if (c.parent != null) c.parent = map.get(c.parent)?.id ?? null;
+  return { copies, map };
+}
+
 export class EditorDocument {
   name: string;
   width: number;
@@ -286,6 +305,8 @@ export class EditorDocument {
   selectedIds = new Set<number>();
   /** Trazados (pluma). `work` = trazado de trabajo, se reemplaza al dibujar uno nuevo. */
   paths: { id: number; name: string; work: boolean; path: VectorPath }[] = [];
+  /** Guías (Vista > Nueva guía o arrastrando desde las reglas). pos en px de documento. */
+  guides: { id: number; dir: 'h' | 'v'; pos: number }[] = [];
   activePathId: number | null = null;
 
   /** Capas seleccionadas que siguen existiendo, en el orden del documento. */
@@ -311,8 +332,17 @@ export class EditorDocument {
   }
 
   layer(id: number): PixelLayer | undefined {
-    return this.layers.find((l) => l.id === id);
+    return this.layers.find((l) => l.id === id) ?? this.extras.find((l) => l.id === id);
   }
+
+  /** Capas internas que no se ven en el panel (p. ej. la máscara rápida), para el historial. */
+  extras: PixelLayer[] = [];
+  /** Canales alfa (selecciones guardadas). Sus tiles no se modifican nunca: se comparten sin copiar. */
+  alphas: { id: number; name: string; tiles: Map<number, Uint8Array> }[] = [];
+  /** Instantáneas (panel Historial): copias ligeras del documento (los tiles se comparten). */
+  snapshots: Snapshot[] = [];
+  /** Instantánea de origen del pincel de historia. */
+  historySource: number | null = null;
 
   indexOf(id: number): number {
     return this.layers.findIndex((l) => l.id === id);

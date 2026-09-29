@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
-import type { AdjustmentParams, RGBA } from '../engine/types';
-import { curveLut } from '../engine/adjust';
+import { SELECTIVE_RANGES, type AdjustmentParams, type RGBA, type SelectiveRange } from '../engine/types';
+import { curveLut, PHOTO_FILTERS } from '../engine/adjust';
 import { toHex, toRgba } from './store';
 
 type OnChange = (p: AdjustmentParams, commit: boolean) => void;
@@ -108,5 +108,72 @@ export function AdjustmentEditor({ params, onChange }: { params: AdjustmentParam
     case 'posterize': return R('Niveles', 'levels', 2, 255);
     case 'gradientMap': return <><ColorField label="Sombras" value={params.from} onChange={(c) => onChange({ ...params, from: c }, true)} /><ColorField label="Iluminaciones" value={params.to} onChange={(c) => onChange({ ...params, to: c }, true)} /></>;
     case 'solidColor': return <ColorField label="Color" value={params.color} onChange={(c) => onChange({ ...params, color: c }, true)} />;
+    case 'photoFilter': {
+      const hex = toHex(params.color);
+      const preset = PHOTO_FILTERS.find(([, h]) => h === hex)?.[1] ?? '';
+      return (
+        <>
+          <label className="adj-row"><span>Filtro</span>
+            <select value={preset} aria-label="Filtro" onChange={(e) => e.target.value && onChange({ ...params, color: toRgba(e.target.value) }, true)}>
+              {!preset && <option value="">Personalizado</option>}
+              {PHOTO_FILTERS.map(([n, h]) => <option key={h} value={h}>{n}</option>)}
+            </select>
+          </label>
+          <ColorField label="Color" value={params.color} onChange={(c) => onChange({ ...params, color: c }, true)} />
+          {R('Densidad', 'density', 1, 100)}
+          <label className="adj-row"><span>Conservar luminosidad</span><input type="checkbox" checked={params.preserveLuminosity} onChange={(e) => onChange({ ...params, preserveLuminosity: e.target.checked }, true)} /></label>
+        </>
+      );
+    }
+    case 'selectiveColor': return <SelectiveColorEditor params={params} onChange={onChange} />;
+    case 'channelMixer': return <ChannelMixerEditor params={params} onChange={onChange} />;
   }
+}
+
+function SelectiveColorEditor({ params, onChange }: { params: Extract<AdjustmentParams, { type: 'selectiveColor' }>; onChange: OnChange }) {
+  const [range, setRange] = useState<SelectiveRange>('reds');
+  const v = params.ranges[range];
+  const set = (i: number, x: number, commit: boolean) => {
+    const arr = [...v] as [number, number, number, number]; arr[i] = x;
+    onChange({ ...params, ranges: { ...params.ranges, [range]: arr } }, commit);
+  };
+  return (
+    <>
+      <label className="adj-row"><span>Colores</span>
+        <select value={range} aria-label="Colores" onChange={(e) => setRange(e.target.value as SelectiveRange)}>
+          {SELECTIVE_RANGES.map(([k, n]) => <option key={k} value={k}>{n}</option>)}
+        </select>
+      </label>
+      {(['Cian', 'Magenta', 'Amarillo', 'Negro'] as const).map((l, i) => (
+        <Row key={l} label={l} value={v[i]} min={-100} max={100} onChange={(x) => set(i, x, false)} onCommit={() => onChange(params, true)} />
+      ))}
+      <div className="adj-row adj-radio">
+        <label><input type="radio" checked={params.relative} onChange={() => onChange({ ...params, relative: true }, true)} /> Relativo</label>
+        <label><input type="radio" checked={!params.relative} onChange={() => onChange({ ...params, relative: false }, true)} /> Absoluto</label>
+      </div>
+    </>
+  );
+}
+
+function ChannelMixerEditor({ params, onChange }: { params: Extract<AdjustmentParams, { type: 'channelMixer' }>; onChange: OnChange }) {
+  const [out, setOut] = useState<'red' | 'green' | 'blue'>('red');
+  const key = params.monochrome ? 'red' : out;
+  const v = params[key];
+  const set = (i: number, x: number) => { const arr = [...v] as [number, number, number, number]; arr[i] = x; onChange({ ...params, [key]: arr }, false); };
+  const commit = () => onChange(params, true);
+  return (
+    <>
+      <label className="adj-row"><span>Canal de salida</span>
+        <select value={params.monochrome ? 'gray' : out} aria-label="Canal de salida" disabled={params.monochrome} onChange={(e) => setOut(e.target.value as 'red')}>
+          {params.monochrome ? <option value="gray">Gris</option> : <><option value="red">Rojo</option><option value="green">Verde</option><option value="blue">Azul</option></>}
+        </select>
+      </label>
+      {(['Rojo', 'Verde', 'Azul', 'Constante'] as const).map((l, i) => (
+        <Row key={l} label={l} value={v[i]} min={-200} max={200} onChange={(x) => set(i, x)} onCommit={commit} />
+      ))}
+      <p className="hint">Total: {v[0] + v[1] + v[2]} %</p>
+      <label className="adj-row"><span>Monocromo</span><input type="checkbox" checked={params.monochrome}
+        onChange={(e) => onChange(e.target.checked ? { ...params, monochrome: true, red: [40, 40, 20, 0] } : { ...params, monochrome: false, red: [100, 0, 0, 0], green: [0, 100, 0, 0], blue: [0, 0, 100, 0] }, true)} /></label>
+    </>
+  );
 }

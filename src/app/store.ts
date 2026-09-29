@@ -9,7 +9,7 @@ export type DialogId =
   | { kind: 'new' } | { kind: 'imageSize' } | { kind: 'canvasSize' } | { kind: 'export' }
   | { kind: 'adjust'; type: AdjustmentType } | { kind: 'filter'; name: FilterName }
   | { kind: 'feather' } | { kind: 'grow'; dir: 1 | -1 } | { kind: 'fill' } | { kind: 'layerStyle' }
-  | { kind: 'shortcuts' } | { kind: 'liquify' } | { kind: 'generative' } | { kind: 'about' }
+  | { kind: 'shortcuts' } | { kind: 'liquify' } | { kind: 'generative' } | { kind: 'about' } | { kind: 'confirmClose'; docId: number } | { kind: 'newGuide' } | { kind: 'colorPicker'; which: 'fg' | 'bg' } | { kind: 'applyImage' } | { kind: 'stroke' } | { kind: 'newLayer' }
   | null;
 
 export interface Toast { id: number; text: string; kind: 'info' | 'warn' | 'error' }
@@ -17,6 +17,11 @@ export interface Toast { id: number; text: string; kind: 'info' | 'warn' | 'erro
 interface Thumb { w: number; h: number; data: Uint8ClampedArray }
 
 export interface ToolOptions {
+  /** Vista: reglas (Ctrl+R), guías (Ctrl+;), ajuste magnético (Ctrl+Mayús+;), bloquear guías (Ctrl+Alt+;). */
+  rulers: boolean;
+  guides: boolean;
+  snap: boolean;
+  lockGuides: boolean;
   wandTolerance: number;
   contiguous: boolean;
   sampleAll: boolean;
@@ -37,6 +42,9 @@ export interface ToolOptions {
   italic: boolean;
   align: 'left' | 'center' | 'right';
   autoSelect: boolean;
+  /** Pupilas rojas: tamaño de pupila y cantidad de oscurecimiento (%). */
+  pupilSize: number;
+  darkenAmount: number;
 }
 
 /** Estado de la transformación libre (Ctrl+T) mientras está activa. */
@@ -55,6 +63,10 @@ interface Store {
   groupTool: Record<string, ToolId>;
   tempTool: { tool: ToolId; prev: ToolId; key: string } | null;
   brush: BrushSettings;
+  /** Ajustes de cada herramienta de pintura (como Photoshop: cada una recuerda los suyos). */
+  brushes: Record<string, BrushSettings>;
+  /** Herramienta de pintura a la que pertenece `brush`. */
+  brushTool: ToolId;
   opts: ToolOptions;
   fg: string;
   bg: string;
@@ -72,6 +84,9 @@ interface Store {
   recording: boolean;
   actions: { name: string; steps: { id: string; args?: unknown[] }[] }[];
   fullscreen: boolean;
+  /** Colores recientes (selector de color) y muestras del usuario. */
+  recentColors: string[];
+  swatches: string[];
   /** Trazado de trabajo de la pluma (coordenadas de documento). */
   path: VectorPath;
   /** Subtrazado que se está dibujando con la pluma (null = ninguno). */
@@ -99,7 +114,7 @@ export const toRgba = (hex: string): RGBA => {
 
 const EMPTY_DOC: DocState = {
   open: false, name: '', width: 0, height: 0, layers: [], activeLayerId: 0,
-  history: [], historyIndex: 0, selection: null, editMask: false, dirty: false, selectedLayerIds: [], paths: [], activePathId: null,
+  history: [], historyIndex: 0, selection: null, editMask: false, dirty: false, selectedLayerIds: [], paths: [], activePathId: null, docs: [], activeDocId: 0, guides: [], quickMask: false, alphas: [], viewChannel: 0, snapshots: [], historySource: null,
 };
 
 /** Preferencias que se recuerdan entre sesiones (sólo en este navegador). */
@@ -116,13 +131,46 @@ export function savePrefs(key: string, value: unknown) {
 }
 
 const DEFAULT_OPTS: ToolOptions = {
+  rulers: false, guides: true, snap: true, lockGuides: false,
   wandTolerance: 32, contiguous: true, sampleAll: false, antiAlias: true, feather: 0,
   gradientType: 'linear', gradientReverse: false, gradientTransparent: false,
   shapeKind: 'rect', shapeFill: true, shapeStroke: false, strokeWidth: 3, cornerRadius: 0, sides: 6,
   font: 'Arial', fontSize: 48, bold: false, italic: false, align: 'left', autoSelect: false,
+  pupilSize: 50, darkenAmount: 50,
 };
 
 let toastId = 1;
+
+const DEFAULT_SWATCHES = [
+  '#000000', '#404040', '#808080', '#bfbfbf', '#ffffff', '#ff0000', '#ff8000', '#ffff00', '#80ff00', '#00ff00', '#00ffff', '#0080ff',
+  '#0000ff', '#8000ff', '#ff00ff', '#ff0080', '#7f1d1d', '#7c2d12', '#713f12', '#14532d', '#134e4a', '#1e3a8a', '#4c1d95', '#831843',
+];
+
+function loadList(key: string, fallback: string[]): string[] {
+  try { const v = localStorage.getItem(`lienzo:${key}`); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
+}
+
+const BASE_BRUSH: BrushSettings = { size: 30, hardness: 0.8, opacity: 1, flow: 1, spacing: 0.1, pressureSize: true, pressureOpacity: false };
+/** Valores iniciales de Photoshop: exposición e intensidad al 50 %, correctores duros. */
+const TOOL_DEFAULTS: Partial<Record<ToolId, Partial<BrushSettings>>> = {
+  dodge: { opacity: 0.5, hardness: 0 }, burn: { opacity: 0.5, hardness: 0 },
+  blur: { opacity: 0.5, hardness: 0 }, sharpen: { opacity: 0.5, hardness: 0 }, smudge: { opacity: 0.5, hardness: 0 },
+  spotHeal: { hardness: 1, size: 20 }, heal: { hardness: 1, size: 20 }, pencil: { hardness: 1, size: 1, pressureSize: false },
+  eraser: { hardness: 1 },
+};
+const BRUSH_TOOLS = new Set<ToolId>(['brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'spotHeal', 'heal', 'blur', 'sharpen', 'smudge', 'historyBrush']);
+
+function brushDefaults(t: ToolId, saved: Record<string, BrushSettings>): BrushSettings {
+  return saved[t] ?? { ...BASE_BRUSH, ...TOOL_DEFAULTS[t] };
+}
+
+/** Al cambiar a otra herramienta de pintura se cargan sus propios ajustes. */
+function brushSwap(s: { brushTool: ToolId; brushes: Record<string, BrushSettings> }, t: ToolId) {
+  if (!BRUSH_TOOLS.has(t) || t === s.brushTool) return {};
+  const brush = brushDefaults(t, s.brushes);
+  engine.call('setBrush', brush);
+  return { brush, brushTool: t };
+}
 
 export const useStore = create<Store>((set, get) => ({
   ready: false,
@@ -132,7 +180,9 @@ export const useStore = create<Store>((set, get) => ({
   tool: 'brush',
   groupTool: {},
   tempTool: null,
-  brush: loadPrefs('brush', { size: 30, hardness: 0.8, opacity: 1, flow: 1, spacing: 0.1, pressureSize: true, pressureOpacity: false }),
+  brush: brushDefaults('brush', loadPrefs('brushes', {} as Record<string, BrushSettings>)),
+  brushes: loadPrefs('brushes', {} as Record<string, BrushSettings>),
+  brushTool: 'brush',
   opts: loadPrefs('opts', DEFAULT_OPTS),
   fg: '#000000',
   bg: '#ffffff',
@@ -151,25 +201,27 @@ export const useStore = create<Store>((set, get) => ({
   actions: loadPrefs('actions', { list: [] as Store['actions'] }).list,
   fullscreen: false,
   path: [],
+  recentColors: loadList('recent', []),
+  swatches: loadList('swatches', DEFAULT_SWATCHES),
   penDrawing: null,
   pathSel: null,
   penLocal: false,
 
   setTool(t) {
-    set({ tool: t, tempTool: null });
+    set({ tool: t, tempTool: null, ...brushSwap(get(), t) });
     engine.call('setTool', t);
   },
   pushTempTool(t, key) {
     const s = get();
     if (s.tempTool || s.tool === t) return;
-    set({ tempTool: { tool: t, prev: s.tool, key }, tool: t });
+    set({ tempTool: { tool: t, prev: s.tool, key }, tool: t, ...brushSwap(s, t) });
     engine.call('setTool', t);
   },
   popTempTool(key) {
     const s = get();
     if (!s.tempTool || s.tempTool.key !== key) return;
     const back = s.tempTool.prev;
-    set({ tool: back, tempTool: null });
+    set({ tool: back, tempTool: null, ...brushSwap(s, back) });
     engine.call('setTool', back);
   },
   setBrush(b) {
@@ -178,8 +230,10 @@ export const useStore = create<Store>((set, get) => ({
     brush.hardness = Math.max(0, Math.min(1, brush.hardness));
     brush.opacity = Math.max(0.01, Math.min(1, brush.opacity));
     brush.flow = Math.max(0.01, Math.min(1, brush.flow));
-    set({ brush });
-    savePrefs('brush', brush);
+    const key = get().brushTool;
+    const brushes = { ...get().brushes, [key]: brush };
+    set({ brush, brushes });
+    savePrefs('brushes', brushes);
     engine.call('setBrush', brush);
   },
   setOpts(o) {
@@ -187,6 +241,7 @@ export const useStore = create<Store>((set, get) => ({
     set({ opts });
     savePrefs('opts', opts);
     if (o.autoSelect !== undefined) engine.call('setAutoSelect', o.autoSelect);
+    if (o.snap !== undefined) engine.call('setSnap', o.snap);
   },
   setColors(fg, bg) {
     set({ fg, bg });
@@ -237,6 +292,7 @@ engine.on((m) => {
       // Sincroniza las preferencias recordadas con el motor.
       engine.call('setBrush', s.brush);
       engine.call('setAutoSelect', s.opts.autoSelect);
+      engine.call('setSnap', s.opts.snap);
       break;
     }
     case 'state':

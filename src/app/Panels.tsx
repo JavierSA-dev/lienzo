@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Eye, EyeOff, Plus, Copy, Trash2, Layers as LayersIcon, CircleDot, SlidersHorizontal, Type, Shapes, Lock, Sparkles,
-  Play, Square, Link, Folder, FolderOpen, ChevronRight, ChevronDown, CornerLeftDown, FolderPlus, PaintBucket, SquareDashed, Spline,
+  Play, Square, Link, History, Camera, Folder, FolderOpen, ChevronRight, ChevronDown, CornerLeftDown, FolderPlus, PaintBucket, SquareDashed, Spline,
 } from 'lucide-react';
 import { toSvg, type VectorPath } from '../engine/path';
 import { engine } from '../engine/client';
@@ -10,6 +10,7 @@ import { ADJUSTMENT_LABELS } from '../engine/adjust';
 import { FONTS } from '../engine/vector';
 import { useStore, toHex, toRgba } from './store';
 import { AdjustmentEditor } from './Adjustments';
+import { rgbToHsb, hsbToRgb, hexToRgb, rgbToHex, pushRecent, addSwatch, removeSwatch } from './ColorPicker';
 import { startRecording, stopRecording, playAction, deleteAction, renameAction } from './commands';
 
 const BLEND_LABEL = Object.fromEntries([...BLEND_GROUPS.flat(), PASS_THROUGH].map((b) => [b.id, b.label]));
@@ -25,35 +26,57 @@ function PanelTabs({ tabs }: { tabs: { label: string; on?: boolean; onClick?: ()
   );
 }
 
-const PALETTE = [
-  '#000000', '#404040', '#808080', '#bfbfbf', '#ffffff', '#ff0000', '#ff8000', '#ffff00', '#80ff00', '#00ff00', '#00ffff', '#0080ff',
-  '#0000ff', '#8000ff', '#ff00ff', '#ff0080', '#7f1d1d', '#7c2d12', '#713f12', '#14532d', '#134e4a', '#1e3a8a', '#4c1d95', '#831843',
-];
+const openPicker = (which: 'fg' | 'bg') => useStore.getState().setDialog({ kind: 'colorPicker', which });
+
+/** Deslizador de color con fondo degradado (panel Color, modo HSB). */
+function ColorSlider({ label, value, max, bg, onChange }: { label: string; value: number; max: number; bg: string; onChange: (v: number) => void }) {
+  return (
+    <label className="color-slider"><span>{label}</span>
+      <input type="range" min={0} max={max} value={value} style={{ background: bg }} onChange={(e) => onChange(Number(e.target.value))} />
+      <input type="number" className="num" min={0} max={max} value={Math.round(value)} onKeyDown={(e) => e.stopPropagation()} onChange={(e) => onChange(Math.max(0, Math.min(max, Number(e.target.value) || 0)))} />
+    </label>
+  );
+}
 
 export function ColorPanel() {
   const fg = useStore((s) => s.fg);
   const bg = useStore((s) => s.bg);
+  const recent = useStore((s) => s.recentColors);
+  const swatches = useStore((s) => s.swatches);
   const setColors = useStore((s) => s.setColors);
+  const [tab, setTab] = useState<'color' | 'swatches'>('color');
   const [hex, setHex] = useState(fg);
   useEffect(() => setHex(fg), [fg]);
+  const [h, sat, br] = rgbToHsb(...hexToRgb(fg));
+  const setHsb = (nh: number, ns: number, nb: number) => setColors(rgbToHex(...hsbToRgb(nh, ns, nb)), bg);
+  const pick = (c: string, e: React.MouseEvent) => { if (e.altKey) setColors(fg, c); else { setColors(c, bg); pushRecent(c); } };
   return (
     <section className="panel">
-      <PanelTabs tabs={[{ label: 'Color', on: true }, { label: 'Muestras' }]} />
+      <PanelTabs tabs={[{ label: 'Color', on: tab === 'color', onClick: () => setTab('color') }, { label: 'Muestras', on: tab === 'swatches', onClick: () => setTab('swatches') }]} />
       <div className="panel-body">
         <div className="color-row">
-          <label className="color-big" style={{ background: fg }} title="Color frontal">
-            <input type="color" value={fg} onChange={(e) => setColors(e.target.value, bg)} />
-          </label>
+          <button className="color-big" style={{ background: fg }} title="Color frontal (clic: selector de color)" onClick={() => openPicker('fg')} data-testid="fg-swatch" />
           <input className="hex" value={hex} aria-label="Color frontal en hexadecimal"
             onKeyDown={(e) => e.stopPropagation()}
             onChange={(e) => { setHex(e.target.value); if (/^#[0-9a-f]{6}$/i.test(e.target.value)) setColors(e.target.value.toLowerCase(), bg); }} />
-          <label className="color-big small" style={{ background: bg }} title="Color de fondo">
-            <input type="color" value={bg} onChange={(e) => setColors(fg, e.target.value)} />
-          </label>
+          <button className="color-big small" style={{ background: bg }} title="Color de fondo (clic: selector de color)" onClick={() => openPicker('bg')} />
         </div>
-        <div className="palette">
-          {PALETTE.map((c) => <button key={c} style={{ background: c }} title={`${c} · Alt+clic: fondo`} onClick={(e) => (e.altKey ? setColors(fg, c) : setColors(c, bg))} />)}
-        </div>
+        {tab === 'color' ? (
+          <>
+            <ColorSlider label="H" value={h} max={359} bg="linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)" onChange={(v) => setHsb(v, sat, br)} />
+            <ColorSlider label="S" value={sat} max={100} bg={`linear-gradient(to right,${rgbToHex(...hsbToRgb(h, 0, br))},${rgbToHex(...hsbToRgb(h, 100, br))})`} onChange={(v) => setHsb(h, v, br)} />
+            <ColorSlider label="B" value={br} max={100} bg={`linear-gradient(to right,#000,${rgbToHex(...hsbToRgb(h, sat, 100))})`} onChange={(v) => setHsb(h, sat, v)} />
+            {recent.length > 0 && <div className="palette recent" title="Recientes">{recent.map((c) => <button key={c} style={{ background: c }} title={`${c} · Alt+clic: fondo`} onClick={(e) => pick(c, e)} />)}</div>}
+          </>
+        ) : (
+          <div className="palette" data-testid="swatches">
+            {swatches.map((c) => (
+              <button key={c} style={{ background: c }} title={`${c} · Alt+clic: fondo · clic derecho: eliminar`} onClick={(e) => pick(c, e)}
+                onContextMenu={(e) => { e.preventDefault(); removeSwatch(c); }} />
+            ))}
+            <button className="add-swatch" title="Añadir el color frontal a Muestras" onClick={() => addSwatch(fg)}>+</button>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -131,11 +154,27 @@ export function HistoryPanel() {
       <PanelTabs tabs={[{ label: 'Historial', on: true }]} />
       <div className="panel-body history" ref={listRef}>
         {!doc.open && <span className="hint">Sin documento</span>}
+        {doc.snapshots.map((sn) => (
+          <div key={`s${sn.id}`} className="history-item snapshot" data-testid="snapshot-row" title="Clic: volver a esta instantánea">
+            <button className={`hist-src ${doc.historySource === sn.id ? 'on' : ''}`} title="Origen del pincel de historia (Y)"
+              onClick={(e) => { e.stopPropagation(); engine.call('setHistorySource', sn.id); }}>
+              <History size={11} />
+            </button>
+            <span className="snap-name" onClick={() => engine.call('restoreSnapshot', sn.id)}>{sn.name}</span>
+            {doc.snapshots[0]?.id !== sn.id && <button className="icon-btn tiny" title="Eliminar instantánea" onClick={() => engine.call('deleteSnapshot', sn.id)}><Trash2 size={11} /></button>}
+          </div>
+        ))}
+        {doc.open && <div className="history-sep" />}
         {doc.history.map((h, i) => (
           <div key={i} className={`history-item ${i === doc.historyIndex ? 'current' : ''} ${i > doc.historyIndex ? 'future' : ''}`}
             onClick={() => engine.call('jumpHistory', i)}>{h.label}</div>
         ))}
       </div>
+      {doc.open && (
+        <div className="panel-foot">
+          <button className="icon-btn" title="Crear instantánea nueva" onClick={() => engine.call('newSnapshot')} data-testid="new-snapshot"><Camera size={15} /></button>
+        </div>
+      )}
     </section>
   );
 }
@@ -305,13 +344,14 @@ function ScrubPercent({ label, value, onLive, onCommit }: { label: string; value
   );
 }
 
-const ADJ_MENU: AdjustmentType[] = ['solidColor', 'brightness', 'levels', 'curves', 'exposure', 'vibrance', 'hueSat', 'colorBalance', 'blackWhite', 'invert', 'posterize', 'threshold', 'gradientMap'];
+const ADJ_MENU: AdjustmentType[] = ['solidColor', 'brightness', 'levels', 'curves', 'exposure', 'vibrance', 'hueSat', 'colorBalance', 'blackWhite', 'photoFilter', 'channelMixer', 'invert', 'posterize', 'threshold', 'gradientMap', 'selectiveColor'];
 
 export function LayersPanel() {
   const doc = useStore((s) => s.doc);
   const [adjOpen, setAdjOpen] = useState(false);
-  const [tab, setTab] = useState<'layers' | 'paths'>('layers');
+  const [tab, setTab] = useState<'layers' | 'paths' | 'channels'>('layers');
   if (tab === 'paths') return <PathsPanel onTab={setTab} />;
+  if (tab === 'channels') return <ChannelsPanel onTab={setTab} />;
   const active = doc.layers.find((l) => l.id === doc.activeLayerId);
   // Árbol visible de arriba a abajo (los grupos plegados ocultan su contenido).
   const rows: { l: LayerInfo; depth: number; isBase: boolean }[] = [];
@@ -326,7 +366,7 @@ export function LayersPanel() {
   walk(null, 0);
   return (
     <section className="panel grow">
-      <PanelTabs tabs={[{ label: 'Capas', on: true }, { label: 'Canales' }, { label: 'Trazados', onClick: () => setTab('paths') }]} />
+      <PanelTabs tabs={[{ label: 'Capas', on: true }, { label: 'Canales', onClick: () => setTab('channels') }, { label: 'Trazados', onClick: () => setTab('paths') }]} />
       {doc.open && active ? (
         <>
           <div className="layer-controls">
@@ -369,7 +409,7 @@ export function LayersPanel() {
               )}
             </div>
             <button className="icon-btn" title="Nuevo grupo (Ctrl+G agrupa la capa activa)" onClick={() => engine.call('groupLayers', true)}><FolderPlus size={15} /></button>
-            <button className="icon-btn" title="Nueva capa (Ctrl+Mayús+N)" onClick={() => engine.call('newLayer')}><Plus size={16} /></button>
+            <button className="icon-btn" title="Nueva capa (Alt+clic: opciones)" onClick={(e) => { if (e.altKey) useStore.getState().setDialog({ kind: 'newLayer' }); else engine.call('newLayer'); }}><Plus size={16} /></button>
             <button className="icon-btn" title="Duplicar capa" onClick={() => engine.call('duplicateLayer')}><Copy size={15} /></button>
             <button className="icon-btn" title="Eliminar capa" disabled={doc.layers.length <= 1} onClick={() => engine.call('deleteLayer')}><Trash2 size={15} /></button>
           </div>
@@ -393,14 +433,14 @@ function PathThumb({ path, w, h }: { path: VectorPath; w: number; h: number }) {
   );
 }
 
-export function PathsPanel({ onTab }: { onTab: (t: 'layers' | 'paths') => void }) {
+export function PathsPanel({ onTab }: { onTab: (t: 'layers' | 'paths' | 'channels') => void }) {
   const doc = useStore((s) => s.doc);
   const [editing, setEditing] = useState<number | null>(null);
   const active = doc.paths.find((p) => p.id === doc.activePathId);
   const act = (m: string, ...a: unknown[]) => { if (active) engine.call(m, active.path, ...a); };
   return (
     <section className="panel grow">
-      <PanelTabs tabs={[{ label: 'Capas', onClick: () => onTab('layers') }, { label: 'Canales' }, { label: 'Trazados', on: true }]} />
+      <PanelTabs tabs={[{ label: 'Capas', onClick: () => onTab('layers') }, { label: 'Canales', onClick: () => onTab('channels') }, { label: 'Trazados', on: true }]} />
       <div className="layers paths" role="list" onClick={(e) => { if (e.target === e.currentTarget) engine.call('setActivePath', null); }}>
         {!doc.paths.length && <div className="panel-body hint">Dibuja con la pluma (P) o convierte una selección en trazado.</div>}
         {[...doc.paths].map((p) => (
@@ -429,6 +469,71 @@ export function PathsPanel({ onTab }: { onTab: (t: 'layers' | 'paths') => void }
         <button className="icon-btn" title="Hacer trazado de trabajo desde la selección" disabled={!doc.selection} onClick={() => engine.call('workPathFromSelection', 2)}><Spline size={15} /></button>
         <button className="icon-btn" title="Crear trazado nuevo" onClick={() => engine.call('savePath')}><Plus size={16} /></button>
         <button className="icon-btn" title="Eliminar trazado" disabled={!active} onClick={() => active && engine.call('deletePath', active.id)}><Trash2 size={15} /></button>
+      </div>
+    </section>
+  );
+}
+
+type ChanThumbs = { w: number; h: number; data: Uint8ClampedArray; alphas: { id: number; data: Uint8ClampedArray }[] };
+
+/** Miniatura de un canal: RGB en color, R/G/B y alfas en grises. */
+function ChannelThumb({ t, channel, alpha }: { t: ChanThumbs | null; channel?: number; alpha?: number }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const c = ref.current;
+    if (!c || !t) return;
+    c.width = t.w; c.height = t.h;
+    const img = new ImageData(t.w, t.h);
+    const a = alpha != null ? t.alphas.find((x) => x.id === alpha)?.data : null;
+    for (let i = 0; i < t.w * t.h; i++) {
+      const v = a ? a[i] : channel ? t.data[i * 4 + channel - 1] : -1;
+      if (v < 0) { img.data.set(t.data.subarray(i * 4, i * 4 + 4), i * 4); continue; }
+      img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v; img.data[i * 4 + 3] = 255;
+    }
+    c.getContext('2d')!.putImageData(img, 0, 0);
+  }, [t, channel, alpha]);
+  return <canvas ref={ref} />;
+}
+
+export function ChannelsPanel({ onTab }: { onTab: (t: 'layers' | 'paths' | 'channels') => void }) {
+  const doc = useStore((s) => s.doc);
+  const [thumbs, setThumbs] = useState<ChanThumbs | null>(null);
+  const [activeAlpha, setActiveAlpha] = useState<number | null>(null);
+  // Las miniaturas se recalculan poco después de cada cambio del documento.
+  useEffect(() => {
+    if (!doc.open) return;
+    const t = setTimeout(() => { engine.call<ChanThumbs | null>('channelThumbs', 48).then(setThumbs); }, 250);
+    return () => clearTimeout(t);
+  }, [doc]);
+  const names = ['RGB', 'Rojo', 'Verde', 'Azul'];
+  const mode = (e: React.MouseEvent) => (e.shiftKey && e.altKey ? 'intersect' : e.shiftKey ? 'add' : e.altKey ? 'subtract' : 'replace');
+  return (
+    <section className="panel grow">
+      <PanelTabs tabs={[{ label: 'Capas', onClick: () => onTab('layers') }, { label: 'Canales', on: true }, { label: 'Trazados', onClick: () => onTab('paths') }]} />
+      <div className="layers channels" role="list">
+        {names.map((n, i) => (
+          <div key={n} className={`layer channel-row ${doc.viewChannel === i && activeAlpha == null ? 'active' : ''}`} data-testid="channel-row"
+            title="Clic: ver este canal · Ctrl+clic: cargar como selección (luminosidad en RGB)"
+            onClick={(e) => { if (e.ctrlKey || e.metaKey) { engine.call('loadChannelSelection', i, mode(e)); return; } setActiveAlpha(null); engine.call('setViewChannel', i); }}>
+            <div className="thumb chan-thumb"><ChannelThumb t={thumbs} channel={i} /></div>
+            <div className="layer-text"><div className="name">{n}</div></div>
+          </div>
+        ))}
+        {doc.alphas.map((a) => (
+          <div key={a.id} className={`layer channel-row ${activeAlpha === a.id ? 'active' : ''}`} data-testid="alpha-row"
+            title="Ctrl+clic: cargar como selección"
+            onClick={(e) => { if (e.ctrlKey || e.metaKey) { engine.call('loadAlpha', a.id, mode(e)); return; } setActiveAlpha(a.id); }}>
+            <div className="thumb chan-thumb"><ChannelThumb t={thumbs} alpha={a.id} /></div>
+            <div className="layer-text"><div className="name">{a.name}</div></div>
+          </div>
+        ))}
+      </div>
+      <div className="panel-foot">
+        <button className="icon-btn" title="Cargar canal como selección" onClick={() => activeAlpha != null ? engine.call('loadAlpha', activeAlpha) : engine.call('loadChannelSelection', doc.viewChannel)}><SquareDashed size={15} /></button>
+        <button className="icon-btn" title="Guardar selección como canal" disabled={!doc.selection} onClick={() => engine.call('saveSelection')}>
+          <svg width="15" height="15" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1" fill="none" stroke="currentColor" /><circle cx="8" cy="8" r="3.2" fill="currentColor" /></svg>
+        </button>
+        <button className="icon-btn" title="Eliminar canal" disabled={activeAlpha == null} onClick={() => { if (activeAlpha != null) { engine.call('deleteAlpha', activeAlpha); setActiveAlpha(null); } }}><Trash2 size={15} /></button>
       </div>
     </section>
   );

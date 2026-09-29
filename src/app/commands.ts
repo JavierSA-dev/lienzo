@@ -17,6 +17,8 @@ export interface Command {
   needsDoc?: boolean;
   /** Se puede grabar en una acción. */
   rec?: boolean;
+  /** Opción activable: el menú muestra una marca cuando está activa. */
+  checked?: () => boolean;
   run: () => unknown;
 }
 
@@ -67,7 +69,17 @@ function download(blob: Blob, name: string) {
 
 const baseName = () => S().doc.name.replace(/\.[^.]+$/, '') || 'imagen';
 
-export async function savePsd(psb = false) {
+/** Cerrar una pestaña: si tiene cambios sin guardar, pregunta (como Photoshop). */
+export function closeDocAsk(id?: number) {
+  const d = S().doc;
+  const target = id ?? d.activeDocId;
+  const tab = d.docs.find((x) => x.id === target);
+  if (!tab) return;
+  if (tab.dirty) S().setDialog({ kind: 'confirmClose', docId: target });
+  else engine.call('closeDoc', target);
+}
+
+export async function savePsd(psb = false): Promise<boolean> {
   const bytes = await engine.call<Uint8Array>('savePsd', psb);
   const ext = psb ? 'psb' : 'psd';
   const blob = new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'image/vnd.adobe.photoshop' });
@@ -79,12 +91,13 @@ export async function savePsd(psb = false) {
       await s.write(blob);
       await s.close();
       S().toast(`Guardado como ${ext.toUpperCase()}`);
-      return;
+      return true;
     } catch (e) {
-      if ((e as Error).name === 'AbortError') return;
+      if ((e as Error).name === 'AbortError') return false;
     }
   }
   download(blob, `${baseName()}.${ext}`);
+  return true;
 }
 
 export async function exportImage(type: 'image/png' | 'image/jpeg' | 'image/webp', quality = 0.92) {
@@ -112,9 +125,10 @@ export const TOOL_GROUPS: { key: string; tools: ToolId[] }[] = [
   { key: 'W', tools: ['wand'] },
   { key: 'C', tools: ['crop'] },
   { key: 'I', tools: ['eyedropper'] },
-  { key: 'J', tools: ['spotHeal', 'heal', 'patch'] },
+  { key: 'J', tools: ['spotHeal', 'heal', 'patch', 'redEye'] },
   { key: 'B', tools: ['brush', 'pencil'] },
   { key: 'S', tools: ['clone'] },
+  { key: 'Y', tools: ['historyBrush'] },
   { key: 'E', tools: ['eraser'] },
   { key: 'G', tools: ['gradient', 'bucket'] },
   { key: '_R', tools: ['blur', 'sharpen', 'smudge'] },
@@ -123,7 +137,7 @@ export const TOOL_GROUPS: { key: string; tools: ToolId[] }[] = [
   { key: 'T', tools: ['text'] },
   { key: 'A', tools: ['pathSelect'] },
   { key: 'U', tools: ['shape'] },
-  { key: 'H', tools: ['hand'] },
+  { key: 'H', tools: ['hand', 'rotateView'] },
   { key: 'Z', tools: ['zoom'] },
 ];
 
@@ -133,7 +147,7 @@ export const TOOL_NAMES: Record<ToolId, string> = {
   eraser: 'Borrador', gradient: 'Degradado', bucket: 'Bote de pintura', dodge: 'Sobreexponer', burn: 'Subexponer',
   text: 'Texto horizontal', shape: 'Forma', hand: 'Mano', zoom: 'Zoom',
   spotHeal: 'Pincel corrector puntual', heal: 'Pincel corrector', patch: 'Parche', pen: 'Pluma', pathSelect: 'Selección de trazado',
-  blur: 'Desenfocar', sharpen: 'Enfocar', smudge: 'Dedo',
+  blur: 'Desenfocar', sharpen: 'Enfocar', smudge: 'Dedo', historyBrush: 'Pincel de historia', rotateView: 'Rotar vista', redEye: 'Pupilas rojas',
 };
 
 export const groupOf = (t: ToolId) => TOOL_GROUPS.find((g) => g.tools.includes(t))!;
@@ -160,7 +174,7 @@ function toolKey(key: string, cycle: boolean) {
   selectTool(next);
 }
 
-const PAINT_TOOLS = new Set<ToolId>(['brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'spotHeal', 'heal', 'blur', 'sharpen', 'smudge']);
+const PAINT_TOOLS = new Set<ToolId>(['brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'spotHeal', 'heal', 'blur', 'sharpen', 'smudge', 'historyBrush']);
 export const isPaintTool = (t: ToolId) => PAINT_TOOLS.has(t);
 
 // ------------------------------------------------------------------ capas
@@ -206,7 +220,9 @@ export const COMMANDS: Command[] = [
   { id: 'file.new', label: 'Nuevo…', keys: ['Ctrl+N', 'Ctrl+Alt+N'], run: dlg({ kind: 'new' }) },
   { id: 'file.open', label: 'Abrir…', keys: ['Ctrl+O'], run: () => openFile() },
   { id: 'file.place', label: 'Colocar incrustado…', needsDoc: true, run: () => placeFile() },
-  { id: 'file.close', label: 'Cerrar', keys: ['Ctrl+W', 'Ctrl+F4'], needsDoc: true, run: call('closeDoc') },
+  { id: 'file.close', label: 'Cerrar', keys: ['Ctrl+W', 'Ctrl+F4'], needsDoc: true, run: () => closeDocAsk() },
+  { id: 'window.nextDoc', label: 'Documento siguiente', keys: ['Ctrl+Tab', 'Ctrl+F6'], needsDoc: true, run: call('cycleDoc', 1) },
+  { id: 'window.prevDoc', label: 'Documento anterior', keys: ['Ctrl+Shift+Tab', 'Ctrl+Shift+F6'], needsDoc: true, run: call('cycleDoc', -1) },
   { id: 'file.save', label: 'Guardar (PSD)', keys: ['Ctrl+S'], needsDoc: true, run: () => savePsd() },
   { id: 'file.saveAs', label: 'Guardar como…', keys: ['Ctrl+Shift+S'], needsDoc: true, run: () => savePsd() },
   { id: 'file.saveCopy', label: 'Guardar una copia…', keys: ['Ctrl+Alt+S'], needsDoc: true, run: () => savePsd() },
@@ -226,6 +242,7 @@ export const COMMANDS: Command[] = [
   { id: 'edit.pasteInPlace', label: 'Pegar en el mismo sitio', keys: ['Ctrl+Shift+V'], run: () => pasteFromMenu(true) },
   { id: 'edit.contentAware', label: 'Relleno según contenido', needsDoc: true, rec: true, run: call('contentAwareFill') },
   { id: 'edit.fill', label: 'Rellenar…', keys: ['Shift+F5', 'Shift+Backspace'], needsDoc: true, run: dlg({ kind: 'fill' }) },
+  { id: 'edit.stroke', label: 'Contornear…', needsDoc: true, run: () => { if (!S().doc.selection) { S().toast('Contornear necesita una selección.', 'warn'); return; } S().setDialog({ kind: 'stroke' }); } },
   { id: 'edit.fillFg', label: 'Rellenar con color frontal', keys: ['Alt+Backspace', 'Alt+Delete'], needsDoc: true, rec: true, run: call('fill', 'fg') },
   { id: 'edit.fillBg', label: 'Rellenar con color de fondo', keys: ['Ctrl+Backspace', 'Ctrl+Delete'], needsDoc: true, rec: true, run: call('fill', 'bg') },
   { id: 'edit.fillFgPreserve', label: 'Rellenar con frontal (conservar transparencia)', keys: ['Alt+Shift+Backspace'], needsDoc: true, rec: true, run: call('fill', 'fg', true) },
@@ -252,10 +269,14 @@ export const COMMANDS: Command[] = [
   { id: 'image.posterize', label: 'Posterizar…', needsDoc: true, run: dlg({ kind: 'adjust', type: 'posterize' }) },
   { id: 'image.threshold', label: 'Umbral…', needsDoc: true, run: dlg({ kind: 'adjust', type: 'threshold' }) },
   { id: 'image.gradientMap', label: 'Mapa de degradado…', needsDoc: true, run: dlg({ kind: 'adjust', type: 'gradientMap' }) },
+  { id: 'image.photoFilter', label: 'Filtro de fotografía…', needsDoc: true, run: dlg({ kind: 'adjust', type: 'photoFilter' }) },
+  { id: 'image.channelMixer', label: 'Mezclador de canales…', needsDoc: true, run: dlg({ kind: 'adjust', type: 'channelMixer' }) },
+  { id: 'image.selectiveColor', label: 'Corrección selectiva…', needsDoc: true, run: dlg({ kind: 'adjust', type: 'selectiveColor' }) },
   { id: 'image.desaturate', label: 'Desaturar', keys: ['Ctrl+Shift+U'], needsDoc: true, rec: true, run: call('adjust', 'desaturate') },
   { id: 'image.autoTone', label: 'Tono automático', keys: ['Ctrl+Shift+L'], needsDoc: true, rec: true, run: call('adjust', 'autoTone') },
   { id: 'image.autoContrast', label: 'Contraste automático', keys: ['Ctrl+Alt+Shift+L'], needsDoc: true, rec: true, run: call('adjust', 'autoContrast') },
   { id: 'image.autoColor', label: 'Color automático', keys: ['Ctrl+Shift+B'], needsDoc: true, rec: true, run: call('adjust', 'autoTone') },
+  { id: 'image.applyImage', label: 'Aplicar imagen…', needsDoc: true, run: dlg({ kind: 'applyImage' }) },
   { id: 'image.size', label: 'Tamaño de imagen…', keys: ['Ctrl+Alt+I'], needsDoc: true, run: dlg({ kind: 'imageSize' }) },
   { id: 'image.canvasSize', label: 'Tamaño de lienzo…', keys: ['Ctrl+Alt+C'], needsDoc: true, run: dlg({ kind: 'canvasSize' }) },
   { id: 'image.rot180', label: 'Rotación de imagen 180°', needsDoc: true, rec: true, run: call('rotateCanvas', 180) },
@@ -266,7 +287,8 @@ export const COMMANDS: Command[] = [
   { id: 'image.crop', label: 'Recortar a la selección', needsDoc: true, rec: true, run: call('cropToSelection') },
 
   // Capa
-  { id: 'layer.new', label: 'Nueva capa', keys: ['Ctrl+Shift+N', 'Ctrl+Alt+Shift+N'], needsDoc: true, rec: true, run: call('newLayer') },
+  { id: 'layer.newDialog', label: 'Capa…', keys: ['Ctrl+Shift+N'], needsDoc: true, run: dlg({ kind: 'newLayer' }) },
+  { id: 'layer.new', label: 'Nueva capa', keys: ['Ctrl+Alt+Shift+N'], needsDoc: true, rec: true, run: call('newLayer') },
   { id: 'layer.viaCopy', label: 'Capa vía copiar', keys: ['Ctrl+J'], needsDoc: true, rec: true, run: call('layerVia', false) },
   { id: 'layer.viaCut', label: 'Capa vía cortar', keys: ['Ctrl+Shift+J'], needsDoc: true, rec: true, run: call('layerVia', true) },
   { id: 'layer.selectAll', label: 'Seleccionar todas las capas', keys: ['Ctrl+Alt+A'], needsDoc: true, run: call('selectAllLayers') },
@@ -292,6 +314,9 @@ export const COMMANDS: Command[] = [
   { id: 'layer.adj.posterize', label: 'Posterizar', needsDoc: true, rec: true, run: newAdjustment('posterize') },
   { id: 'layer.adj.threshold', label: 'Umbral', needsDoc: true, rec: true, run: newAdjustment('threshold') },
   { id: 'layer.adj.gradientMap', label: 'Mapa de degradado', needsDoc: true, rec: true, run: newAdjustment('gradientMap') },
+  { id: 'layer.adj.photoFilter', label: 'Filtro de fotografía', needsDoc: true, rec: true, run: newAdjustment('photoFilter') },
+  { id: 'layer.adj.channelMixer', label: 'Mezclador de canales', needsDoc: true, rec: true, run: newAdjustment('channelMixer') },
+  { id: 'layer.adj.selectiveColor', label: 'Corrección selectiva', needsDoc: true, rec: true, run: newAdjustment('selectiveColor') },
   { id: 'layer.fill.solid', label: 'Capa de relleno: color sólido', needsDoc: true, rec: true, run: newAdjustment('solidColor') },
   { id: 'layer.style', label: 'Estilo de capa…', needsDoc: true, run: dlg({ kind: 'layerStyle' }) },
   { id: 'layer.mask.reveal', label: 'Máscara: mostrar todo', needsDoc: true, rec: true, run: call('addMask', 'reveal') },
@@ -330,6 +355,9 @@ export const COMMANDS: Command[] = [
   { id: 'select.reselect', label: 'Volver a seleccionar', keys: ['Ctrl+Shift+D'], needsDoc: true, rec: true, run: call('reselect') },
   { id: 'select.invert', label: 'Invertir', keys: ['Ctrl+Shift+I', 'Shift+F7'], needsDoc: true, rec: true, run: call('invertSelection') },
   { id: 'select.subject', label: 'Sujeto (IA local)', needsDoc: true, run: call('selectSubject') },
+  { id: 'select.quickMask', label: 'Editar en modo Máscara rápida', keys: ['Q'], needsDoc: true, checked: () => S().doc.quickMask, run: call('toggleQuickMask') },
+  { id: 'select.save', label: 'Guardar selección', needsDoc: true, rec: true, run: call('saveSelection') },
+  { id: 'select.luminosity', label: 'Cargar luminosidad como selección', keys: ['Ctrl+Alt+2'], needsDoc: true, rec: true, run: call('loadChannelSelection', 0) },
   { id: 'select.feather', label: 'Calar…', keys: ['Shift+F6'], needsDoc: true, run: dlg({ kind: 'feather' }) },
   { id: 'select.expand', label: 'Expandir…', needsDoc: true, run: dlg({ kind: 'grow', dir: 1 }) },
   { id: 'select.contract', label: 'Contraer…', needsDoc: true, run: dlg({ kind: 'grow', dir: -1 }) },
@@ -360,6 +388,12 @@ export const COMMANDS: Command[] = [
   { id: 'view.actual', label: '100 %', keys: ['Ctrl+1', 'Ctrl+Alt+0'], needsDoc: true, run: call('actualPixels') },
   { id: 'view.extras', label: 'Extras (bordes de selección)', keys: ['Ctrl+H'], run: () => { const v = !document.body.classList.toggle('hide-extras'); S().toast(v ? 'Extras visibles' : 'Extras ocultos'); } },
   { id: 'view.grid', label: 'Cuadrícula', keys: ["Ctrl+'"], run: () => document.body.classList.toggle('show-grid') },
+  { id: 'view.rulers', label: 'Reglas', keys: ['Ctrl+R'], checked: () => S().opts.rulers, run: () => S().setOpts({ rulers: !S().opts.rulers }) },
+  { id: 'view.guides', label: 'Mostrar guías', keys: ['Ctrl+;'], checked: () => S().opts.guides, run: () => S().setOpts({ guides: !S().opts.guides }) },
+  { id: 'view.snap', label: 'Ajustar', keys: ['Ctrl+Shift+;'], checked: () => S().opts.snap, run: () => S().setOpts({ snap: !S().opts.snap }) },
+  { id: 'view.lockGuides', label: 'Bloquear guías', keys: ['Ctrl+Alt+;'], checked: () => S().opts.lockGuides, run: () => S().setOpts({ lockGuides: !S().opts.lockGuides }) },
+  { id: 'view.newGuide', label: 'Nueva guía…', needsDoc: true, run: dlg({ kind: 'newGuide' }) },
+  { id: 'view.clearGuides', label: 'Borrar guías', needsDoc: true, run: call('clearGuides') },
   { id: 'view.panels', label: 'Ocultar paneles', keys: ['Tab'], run: () => useStore.setState({ panelsHidden: !S().panelsHidden }) },
   { id: 'view.fullscreen', label: 'Modo de pantalla completa', keys: ['F'], run: () => toggleFullscreen() },
 
@@ -384,6 +418,8 @@ function brushStep(size: number, dir: 1 | -1) {
 }
 
 // Herramientas: letra y Mayús+letra.
+// R: Rotar vista (en Photoshop comparte grupo con la Mano pero tiene su propia letra).
+COMMANDS.push({ id: 'tool.R', label: 'Rotar vista', keys: ['R'], run: () => selectTool('rotateView') });
 for (const g of TOOL_GROUPS) {
   if (g.key.startsWith('_')) continue; // grupo sin atajo (como Desenfocar/Enfocar/Dedo en Photoshop)
   COMMANDS.push({ id: `tool.${g.key}`, label: g.tools.map((t) => TOOL_NAMES[t]).join(' / '), keys: [g.key], run: () => toolKey(g.key, false) });
@@ -492,7 +528,7 @@ export function commandForEvent(e: KeyboardEvent): Command | undefined {
  * Combinaciones que Chrome/Edge se reservan en una pestaña normal: sólo llegan a la
  * página en pantalla completa (API Keyboard Lock). Se muestran con su alternativa.
  */
-export const BROWSER_RESERVED = new Set(['Ctrl+N', 'Ctrl+W', 'Ctrl+T', 'Ctrl+Shift+N', 'Ctrl+Shift+T', 'Ctrl+Shift+W', 'Ctrl+1', 'Ctrl+2', 'Ctrl+Shift+I', 'Ctrl+Shift+J', 'Ctrl+Shift+C']);
+export const BROWSER_RESERVED = new Set(['Ctrl+Tab', 'Ctrl+Shift+Tab', 'Ctrl+N', 'Ctrl+W', 'Ctrl+T', 'Ctrl+Shift+N', 'Ctrl+Shift+T', 'Ctrl+Shift+W', 'Ctrl+1', 'Ctrl+2', 'Ctrl+Shift+I', 'Ctrl+Shift+J', 'Ctrl+Shift+C']);
 
 // ------------------------------------------------------------------ opacidad con números
 

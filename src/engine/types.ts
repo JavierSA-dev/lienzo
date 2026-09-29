@@ -47,7 +47,7 @@ export type ToolId =
   | 'move' | 'marquee' | 'marqueeEllipse' | 'lasso' | 'polylasso' | 'wand' | 'crop' | 'eyedropper'
   | 'brush' | 'pencil' | 'clone' | 'eraser' | 'gradient' | 'bucket' | 'dodge' | 'burn'
   | 'text' | 'shape' | 'hand' | 'zoom'
-  | 'spotHeal' | 'heal' | 'patch' | 'pen' | 'pathSelect' | 'blur' | 'sharpen' | 'smudge';
+  | 'spotHeal' | 'heal' | 'patch' | 'pen' | 'pathSelect' | 'blur' | 'sharpen' | 'smudge' | 'historyBrush' | 'rotateView' | 'redEye';
 
 export type LayerKind = 'pixel' | 'adjustment' | 'text' | 'shape' | 'group';
 
@@ -64,7 +64,17 @@ export type AdjustmentParams =
   | { type: 'posterize'; levels: number }
   | { type: 'gradientMap'; from: RGBA; to: RGBA }
   | { type: 'vibrance'; vibrance: number; saturation: number }
-  | { type: 'solidColor'; color: RGBA };
+  | { type: 'solidColor'; color: RGBA }
+  | { type: 'photoFilter'; color: RGBA; density: number; preserveLuminosity: boolean }
+  | { type: 'selectiveColor'; relative: boolean; ranges: Record<SelectiveRange, [number, number, number, number]> }
+  | { type: 'channelMixer'; red: [number, number, number, number]; green: [number, number, number, number]; blue: [number, number, number, number]; monochrome: boolean };
+
+/** Gamas de Corrección selectiva (cada una con cian, magenta, amarillo y negro en %). */
+export type SelectiveRange = 'reds' | 'yellows' | 'greens' | 'cyans' | 'blues' | 'magentas' | 'whites' | 'neutrals' | 'blacks';
+export const SELECTIVE_RANGES: [SelectiveRange, string][] = [
+  ['reds', 'Rojos'], ['yellows', 'Amarillos'], ['greens', 'Verdes'], ['cyans', 'Cianes'], ['blues', 'Azules'],
+  ['magentas', 'Magentas'], ['whites', 'Blancos'], ['neutrals', 'Neutros'], ['blacks', 'Negros'],
+];
 
 export type AdjustmentType = AdjustmentParams['type'];
 
@@ -168,11 +178,24 @@ export interface DocState {
   /** Trazados del documento (panel Trazados). */
   paths: DocPathInfo[];
   activePathId: number | null;
+  guides: { id: number; dir: 'h' | 'v'; pos: number }[];
+  /** Modo Máscara rápida (Q). */
+  quickMask: boolean;
+  /** Canales alfa guardados. */
+  alphas: { id: number; name: string }[];
+  snapshots: { id: number; name: string }[];
+  historySource: number | null;
+  /** Canal que se está viendo: 0 = RGB, 1 R, 2 G, 3 B. */
+  viewChannel: number;
+  /** Pestañas abiertas. */
+  docs: { id: number; name: string; dirty: boolean }[];
+  activeDocId: number;
 }
 
 export interface DocPathInfo { id: number; name: string; work: boolean; path: import('./path').VectorPath }
 
-export interface ViewState { zoom: number; panX: number; panY: number; dpr: number }
+/** rot: rotación de la vista en radianes (herramienta Rotar vista, R), alrededor del centro del lienzo visible. */
+export interface ViewState { zoom: number; panX: number; panY: number; dpr: number; rot?: number }
 
 export interface PointerSample { x: number; y: number; p: number; t: number } // px CSS relativos al lienzo
 

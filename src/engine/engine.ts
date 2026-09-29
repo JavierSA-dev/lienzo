@@ -3,7 +3,7 @@ import {
   type ToolId, type ViewState, type BlendMode, type AdjustmentParams, type AdjustmentType, type TextParams,
   type ShapeParams, type LayerEffects, type Matrix,
 } from './types';
-import { EditorDocument, PixelLayer, MaskChannel, tileKey, keyTx, keyTy } from './document';
+import { EditorDocument, PixelLayer, MaskChannel, tileKey, keyTx, keyTy, cloneLayers } from './document';
 import { History, TilePatch, FnEntry, GroupEntry, type HistoryEntry } from './history';
 import { BrushStroke, type BrushMode } from './brush';
 import { Renderer } from './renderer';
@@ -16,9 +16,18 @@ import {
 import { Selection, floodMask, clampRect, forTiles, type CombineMode } from './selection';
 import { filterApron, WHOLE_FILTERS, type FilterName, type FilterParams } from './filters';
 import { defaultAdjustment, ADJUSTMENT_LABELS } from './adjust';
+import { fixRedEye, strokeCoverage, type StrokeLocation } from './retouch';
 import { rasterizeText, rasterizeShape, rasterLimit, mul, invert as invertM, textBox, transformRect } from './vector';
 import { buildEffects } from './effects';
 import { flatten as flattenPath, pathBounds, toSvg, isEmpty as isEmptyPath, clonePath, traceMask, type VectorPath } from './path';
+
+/** Color neutro de cada modo de fusión (el que no cambia nada): gris 50 %, blanco o negro. */
+export const NEUTRAL: Partial<Record<BlendMode, number>> = {
+  overlay: 128, 'soft-light': 128, 'hard-light': 128, 'vivid-light': 128, 'linear-light': 128, 'pin-light': 128,
+  multiply: 255, 'color-burn': 255, 'linear-burn': 255, darken: 255,
+  divide: 255, 'darker-color': 255, 'lighter-color': 0,
+  screen: 0, 'color-dodge': 0, 'linear-dodge': 0, lighten: 0, difference: 0, exclusion: 0, subtract: 0,
+};
 
 type Post = (m: FromWorker, transfer?: Transferable[]) => void;
 
@@ -41,8 +50,22 @@ const TOOL_LABEL = { spotHeal: 'Pincel corrector puntual', heal: 'Pincel correct
 
 const BRUSH_TOOLS: Partial<Record<ToolId, BrushMode>> = {
   brush: 'paint', pencil: 'paint', eraser: 'erase', clone: 'clone', dodge: 'dodge', burn: 'burn',
-  spotHeal: 'paint', heal: 'clone', blur: 'blur', sharpen: 'sharpen', smudge: 'smudge',
+  spotHeal: 'paint', heal: 'clone', blur: 'blur', sharpen: 'sharpen', smudge: 'smudge', historyBrush: 'paint',
 };
+
+/** Una pestaña: su documento con su historial, vista y estado propio. */
+interface DocSlot {
+  id: number;
+  doc: EditorDocument;
+  history: History;
+  baseLabel: string;
+  view: { zoom: number; panX: number; panY: number; rot: number };
+  fxVersions: Map<number, string>;
+  counters: [number, number, number];
+  lastSelection: Selection | null;
+  cloneSource: { x: number; y: number } | null;
+  cloneOffset: { dx: number; dy: number } | null;
+}
 
 /** Motor del editor: vive entero en el worker; la interfaz sólo envía comandos. */
 export class Engine {
@@ -50,6 +73,9 @@ export class Engine {
   private r: Renderer;
   doc: EditorDocument | null = null;
   private history = new History();
+  private slots: DocSlot[] = [];
+  private slotId = 0;
+  private nextSlot = 1;
   private baseLabel = 'Nuevo';
   private view: ViewState = { zoom: 1, panX: 0, panY: 0, dpr: 1 };
   private cw = 800;
@@ -66,15 +92,21 @@ export class Engine {
   private layerCounter = 1;
   private groupCounter = 1;
   private healing = false;
+  /** Máscara rápida: capa interna cuya máscara es la selección que se pinta. */
+  private qm: PixelLayer | null = null;
+  private viewChannel = 0;
+  private snap = true;
   private batch: HistoryEntry[] | null = null;
   private pathCounter = 1;
+  private alphaCounter = 1;
+  private snapCounter = 1;
   private pointerQueue: PointerMsg[] = [];
   private strokeTool: ToolId = 'brush';
   private pool = new Pool();
   private base: string;
 
   private stroke: BrushStroke | null = null;
-  private drag: { kind: 'pan' | 'move'; x0: number; y0: number; panX: number; panY: number; lx: number; ly: number; layer?: PixelLayer; moved?: boolean; set?: { L: PixelLayer; x: number; y: number; text?: TextParams; shape?: ShapeParams }[] } | null = null;
+  private drag: { kind: 'pan' | 'move'; x0: number; y0: number; panX: number; panY: number; lx: number; ly: number; layer?: PixelLayer; moved?: boolean; set?: { L: PixelLayer; x: number; y: number; text?: TextParams; shape?: ShapeParams }[]; box?: Rect | null } | null = null;
   private pendingProps = new Map<number, unknown>();
   private cloneSource: { x: number; y: number } | null = null;
   private cloneOffset: { dx: number; dy: number } | null = null;
@@ -107,10 +139,11 @@ export class Engine {
     this.requestFrame(true);
   }
 
-  private setView(zoom: number, panX: number, panY: number) {
+  private setView(zoom: number, panX: number, panY: number, rot = this.view.rot ?? 0) {
     this.view.zoom = Math.min(64, Math.max(0.005, zoom));
     this.view.panX = panX;
     this.view.panY = panY;
+    this.view.rot = rot;
     this.post({ type: 'view', view: { ...this.view } });
     this.requestFrame();
   }
@@ -154,8 +187,26 @@ export class Engine {
 
   wheel(x: number, y: number, dx: number, dy: number, zoom: boolean) {
     if (!this.doc) return;
-    if (zoom) this.zoomAt(this.view.zoom * Math.exp(-dy * 0.0025), x, y);
-    else this.setView(this.view.zoom, this.view.panX - dx, this.view.panY - dy);
+    const [ux, uy] = this.unrot(x, y);
+    if (zoom) { this.zoomAt(this.view.zoom * Math.exp(-dy * 0.0025), ux, uy); return; }
+    const r = -(this.view.rot ?? 0), c = Math.cos(r), sn = Math.sin(r);
+    this.setView(this.view.zoom, this.view.panX - (dx * c - dy * sn), this.view.panY - (dx * sn + dy * c));
+  }
+
+  /** Rotar vista (R): gira el lienzo en pantalla alrededor del centro, sin tocar los píxeles. */
+  setRotation(rad: number) {
+    let r = rad % (Math.PI * 2);
+    if (r > Math.PI) r -= Math.PI * 2;
+    if (r < -Math.PI) r += Math.PI * 2;
+    this.setView(this.view.zoom, this.view.panX, this.view.panY, Math.abs(r) < 1e-4 ? 0 : r);
+  }
+
+  /** Punto de pantalla -> pantalla sin rotar (la vista gira alrededor del centro del área). */
+  private unrot(x: number, y: number): [number, number] {
+    const r = this.view.rot ?? 0;
+    if (!r) return [x, y];
+    const cx = this.cw / 2, cy = this.ch / 2, c = Math.cos(-r), sn = Math.sin(-r);
+    return [cx + (x - cx) * c - (y - cy) * sn, cy + (x - cx) * sn + (y - cy) * c];
   }
 
   // ================================================================ render
@@ -184,7 +235,7 @@ export class Engine {
   private snapshot(): DocState {
     const d = this.doc;
     if (!d) {
-      return { open: false, name: '', width: 0, height: 0, layers: [], activeLayerId: 0, history: [], historyIndex: 0, selection: null, editMask: false, dirty: false, selectedLayerIds: [], paths: [], activePathId: null };
+      return { open: false, name: '', width: 0, height: 0, layers: [], activeLayerId: 0, history: [], historyIndex: 0, selection: null, editMask: false, dirty: false, selectedLayerIds: [], paths: [], activePathId: null, docs: [], activeDocId: 0, guides: [], quickMask: false, alphas: [], viewChannel: 0, snapshots: [], historySource: null };
     }
     return {
       open: true,
@@ -201,6 +252,14 @@ export class Engine {
       selectedLayerIds: d.selected().map((l) => l.id),
       paths: d.paths.map((p) => ({ ...p })),
       activePathId: d.activePathId,
+      guides: d.guides.map((g) => ({ ...g })),
+      quickMask: !!this.qm,
+      alphas: d.alphas.map((a) => ({ id: a.id, name: a.name })),
+      viewChannel: this.viewChannel,
+      snapshots: d.snapshots.map((x) => ({ id: x.id, name: x.name })),
+      historySource: d.historySource,
+      docs: this.slots.map((x) => ({ id: x.id, name: x.id === this.slotId ? d.name : x.doc.name, dirty: x.id === this.slotId ? d.dirty : x.doc.dirty })),
+      activeDocId: this.slotId,
     };
   }
 
@@ -298,21 +357,76 @@ export class Engine {
 
   // ================================================================ documentos
 
-  private setDoc(doc: EditorDocument, label: string) {
+  // ------------------------------------------------------------ varios documentos (pestañas)
+
+  /** Guarda el estado del documento activo en su pestaña. */
+  private saveSlot() {
+    const s = this.slots.find((x) => x.id === this.slotId);
+    if (!s || !this.doc) return;
+    s.doc = this.doc; s.history = this.history; s.baseLabel = this.baseLabel;
+    s.view = { zoom: this.view.zoom, panX: this.view.panX, panY: this.view.panY, rot: this.view.rot ?? 0 };
+    s.fxVersions = this.fxVersions; s.counters = [this.layerCounter, this.groupCounter, this.pathCounter];
+    s.lastSelection = this.lastSelection; s.cloneSource = this.cloneSource; s.cloneOffset = this.cloneOffset;
+  }
+
+  private loadSlot(s: DocSlot, fit = false) {
     this.r.reset();
-    this.doc = doc;
-    this.history.clear();
-    this.fxVersions.clear();
-    this.transform = null;
-    this.baseLabel = label;
-    this.layerCounter = doc.layers.length + 1;
-    this.groupCounter = doc.layers.filter((l) => l.kind === 'group').length + 1;
-    this.pathCounter = Math.max(0, ...doc.paths.map((p) => p.id)) + 1;
+    this.r.setMaskOverlay(null);
+    this.qm = null;
+    s.doc.extras = [];
+    this.slotId = s.id;
+    this.doc = s.doc; this.history = s.history; this.baseLabel = s.baseLabel;
+    this.fxVersions = s.fxVersions; [this.layerCounter, this.groupCounter, this.pathCounter] = s.counters;
+    this.lastSelection = s.lastSelection; this.cloneSource = s.cloneSource; this.cloneOffset = s.cloneOffset;
+    this.transform = null; this.preview = null; this.stroke = null; this.drag = null;
     this.pointerQueue = [];
-    this.fit(true);
+    this.pendingProps.clear();
+    if (fit) this.fit(true);
+    else this.setView(s.view.zoom, s.view.panX, s.view.panY, s.view.rot);
     this.invalidate(null);
     this.pushState();
     this.selectionChanged();
+    this.requestFrame();
+  }
+
+  private setDoc(doc: EditorDocument, label: string) {
+    if (this.qm) this.toggleQuickMask();
+    this.restorePreview();
+    this.cancelTransformSilently();
+    this.saveSlot();
+    const s: DocSlot = {
+      id: this.nextSlot++, doc, history: new History(), baseLabel: label, view: { zoom: 1, panX: 0, panY: 0, rot: 0 },
+      fxVersions: new Map(), lastSelection: null, cloneSource: null, cloneOffset: null,
+      counters: [doc.layers.length + 1, doc.layers.filter((l) => l.kind === 'group').length + 1, Math.max(0, ...doc.paths.map((p) => p.id)) + 1],
+    };
+    this.slots.push(s);
+    // Instantánea inicial automática (origen por defecto del pincel de historia).
+    if (!doc.snapshots.length) { this.takeSnapshot(doc, doc.name.replace(/\.[^.]+$/, '')); doc.historySource = doc.snapshots[0].id; }
+    this.loadSlot(s, true);
+  }
+
+  /** Cambiar de pestaña (Ctrl+Tab en Photoshop; Ctrl+F6 en el navegador). */
+  switchDoc(id: number) {
+    const s = this.slots.find((x) => x.id === id);
+    if (!s || id === this.slotId) return;
+    if (this.qm) this.toggleQuickMask();
+    this.restorePreview();
+    this.cancelTransformSilently();
+    this.saveSlot();
+    this.loadSlot(s);
+  }
+
+  /** Siguiente / anterior pestaña. */
+  cycleDoc(dir: 1 | -1) {
+    if (this.slots.length < 2) return;
+    const i = this.slots.findIndex((x) => x.id === this.slotId);
+    this.switchDoc(this.slots[(i + dir + this.slots.length) % this.slots.length].id);
+  }
+
+  private cancelTransformSilently() {
+    if (!this.transform) return;
+    this.transform = null;
+    this.r.clearPreview();
   }
 
   newDoc(width: number, height: number, background: 'white' | 'black' | 'transparent' | 'bg', name = 'Sin título-1') {
@@ -358,14 +472,47 @@ export class Engine {
     return { layers: d.layers.length };
   }
 
-  closeDoc() {
+  /** Cierra una pestaña (la activa por defecto) y pasa a la vecina. */
+  closeDoc(id?: number) {
+    const target = id ?? this.slotId;
+    const i = this.slots.findIndex((x) => x.id === target);
+    if (i < 0) return;
+    if (target !== this.slotId) { this.slots.splice(i, 1); this.pushState(false); return; }
+    this.slots.splice(i, 1);
+    const next = this.slots[Math.min(i, this.slots.length - 1)];
+    if (next) { this.loadSlot(next); return; }
     this.r.reset();
+    this.r.setMaskOverlay(null);
+    this.qm = null;
+    this.slotId = 0;
     this.doc = null;
-    this.history.clear();
+    this.history = new History();
     this.transform = null;
     this.pushState(false);
     this.selectionChanged();
     this.requestFrame();
+  }
+
+  /** Arrastrar una capa a otra pestaña: se copia allí (centrada si los tamaños difieren). */
+  copyLayerToDoc(targetId: number, layerId?: number) {
+    const d = this.doc;
+    const t = this.slots.find((x) => x.id === targetId);
+    const L = layerId ? d?.layer(layerId) : d?.active();
+    if (!d || !t || !L || targetId === this.slotId) return;
+    const subtree = L.kind === 'group' ? [...d.descendants(L.id), L] : [L];
+    const ids = new Map<number, number>();
+    const copies = subtree.map((l) => { const c = l.clone(l.name); ids.set(l.id, c.id); return c; });
+    copies.forEach((c, k) => { c.parent = subtree[k] === L ? null : ids.get(subtree[k].parent!) ?? null; });
+    const dx = Math.round((t.doc.width - d.width) / 2), dy = Math.round((t.doc.height - d.height) / 2);
+    for (const c of copies) { c.x += dx; c.y += dy; if (c.text) c.text = { ...c.text, matrix: mul([1, 0, 0, 1, dx, dy], c.text.matrix) }; if (c.shape) c.shape = { ...c.shape, matrix: mul([1, 0, 0, 1, dx, dy], c.shape.matrix) }; }
+    this.saveSlot();
+    this.loadSlot(t);
+    const before = this.structSnap();
+    const doc = this.doc!;
+    doc.layers.push(...copies);
+    doc.activeLayerId = copies[copies.length - 1].id;
+    doc.selectedIds = new Set([doc.activeLayerId]);
+    this.commitStruct('Duplicar capa', before);
   }
 
   // ================================================================ historial
@@ -1244,6 +1391,7 @@ export class Engine {
     const L = d?.active();
     if (!d || !L) return;
     const c = which === 'fg' ? this.fg : which === 'bg' ? this.bg : which;
+    if (this.qm) return this.fillMask(lumOf(c), this.qm);
     if (d.editMask && L.mask) return this.fillMask(lumOf(c));
     if (!this.ensurePixel(L)) return;
     const sel = d.selection;
@@ -1264,9 +1412,9 @@ export class Engine {
     this.invalidate(rect);
   }
 
-  private fillMask(value: number) {
+  private fillMask(value: number, target?: PixelLayer) {
     const d = this.doc!;
-    const L = d.active()!;
+    const L = target ?? d.active()!;
     const mask = L.mask!;
     const patch = new TilePatch('Rellenar máscara', L, 'mask');
     const sel = d.selection;
@@ -1676,6 +1824,78 @@ export class Engine {
     this.perf('Bote de pintura', () => applyRegion(L, patch, b, orig, sel));
     this.commit(patch);
     this.invalidate(b);
+  }
+
+  /** Herramienta Pupilas rojas: clic o rectángulo alrededor del ojo. */
+  redEye(x0: number, y0: number, x1: number, y1: number, pupil = 50, darken = 50) {
+    const d = this.doc;
+    const L = d?.active();
+    if (!d || !L) return;
+    if (!this.ensurePixel(L)) return;
+    let r: Rect = { x: Math.floor(Math.min(x0, x1)), y: Math.floor(Math.min(y0, y1)), w: Math.ceil(Math.abs(x1 - x0)), h: Math.ceil(Math.abs(y1 - y0)) };
+    if (r.w < 4 || r.h < 4) {
+      // Un clic: busca en un cuadro proporcional a la imagen alrededor del punto.
+      const s = Math.max(24, Math.round(Math.min(d.width, d.height) * 0.08));
+      r = { x: Math.round(x0 - s / 2), y: Math.round(y0 - s / 2), w: s, h: s };
+    }
+    // La mancha puede salirse del cuadro: se trabaja con margen y se siembra dentro del cuadro.
+    const m = Math.round(Math.max(r.w, r.h) * 0.75);
+    const b = intersect({ x: r.x - m, y: r.y - m, w: r.w + m * 2, h: r.h + m * 2 }, this.docRect());
+    if (!b) return;
+    const px = L.readRegion(b.x - L.x, b.y - L.y, b.w, b.h);
+    const n = fixRedEye(px, b.w, b.h, pupil, darken, { x: r.x - b.x, y: r.y - b.y, w: r.w, h: r.h });
+    if (!n) { this.toast('No se ha encontrado ningún ojo rojo en esa zona.', 'warn'); return; }
+    const patch = new TilePatch('Pupilas rojas', L);
+    this.perf('Pupilas rojas', () => applyRegion(L, patch, b, px, d.selection));
+    this.commit(patch);
+    this.invalidate(b);
+  }
+
+  /** Edición > Contornear: trazo del borde de la selección en la capa activa. */
+  strokeSelection(p: { width: number; color?: RGBA; location: StrokeLocation; opacity?: number; preserve?: boolean }) {
+    const d = this.doc;
+    const L = d?.active();
+    const sel = d?.selection;
+    if (!d || !L) return;
+    if (!sel) { this.toast('Contornear necesita una selección.', 'warn'); return; }
+    if (!this.ensurePixel(L)) return;
+    const W = Math.max(1, Math.min(250, Math.round(p.width)));
+    const sb = sel.bounds()!;
+    const pad = W + 2;
+    const region = intersect({ x: sb.x - pad, y: sb.y - pad, w: sb.w + pad * 2, h: sb.h + pad * 2 }, this.docRect());
+    if (!region) return;
+    const cov = strokeCoverage(sel.region(region), region.w, region.h, W, p.location);
+    const c = p.color ?? this.fg, op = p.opacity ?? 1;
+    const px = L.readRegion(region.x - L.x, region.y - L.y, region.w, region.h);
+    const keep = p.preserve || L.lockAlpha;
+    for (let j = 0, i = 0; j < cov.length; j++, i += 4) {
+      const a = (cov[j] / 255) * op;
+      if (a <= 0) continue;
+      const da = px[i + 3] / 255;
+      if (keep) { for (let k = 0; k < 3; k++) px[i + k] += (c[k] - px[i + k]) * a; continue; }
+      const oa = a + da * (1 - a);
+      for (let k = 0; k < 3; k++) px[i + k] = (c[k] * a + px[i + k] * da * (1 - a)) / oa;
+      px[i + 3] = oa * 255;
+    }
+    const patch = new TilePatch('Contornear', L);
+    this.perf('Contornear', () => applyRegion(L, patch, region, px, null));
+    this.commit(patch);
+    this.invalidate(region);
+  }
+
+  /** Nueva capa con opciones (Ctrl+Mayús+N): modo, opacidad, recorte y relleno neutro. */
+  newLayerWith(o: { name?: string; blend?: BlendMode; opacity?: number; clip?: boolean; neutral?: boolean }) {
+    const d = this.doc;
+    if (!d) return;
+    const L = new PixelLayer(o.name?.trim() || `Capa ${this.layerCounter++}`);
+    const idx = this.above(L);
+    if (o.blend) L.blend = o.blend;
+    if (o.opacity !== undefined) L.opacity = Math.max(0, Math.min(1, o.opacity));
+    if (o.clip && d.active()) L.clipped = true;
+    const nc = o.neutral && o.blend ? NEUTRAL[o.blend] : undefined;
+    if (nc !== undefined) EditorDocument.fillLayer(L, this.docRect(), [nc, nc, nc, 255]);
+    this.insertLayer(L, idx, 'Nueva capa');
+    return L.id;
   }
 
   // ================================================================ texto y formas
@@ -2100,6 +2320,7 @@ export class Engine {
   pointer(m: PointerMsg) {
     // Mientras se calcula una corrección, los trazos nuevos esperan (no se pierden).
     if (this.healing) { this.pointerQueue.push(m); return; }
+    if (this.view.rot) m = { ...m, points: m.points.map((q) => { const [x, y] = this.unrot(q.x, q.y); return { ...q, x, y }; }) };
     const d = this.doc;
     if (!d || !m.points.length || this.transform) return;
     const first = m.points[0];
@@ -2127,12 +2348,15 @@ export class Engine {
         if (!L || L.kind === 'adjustment') return;
         const set = this.moveSet(L).map((l) => ({ L: l, x: l.x, y: l.y, text: l.text, shape: l.shape }));
         if (!set.length) return;
-        this.drag = { kind: 'move', x0: first.x, y0: first.y, panX: 0, panY: 0, lx: 0, ly: 0, layer: L, moved: false, set };
+        let box: Rect | null = null;
+        if (this.snap) for (const e of set) box = union(box, exactBounds(e.L));
+        this.drag = { kind: 'move', x0: first.x, y0: first.y, panX: 0, panY: 0, lx: 0, ly: 0, layer: L, moved: false, set, box };
         return;
       }
       const mode = BRUSH_TOOLS[tool as ToolId];
       if (mode) {
-        const L = d.active();
+        // En Máscara rápida los pinceles pintan la selección.
+        const L = this.qm ?? d.active();
         if (!L) return;
         if ((tool === 'clone' || tool === 'heal') && m.alt) {
           this.cloneSource = { x: p.x, y: p.y };
@@ -2140,7 +2364,7 @@ export class Engine {
           this.toast(tool === 'heal' ? 'Origen de corrección definido' : 'Origen de clonación definido');
           return;
         }
-        const toMask = d.editMask && !!L.mask;
+        const toMask = this.qm ? true : d.editMask && !!L.mask;
         if (!toMask && !this.ensurePixel(L)) return;
         if (!L.visible) { this.toast('La capa está oculta. Hazla visible para pintar.', 'warn'); return; }
         if (tool === 'clone' || tool === 'heal') {
@@ -2151,6 +2375,13 @@ export class Engine {
         const clip = selB ? intersect(selB, this.docRect()) : this.docRect();
         if (!clip) return;
         const healTool = tool === 'spotHeal' || tool === 'heal';
+        let sourceLayer: PixelLayer | undefined;
+        if (tool === 'historyBrush') {
+          const snap = d.snapshots.find((x) => x.id === d.historySource);
+          sourceLayer = snap?.map.get(L.id);
+          if (!sourceLayer || toMask) { this.toast('El estado de origen del pincel de historia no contiene esta capa.', 'warn'); return; }
+          if (snap && (snap.width !== d.width || snap.height !== d.height)) { this.toast('El tamaño del documento ha cambiado desde la instantánea de origen.', 'warn'); return; }
+        }
         if (healTool && toMask) { this.toast('Los pinceles correctores actúan sobre los píxeles, no sobre la máscara.', 'warn'); return; }
         const color: RGBA = tool === 'spotHeal' ? [20, 20, 20, 255] : mode === 'erase' && toMask ? this.bg : this.fg;
         this.strokeTool = tool as ToolId;
@@ -2168,6 +2399,8 @@ export class Engine {
           maskValue: lumOf(color),
           cloneOffset: tool === 'clone' || tool === 'heal' ? this.cloneOffset! : undefined,
           healTool: healTool ? tool as 'spotHeal' | 'heal' : undefined,
+          sourceLayer,
+          label: tool === 'historyBrush' ? 'Pincel de historia' : undefined,
           aliased: tool === 'pencil',
         });
         this.strokePoints(m);
@@ -2195,6 +2428,13 @@ export class Engine {
     } else if (g.kind === 'move' && g.set) {
       let dx = Math.round((last.x - g.x0) / this.view.zoom), dy = Math.round((last.y - g.y0) / this.view.zoom);
       if (m.shift) { if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0; }
+      if (g.box) {
+        const [sx, sy] = this.snapDelta(g.box, dx, dy, new Set(g.set.map((e) => e.L)));
+        // Con Mayús (eje fijo) sólo se ajusta el eje libre.
+        const lockX = m.shift && dx === 0, lockY = m.shift && dy === 0;
+        if (!lockX) dx = Math.round(sx);
+        if (!lockY) dy = Math.round(sy);
+      }
       let dirty: Rect | null = null;
       for (const e of g.set) {
         dirty = union(dirty, this.fullBounds(e.L));
@@ -2248,6 +2488,262 @@ export class Engine {
     d.activePathId = e.id;
     if (!path.length && e.work) { d.paths = d.paths.filter((p) => p !== e); d.activePathId = null; }
     this.commitPaths(label, before);
+  }
+
+  // ================================================================ guías y ajuste
+
+  private guidesChange(label: string, fn: (d: EditorDocument) => void) {
+    const d = this.doc;
+    if (!d) return;
+    const before = d.guides.map((g) => ({ ...g }));
+    fn(d);
+    const after = d.guides.map((g) => ({ ...g }));
+    if (JSON.stringify(before) === JSON.stringify(after)) return;
+    const set = (v: typeof before) => (doc: EditorDocument) => { doc.guides = v.map((g) => ({ ...g })); };
+    this.commit(new FnEntry(label, set(before), set(after)));
+  }
+
+  addGuide(dir: 'h' | 'v', pos: number) {
+    this.guidesChange('Nueva guía', (d) => { d.guides.push({ id: Date.now() + Math.random(), dir, pos: Math.round(pos * 100) / 100 }); });
+  }
+
+  moveGuide(id: number, pos: number) {
+    this.guidesChange('Mover guía', (d) => {
+      const g = d.guides.find((x) => x.id === id);
+      if (!g) return;
+      // Soltarla fuera del documento la elimina (como Photoshop).
+      const max = g.dir === 'h' ? d.height : d.width;
+      if (pos < 0 || pos > max) d.guides = d.guides.filter((x) => x !== g);
+      else g.pos = Math.round(pos * 100) / 100;
+    });
+  }
+
+  clearGuides() { this.guidesChange('Borrar guías', (d) => { d.guides = []; }); }
+
+  /** Ajuste magnético (Vista > Ajustar): guías, bordes y centro del documento y de otras capas. */
+  setSnap(on: boolean) { this.snap = on; }
+
+  /** Desplazamiento corregido para que la caja `b` (movida dx, dy) se pegue a lo más cercano. */
+  private snapDelta(b: Rect, dx: number, dy: number, exclude: Set<PixelLayer>): [number, number] {
+    const d = this.doc;
+    if (!d || !this.snap) return [dx, dy];
+    const tol = 8 / this.view.zoom;
+    const xs = [0, d.width / 2, d.width], ys = [0, d.height / 2, d.height];
+    for (const g of d.guides) (g.dir === 'v' ? xs : ys).push(g.pos);
+    for (const L of d.layers) {
+      if (exclude.has(L) || !L.visible || L.kind === 'group' || L.kind === 'adjustment') continue;
+      const lb = L.bounds();
+      if (!lb || lb.w * lb.h > 4e6) continue;
+      xs.push(lb.x, lb.x + lb.w / 2, lb.x + lb.w); ys.push(lb.y, lb.y + lb.h / 2, lb.y + lb.h);
+    }
+    const best = (edges: number[], targets: number[]) => {
+      let bd = tol + 1, off = 0;
+      for (const e of edges) for (const t of targets) { const k = t - e; if (Math.abs(k) < Math.abs(bd)) { bd = k; off = k; } }
+      return Math.abs(bd) <= tol ? off : 0;
+    };
+    const nx = b.x + dx, ny = b.y + dy;
+    return [dx + best([nx, nx + b.w / 2, nx + b.w], xs), dy + best([ny, ny + b.h / 2, ny + b.h], ys)];
+  }
+
+  // ================================================================ instantáneas y pincel de historia
+
+  private takeSnapshot(doc: EditorDocument, name: string) {
+    const { copies, map } = cloneLayers(doc.layers);
+    const snap = { id: this.snapCounter++, name, width: doc.width, height: doc.height, layers: copies, map, activeIndex: doc.indexOf(doc.activeLayerId) };
+    doc.snapshots.push(snap);
+    return snap;
+  }
+
+  /** Panel Historial > Nueva instantánea. */
+  newSnapshot(name?: string) {
+    const d = this.doc;
+    if (!d) return;
+    const n = d.snapshots.length;
+    this.takeSnapshot(d, name ?? `Instantánea ${n}`);
+    this.pushState(false);
+  }
+
+  deleteSnapshot(id: number) {
+    const d = this.doc;
+    if (!d) return;
+    d.snapshots = d.snapshots.filter((x) => x.id !== id);
+    if (d.historySource === id) d.historySource = d.snapshots[0]?.id ?? null;
+    this.pushState(false);
+  }
+
+  /** Clic en una instantánea: el documento vuelve a ese estado (un paso más del historial). */
+  restoreSnapshot(id: number) {
+    const d = this.doc;
+    const snap = d?.snapshots.find((x) => x.id === id);
+    if (!d || !snap) return;
+    this.restorePreview();
+    const before = { layers: d.layers, w: d.width, h: d.height, active: d.activeLayerId, sel: d.selection };
+    const { copies } = cloneLayers(snap.layers);
+    const after = { layers: copies, w: snap.width, h: snap.height, active: copies[Math.max(0, Math.min(copies.length - 1, snap.activeIndex))].id, sel: null as Selection | null };
+    const apply = (v: typeof before) => (doc: EditorDocument) => {
+      doc.layers = v.layers; doc.width = v.w; doc.height = v.h; doc.activeLayerId = v.active; doc.selection = v.sel; doc.selectedIds = new Set([v.active]);
+    };
+    apply(after)(d);
+    this.commit(new FnEntry(snap.name, apply(before), apply(after)));
+    this.afterHistory();
+    this.fit(true);
+  }
+
+  /** Origen del pincel de historia (la casilla junto a la instantánea en Photoshop). */
+  setHistorySource(id: number) {
+    const d = this.doc;
+    if (!d || !d.snapshots.some((x) => x.id === id)) return;
+    d.historySource = id;
+    this.pushState(false);
+  }
+
+  // ================================================================ máscara rápida y canales
+
+  /** Q: entra o sale de Máscara rápida. Dentro, pintar en negro enmascara y en blanco selecciona. */
+  toggleQuickMask() {
+    const d = this.doc;
+    if (!d) return;
+    if (!this.qm) {
+      const L = new PixelLayer('Máscara rápida');
+      const sel = d.selection;
+      L.mask = new MaskChannel(sel ? 0 : 255);
+      if (sel) for (const [k, t] of sel.tiles) L.mask.setTile(k, t.slice());
+      this.qm = L;
+      d.extras = [L];
+      this.lastSelection = d.selection ?? this.lastSelection;
+      d.selection = null;
+      this.r.setMaskOverlay(L.mask);
+      this.selectionChanged();
+      this.pushState(false);
+      this.requestFrame();
+      return;
+    }
+    const m = this.qm.mask!;
+    const tiles = new Map<number, Uint8Array>();
+    for (let ty = 0; ty < d.tilesY; ty++) for (let tx = 0; tx < d.tilesX; tx++) {
+      const k = tileKey(tx, ty);
+      const t = m.tiles.get(k);
+      if (t) { if (t.some((v) => v)) tiles.set(k, t.slice()); }
+      else if (m.fill) tiles.set(k, new Uint8Array(TILE * TILE).fill(m.fill));
+    }
+    this.qm = null;
+    d.extras = [];
+    this.r.setMaskOverlay(null);
+    // Recorta al documento (los tiles del borde pueden salirse).
+    const sel = new Selection(tiles);
+    this.setSelection(sel.isEmpty() ? null : sel.combine(Selection.fromRect(this.docRect()), 'intersect'), 'Salir de Máscara rápida');
+    this.requestFrame();
+  }
+
+  /** Panel Canales: ver un solo canal en escala de grises (0 = RGB). */
+  setViewChannel(c: number) {
+    this.viewChannel = Math.max(0, Math.min(3, c | 0));
+    this.r.viewChannel = this.viewChannel;
+    this.pushState(false);
+    this.requestFrame();
+  }
+
+  /** Ctrl+clic en un canal: su luminosidad (RGB) o su valor (R, G o B) como selección. */
+  loadChannelSelection(c: number, mode: CombineMode = 'replace') {
+    const d = this.doc;
+    if (!d) return;
+    const px = this.r.flatten(d, d.layers, this.docRect());
+    const n = d.width * d.height;
+    const m = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      const a = px[i * 4 + 3] / 255;
+      const v = c === 0 ? 0.3 * px[i * 4] + 0.59 * px[i * 4 + 1] + 0.11 * px[i * 4 + 2] : px[i * 4 + c - 1];
+      m[i] = Math.round(v * a);
+    }
+    this.setSelection(this.combine(Selection.fromMask(m, d.width, d.height), mode), 'Cargar selección');
+  }
+
+  /** Selección > Guardar selección: nuevo canal alfa. */
+  saveSelection(name?: string) {
+    const d = this.doc;
+    if (!d || !d.selection) { this.toast('No hay selección que guardar.', 'warn'); return; }
+    const before = d.alphas.slice();
+    const a = { id: this.alphaCounter++, name: name ?? `Alfa ${d.alphas.length + 1}`, tiles: new Map([...d.selection.tiles].map(([k, t]) => [k, t.slice()])) };
+    d.alphas = [...d.alphas, a];
+    const after = d.alphas.slice();
+    this.commit(new FnEntry('Guardar selección', (doc) => { doc.alphas = before; }, (doc) => { doc.alphas = after; }));
+  }
+
+  /** Selección > Cargar selección (Ctrl+clic en un canal alfa). */
+  loadAlpha(id: number, mode: CombineMode = 'replace', invert = false) {
+    const d = this.doc;
+    const a = d?.alphas.find((x) => x.id === id);
+    if (!d || !a) return;
+    let sel = new Selection(new Map([...a.tiles].map(([k, t]) => [k, t.slice()])));
+    if (invert) sel = sel.invert(d.width, d.height);
+    this.setSelection(this.combine(sel, mode), 'Cargar selección');
+  }
+
+  deleteAlpha(id: number) {
+    const d = this.doc;
+    if (!d || !d.alphas.some((a) => a.id === id)) return;
+    const before = d.alphas.slice(), after = d.alphas.filter((a) => a.id !== id);
+    d.alphas = after;
+    this.commit(new FnEntry('Eliminar canal', (doc) => { doc.alphas = before; }, (doc) => { doc.alphas = after; }));
+  }
+
+  /** Miniaturas del panel Canales: composición reducida (RGBA) y canales alfa (gris). */
+  channelThumbs(max = 48) {
+    const d = this.doc;
+    if (!d) return null;
+    const k = Math.min(1, max / Math.max(d.width, d.height));
+    const w = Math.max(1, Math.round(d.width * k)), h = Math.max(1, Math.round(d.height * k));
+    const full = this.r.flatten(d, d.layers, this.docRect(), [255, 255, 255, 255]);
+    const out = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const sx = Math.min(d.width - 1, Math.floor(x / k)), sy = Math.min(d.height - 1, Math.floor(y / k));
+      out.set(full.subarray((sy * d.width + sx) * 4, (sy * d.width + sx) * 4 + 4), (y * w + x) * 4);
+    }
+    const alphas = d.alphas.map((a) => {
+      const g = new Uint8ClampedArray(w * h);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const sx = Math.floor(x / k), sy = Math.floor(y / k), tx = Math.floor(sx / TILE), ty = Math.floor(sy / TILE);
+        const t = a.tiles.get(tileKey(tx, ty));
+        g[y * w + x] = t ? t[(sy - ty * TILE) * TILE + (sx - tx * TILE)] : 0;
+      }
+      return { id: a.id, data: g };
+    });
+    return { w, h, data: out, alphas };
+  }
+
+  /**
+   * Imagen > Aplicar imagen: mezcla un origen (una capa o la imagen combinada, todos los
+   * canales o uno) sobre la capa activa. Con Sumar/Restar admite escala y desplazamiento
+   * (separación de frecuencias: Restar, escala 2, desplazamiento 128).
+   */
+  applyImage(p: { source: number | 'merged'; channel: number; invert: boolean; blend: string; opacity: number; scale?: number; offset?: number; preserve?: boolean }) {
+    const d = this.doc;
+    const L = d?.active();
+    if (!d || !L || !this.ensurePixel(L)) return;
+    const R = d.selection ? intersect(d.selection.bounds()!, this.docRect()) : this.docRect();
+    if (!R) return;
+    let src: Uint8ClampedArray;
+    if (p.source === 'merged') src = this.r.flatten(d, d.layers, R);
+    else { const S = d.layer(p.source); if (!S) return; src = S.readRegion(R.x - S.x, R.y - S.y, R.w, R.h); }
+    const dst = L.readRegion(R.x - L.x, R.y - L.y, R.w, R.h);
+    const out = dst.slice();
+    const scale = p.scale ?? 1, offset = p.offset ?? 0, op = Math.max(0, Math.min(1, p.opacity));
+    for (let i = 0; i < out.length; i += 4) {
+      const da = dst[i + 3];
+      if (!da && (p.preserve || L.lockAlpha)) continue;
+      for (let c = 0; c < 3; c++) {
+        let s = p.channel === 0 ? src[i + c] : src[i + p.channel - 1];
+        if (p.invert) s = 255 - s;
+        const b = dst[i + c];
+        const v = blend1(p.blend, b / 255, s / 255, scale, offset / 255);
+        out[i + c] = Math.round(b + (v * 255 - b) * op * (src[i + 3] / 255));
+      }
+      if (!p.preserve && !L.lockAlpha) out[i + 3] = Math.max(da, Math.round(src[i + 3] * op));
+    }
+    const patch = new TilePatch('Aplicar imagen', L);
+    applyRegion(L, patch, R, out, d.selection);
+    this.commit(patch);
+    this.invalidate(R);
   }
 
   /** Panel Trazados: seleccionar (null = ninguno; el trazado deja de verse). */
@@ -2681,4 +3177,27 @@ function autoLevelsLut(L: PixelLayer, perChannel: boolean): Uint8Array {
     for (let v = 0; v < 256; v++) lut[c * 256 + v] = Math.max(0, Math.min(255, Math.round(((v - lo) * 255) / Math.max(1, hi - lo))));
   }
   return lut;
+}
+
+/** Fusión de un canal (0..1) para Aplicar imagen / Cálculos: fórmulas de Photoshop. */
+function blend1(mode: string, b: number, s: number, scale = 1, offset = 0): number {
+  switch (mode) {
+    case 'multiply': return b * s;
+    case 'screen': return b + s - b * s;
+    case 'overlay': return b <= 0.5 ? 2 * b * s : 1 - 2 * (1 - b) * (1 - s);
+    case 'soft-light': return s <= 0.5 ? b - (1 - 2 * s) * b * (1 - b) : b + (2 * s - 1) * ((b <= 0.25 ? ((16 * b - 12) * b + 4) * b : Math.sqrt(b)) - b);
+    case 'hard-light': return s <= 0.5 ? 2 * b * s : 1 - 2 * (1 - b) * (1 - s);
+    case 'linear-light': return Math.min(1, Math.max(0, b + 2 * s - 1));
+    case 'darken': return Math.min(b, s);
+    case 'lighten': return Math.max(b, s);
+    case 'difference': return Math.abs(b - s);
+    case 'exclusion': return b + s - 2 * b * s;
+    case 'color-dodge': return s >= 1 ? 1 : Math.min(1, b / (1 - s));
+    case 'color-burn': return s <= 0 ? 0 : 1 - Math.min(1, (1 - b) / s);
+    case 'linear-burn': return Math.max(0, b + s - 1);
+    case 'add': case 'linear-dodge': return Math.min(1, Math.max(0, (b + s) / scale + offset));
+    case 'subtract': return Math.min(1, Math.max(0, (b - s) / scale + offset));
+    case 'divide': return s <= 0 ? (b > 0 ? 1 : 0) : Math.min(1, b / s);
+    default: return s; // normal
+  }
 }

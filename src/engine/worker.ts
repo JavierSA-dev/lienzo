@@ -9,16 +9,16 @@ let engine: Engine | null = null;
 
 // Métodos que la interfaz puede invocar por RPC.
 const ALLOWED = new Set([
-  'newDoc', 'open', 'placeImage', 'closeDoc', 'undo', 'redo', 'jumpHistory', 'toggleLastState',
+  'newDoc', 'open', 'placeImage', 'closeDoc', 'switchDoc', 'cycleDoc', 'copyLayerToDoc', 'undo', 'redo', 'jumpHistory', 'toggleLastState',
   'newLayer', 'layerVia', 'duplicateLayer', 'deleteLayer', 'selectLayer', 'selectLayerRelative', 'setLayer', 'soloLayer',
-  'moveLayer', 'moveLayerTo', 'arrange', 'groupLayers', 'ungroupLayers', 'toggleClip', 'setCollapsed', 'selectAllLayers', 'setLayers', 'alignLayers', 'distributeLayers', 'mergeDown', 'mergeVisible', 'stampVisible', 'flattenImage', 'rasterizeLayer',
+  'moveLayer', 'moveLayerTo', 'arrange', 'groupLayers', 'ungroupLayers', 'toggleClip', 'setCollapsed', 'newSnapshot', 'deleteSnapshot', 'restoreSnapshot', 'setHistorySource', 'setRotation', 'toggleQuickMask', 'setViewChannel', 'loadChannelSelection', 'saveSelection', 'loadAlpha', 'deleteAlpha', 'channelThumbs', 'applyImage', 'addGuide', 'moveGuide', 'clearGuides', 'setSnap', 'selectAllLayers', 'setLayers', 'alignLayers', 'distributeLayers', 'mergeDown', 'mergeVisible', 'stampVisible', 'flattenImage', 'rasterizeLayer',
   'newAdjustmentLayer', 'setAdjustment', 'addMask', 'deleteMask', 'setEditMask', 'loadSelectionFromLayer',
   'selectAll', 'deselect', 'reselect', 'invertSelection', 'selectShape', 'selectPolygon', 'magicWand',
   'featherSelection', 'growSelection', 'moveSelectionBy', 'fill', 'clear', 'copy', 'paste',
   'resizeImage', 'canvasSize', 'crop', 'cropToSelection', 'rotateCanvas', 'flipCanvas', 'applyAdjustment', 'adjust',
   'applyFilter', 'repeatFilter', 'endPreview', 'restorePreview', 'commitFilterPreview', 'applyGradient', 'bucketFill', 'createText', 'updateText', 'hitText',
   'createShape', 'updateShape', 'setEffects', 'beginTransform', 'updateTransform', 'cancelTransform', 'commitTransform',
-  'transformLayer', 'liquifySource', 'applyLiquify', 'removeBackground', 'contentAwareFill', 'selectionValueAt', 'patchSelection', 'selectPath', 'shapeFromPath', 'fillPath', 'strokePath', 'setPathData', 'setActivePath', 'savePath', 'renamePath', 'deletePath', 'duplicatePath', 'workPathFromSelection', 'selectSubject', 'generativeInput', 'placeGenerated',
+  'transformLayer', 'liquifySource', 'applyLiquify', 'removeBackground', 'contentAwareFill', 'redEye', 'strokeSelection', 'newLayerWith', 'selectionValueAt', 'patchSelection', 'selectPath', 'shapeFromPath', 'fillPath', 'strokePath', 'setPathData', 'setActivePath', 'savePath', 'renamePath', 'deletePath', 'duplicatePath', 'workPathFromSelection', 'selectSubject', 'generativeInput', 'placeGenerated',
   'setTool', 'setBrush', 'setColors', 'setAutoSelect', 'moveLayerBy', 'fit', 'exportImage', 'savePsd',
   'zoomIn', 'zoomOut', 'zoomTo', 'zoomAtPoint', 'actualPixels',
   'stats', 'debugPixel', 'debugLayerPixel', 'debugSelection', 'debugStroke', 'debugComposeAll', 'debugFlushEffects',
