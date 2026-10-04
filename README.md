@@ -16,12 +16,16 @@ npm run dev          # http://localhost:5173
 | `npm test` | Tests unitarios del motor (Vitest) |
 | `npm run e2e` | Las tres baterías en Chromium: fase 1, escritorio y móvil |
 | `node tests/e2e.mjs` | Fase 1 (pincel, historial, capas, PSD de 50 capas, rendimiento) |
-| `node tests/e2e-full.mjs` | Fases 2–7: 207 comprobaciones con ratón y teclado reales |
-| `npm run e2e:mobile` | Móvil vertical/horizontal y tableta: 47 comprobaciones con toques de varios dedos |
+| `node tests/e2e-full.mjs` | Fases 2–9: 242 comprobaciones con ratón y teclado reales |
+| `npm run e2e:mobile` | Móvil vertical/horizontal y tableta: 51 comprobaciones con toques de varios dedos |
 | `node tests/shots.mjs` | Capturas de la interfaz para revisión visual |
 | `npm run bench` | Compara Lienzo con Photopea en **tu** Chrome y **tu** GPU (`bench/resultados.md`) |
 
 La primera vez que uses Playwright: `npx playwright install chromium`.
+
+## Desplegar
+
+Es una web estática: `npm run build` genera `dist/`. En Vercel basta con importar el repositorio (el `vercel.json` ya pone las cabeceras COOP/COEP que activan los hilos y la caché del modelo de IA) o ejecutar `npx vercel --prod`. Sirve igual cualquier hosting estático que permita cabeceras (Netlify, Cloudflare Pages); si no las permite, el service worker las añade.
 
 ## Arquitectura
 
@@ -48,7 +52,7 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 **Selección**: añadir/restar/intersecar con Mayús/Alt, calar, expandir/contraer, invertir, volver a seleccionar, mover con flechas, cargar desde capa (Ctrl+clic en la miniatura), seleccionar sujeto con IA, Máscara rápida (Q), guardar/cargar selección como canal alfa, cargar la luminosidad (Ctrl+clic en RGB o Ctrl+Alt+2) y cada canal.
 
-**Capas**: selección de varias capas (Ctrl+clic, Mayús+clic, Ctrl+Alt+A) para mover, transformar, agrupar, combinar, duplicar, eliminar, cambiar opacidad/modo, alinear y distribuir; grupos anidados (Pasar a través o aislados, con opacidad, modo y máscara; plegar, arrastrar dentro y fuera, mover y transformar el grupo entero), máscaras de recorte, máscaras (pintar, desactivar, aplicar, invertir), capas de ajuste no destructivas (Niveles, Curvas, Tono/Saturación, Equilibrio de color, Blanco y negro, Brillo/Contraste, Exposición, Intensidad, Invertir, Posterizar, Umbral, Mapa de degradado, Filtro de fotografía, Corrección selectiva, Mezclador de canales, Color sólido), estilos (sombra paralela, resplandor exterior, trazo, superposición de color), texto y formas editables, bloquear transparencia, combinar, estampar, acoplar.
+**Capas**: selección de varias capas (Ctrl+clic, Mayús+clic, Ctrl+Alt+A) para mover, transformar, agrupar, combinar, duplicar, eliminar, cambiar opacidad/modo, alinear y distribuir; grupos anidados (Pasar a través o aislados, con opacidad, modo y máscara; plegar, arrastrar dentro y fuera, mover y transformar el grupo entero), máscaras de recorte, máscaras (pintar, desactivar, aplicar, invertir), capas de ajuste no destructivas (Niveles, Curvas, Tono/Saturación, Equilibrio de color, Blanco y negro, Brillo/Contraste, Exposición, Intensidad, Invertir, Posterizar, Umbral, Mapa de degradado, Filtro de fotografía, Corrección selectiva, Mezclador de canales, Consulta de colores con LUT .cube y looks incluidos, Color sólido), los 10 estilos de capa de Photoshop (bisel y relieve, trazo dentro/centro/fuera, sombra interior, resplandor interior, satinado, superposición de colores, de degradado y de motivo, resplandor exterior y sombra paralela, cada uno con su modo de fusión), opacidad de relleno y "Fusionar si", objetos inteligentes (transformar sin perder calidad, filtros inteligentes editables, editar y reemplazar contenido, Colocar incrustado), mesas de trabajo, texto y formas editables, bloquear transparencia, combinar, estampar, acoplar.
 
 **Imagen y edición**: tamaño de imagen y de lienzo, recortar, rotar/voltear, transformación libre (Ctrl+T con escala, rotación y numérico), copiar/pegar con el portapapeles del sistema, rellenar (incluido gris al 50 % y según el contenido), Contornear, Nueva capa con relleno neutro para esquivar y quemar, Aplicar imagen (separación de frecuencias), ajustes destructivos con vista previa.
 
@@ -58,13 +62,15 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 **Móvil y tableta**: en pantallas estrechas la misma app cambia a una interfaz táctil (barra de herramientas abajo, hojas de Capas, Propiedades, Historial, Color, Ajustes, Exportar/Compartir y el menú completo, barra contextual con las acciones de la selección y botones OK/Aplicar/Recortar). Gestos: pellizcar para zoom, dos dedos para desplazar, toque con dos dedos = deshacer y con tres = rehacer, mantener pulsado = cuentagotas; con lápiz los dedos no pintan (rechazo de la palma). En tableta se usa la interfaz de escritorio con botones más grandes y los mismos gestos. Vista > Interfaz táctil la fuerza en cualquier pantalla.
 
+**Texto**: Google Fonts (80 familias, se descargan al elegirlas), fuentes del propio equipo, texto de punto y de párrafo en caja (arrastrar con la herramienta), paneles Carácter (tamaño, interlineado, seguimiento, escalas, desplazamiento vertical, mayúsculas, versalitas, subrayado, tachado) y Párrafo (alineación y justificado, sangrías, espacio después), y Deformar texto con los 15 estilos de Photoshop. El texto de un PSD se abre editable y se guarda editable.
+
 **Trazados**: panel Trazados (trazado de trabajo, guardar, renombrar, duplicar, eliminar, hacer trazado desde la selección), cada edición en el historial (Ctrl+Z), pluma con curvas Bézier (esquinas, curvas, romper manejadores con Alt, cerrar), mover anclas y manejadores (A o Ctrl), convertir en selección (Ctrl+Intro), en capa de forma, rellenar o contornear con el pincel.
 
 **Filtros** (con vista previa): desenfoque gaussiano, de cuadro y de movimiento, máscara de enfoque, enfocar, ruido, mosaico, paso alto, hallar bordes, relieve, nubes, mediana y Licuar (deformar, reconstruir, fruncir, inflar).
 
 **IA**: quitar fondo y seleccionar sujeto en local (u2netp, Apache-2.0, 4,5 MB, sin servidor). Relleno generativo con proveedor configurable; `server/generative-proxy.mjs` es un proxy de referencia con créditos diarios por usuario (base del modelo freemium).
 
-**Archivos**: PSD/PSB (grupos, máscaras de recorte, máscaras y capas de ajuste de ida y vuelta), PNG, JPEG, WebP, GIF, BMP, AVIF. PWA instalable que abre imágenes desde el sistema operativo.
+**Archivos**: PSD/PSB (grupos, máscaras de recorte, máscaras y capas de ajuste de ida y vuelta), PNG, JPEG, WebP, GIF, BMP, AVIF. Exportar como en 0,5x/1x/2x/3x, por mesas de trabajo, en un ZIP. PWA instalable que abre imágenes desde el sistema operativo.
 
 **Acciones**: grabar, reproducir, renombrar (doble clic) y borrar secuencias de comandos.
 
@@ -82,7 +88,7 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 ## Resultados verificados (entorno de pruebas, GPU emulada por CPU)
 
-- 24/24 tests unitarios, 24/24 de la fase 1, 207/207 de las fases 2–7 y 47/47 de móvil y tableta (toques de varios dedos simulados) en Chromium.
+- 26/26 tests unitarios, 24/24 de la fase 1, 242/242 de las fases 2–9 y 51/51 de móvil y tableta (toques de varios dedos simulados) en Chromium.
 - Composición GPU igual que la referencia en CPU (diferencia máxima 1/255, PSD de 50 capas).
 - Desenfoque gaussiano de 20 px en 24 MP: la interfaz no se bloquea (tarea larga máxima 0 ms).
 - Quitar fondo con IA local: ~2,5 s en CPU emulada. Relleno según contenido de un hueco de 150 px: ~1–3 s en un hilo.

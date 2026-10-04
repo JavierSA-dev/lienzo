@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Eye, EyeOff, Plus, Copy, Trash2, Layers as LayersIcon, CircleDot, SlidersHorizontal, Type, Shapes, Lock, Sparkles,
-  Play, Square, Link, History, Camera, Folder, FolderOpen, ChevronRight, ChevronDown, CornerLeftDown, FolderPlus, PaintBucket, SquareDashed, Spline,
+  Play, Square, Link, History, Box, Camera, Folder, FolderOpen, ChevronRight, ChevronDown, CornerLeftDown, FolderPlus, PaintBucket, SquareDashed, Spline,
 } from 'lucide-react';
 import { toSvg, type VectorPath } from '../engine/path';
 import { engine } from '../engine/client';
 import { BLEND_GROUPS, PASS_THROUGH, type LayerInfo, type AdjustmentType } from '../engine/types';
 import { ADJUSTMENT_LABELS } from '../engine/adjust';
-import { FONTS } from '../engine/vector';
 import { useStore, toHex, toRgba } from './store';
 import { AdjustmentEditor } from './Adjustments';
+import { TextProperties } from './TextPanels';
+import { SmartProperties } from './SmartPanel';
+import { ArtboardProperties } from './Artboards';
 import { rgbToHsb, hsbToRgb, hexToRgb, rgbToHex, pushRecent, addSwatch, removeSwatch } from './ColorPicker';
 import { startRecording, stopRecording, playAction, deleteAction, renameAction } from './commands';
 
@@ -92,19 +94,11 @@ export function PropertiesPanel() {
   if (L.kind === 'adjustment' && L.adjustment) {
     body = <AdjustmentEditor params={L.adjustment} onChange={(p, commit) => engine.call('setAdjustment', L.id, p, commit)} />;
   } else if (L.kind === 'text' && L.text) {
-    const t = L.text;
-    const up = (p: object) => engine.call('updateText', L.id, p, true);
-    body = (
-      <>
-        <label className="adj-row"><span>Fuente</span>
-          <select value={t.font} onChange={(e) => up({ font: e.target.value })}>{FONTS.map((f) => <option key={f}>{f}</option>)}</select>
-        </label>
-        <label className="adj-row"><span>Tamaño</span><input type="number" className="num" value={t.size} onKeyDown={(e) => e.stopPropagation()} onChange={(e) => up({ size: Number(e.target.value) || 1 })} /></label>
-        <label className="adj-row"><span>Interlineado</span><input type="number" step={0.1} className="num" value={t.lineHeight} onKeyDown={(e) => e.stopPropagation()} onChange={(e) => up({ lineHeight: Number(e.target.value) || 1 })} /></label>
-        <label className="adj-row"><span>Color</span><input type="color" value={toHex(t.color)} onChange={(e) => up({ color: toRgba(e.target.value) })} /></label>
-        <label className="adj-row"><span>Texto</span><textarea rows={3} value={t.text} onKeyDown={(e) => e.stopPropagation()} onChange={(e) => engine.call('updateText', L.id, { text: e.target.value }, false)} onBlur={(e) => up({ text: e.target.value })} /></label>
-      </>
-    );
+    body = <TextProperties L={L} />;
+  } else if (L.artboard) {
+    body = <ArtboardProperties L={L} />;
+  } else if (L.kind === 'smart' && L.smart) {
+    body = <SmartProperties L={L} />;
   } else if (L.kind === 'shape' && L.shape) {
     const s = L.shape;
     const up = (p: object) => engine.call('updateShape', L.id, p, true);
@@ -136,7 +130,7 @@ export function PropertiesPanel() {
     </div>
   );
   if (!body && !mask) return null;
-  const title = L.kind === 'adjustment' && L.adjustment ? ADJUSTMENT_LABELS[L.adjustment.type] : L.kind === 'text' ? 'Texto' : L.kind === 'shape' ? 'Forma' : 'Máscara';
+  const title = L.kind === 'adjustment' && L.adjustment ? ADJUSTMENT_LABELS[L.adjustment.type] : L.kind === 'text' ? 'Texto' : L.kind === 'shape' ? 'Forma' : L.kind === 'smart' ? 'Objeto inteligente' : L.artboard ? 'Mesa de trabajo' : 'Máscara';
   return (
     <section className="panel props">
       <div className="panel-tabs"><div className="panel-tab on" onClick={() => setOpen(!open)}>Propiedades · {title}</div></div>
@@ -224,7 +218,7 @@ function Thumb({ id, mask }: { id: number; mask?: boolean }) {
   return <canvas ref={ref} />;
 }
 
-const KIND_ICON = { adjustment: SlidersHorizontal, text: Type, shape: Shapes, group: Folder };
+const KIND_ICON = { smart: Box, adjustment: SlidersHorizontal, text: Type, shape: Shapes, group: Folder };
 
 type DropPos = 'above' | 'below' | 'inside';
 
@@ -233,7 +227,7 @@ function LayerRow({ layer, active, selected, editMask, depth, isBase }: { layer:
   const [drop, setDrop] = useState<DropPos | null>(null);
   const group = layer.kind === 'group';
   const KindIcon = layer.kind !== 'pixel' && !group ? KIND_ICON[layer.kind] : null;
-  const fx = layer.effects && Object.values(layer.effects).some((e) => e?.enabled);
+  const fx = !!layer.effects && (Object.values(layer.effects).some((e) => typeof e === 'object' && 'enabled' in e && e.enabled) || (layer.effects.fill ?? 1) < 1 || !!layer.effects.blendIf);
   return (
     <div
       className={`layer ${active ? 'active' : ''} ${selected && !active ? 'selected' : ''} ${layer.visible ? '' : 'hidden'} ${drop ? `drop-${drop}` : ''} ${layer.clipped ? 'clipped' : ''}`}
@@ -304,13 +298,13 @@ function LayerRow({ layer, active, selected, editMask, depth, isBase }: { layer:
         )}
       </div>
       <div className="layer-text">
-        <div className="name" onDoubleClick={(e) => { e.stopPropagation(); setEditing(true); }}>
+        <div className="name">
           {KindIcon && <KindIcon size={11} className="kind" />}
           {editing ? (
             <input autoFocus defaultValue={layer.name} onClick={(e) => e.stopPropagation()}
               onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setEditing(false); e.stopPropagation(); }}
               onBlur={(e) => { setEditing(false); if (e.target.value.trim()) engine.call('setLayer', layer.id, { name: e.target.value.trim() }); }} />
-          ) : <span className={isBase ? 'clip-base' : ''}>{layer.name}</span>}
+          ) : <span className={isBase ? 'clip-base' : ''} title="Doble clic: renombrar" onDoubleClick={(e) => { e.stopPropagation(); setEditing(true); }}>{layer.name}</span>}
         </div>
         <div className="meta">
           {[layer.blend !== 'normal' && layer.blend !== 'pass-through' ? BLEND_LABEL[layer.blend] : '', layer.opacity < 1 ? `${Math.round(layer.opacity * 100)} %` : ''].filter(Boolean).join(' · ')}
@@ -344,7 +338,7 @@ function ScrubPercent({ label, value, onLive, onCommit }: { label: string; value
   );
 }
 
-export const ADJ_MENU: AdjustmentType[] = ['solidColor', 'brightness', 'levels', 'curves', 'exposure', 'vibrance', 'hueSat', 'colorBalance', 'blackWhite', 'photoFilter', 'channelMixer', 'invert', 'posterize', 'threshold', 'gradientMap', 'selectiveColor'];
+export const ADJ_MENU: AdjustmentType[] = ['solidColor', 'brightness', 'levels', 'curves', 'exposure', 'vibrance', 'hueSat', 'colorBalance', 'blackWhite', 'photoFilter', 'channelMixer', 'invert', 'posterize', 'threshold', 'gradientMap', 'selectiveColor', 'colorLookup'];
 
 export function LayersPanel() {
   const doc = useStore((s) => s.doc);

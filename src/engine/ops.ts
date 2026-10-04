@@ -247,7 +247,7 @@ export function cpuFlatten(layers: PixelLayer[], region: R2, background?: RGBA):
   if (layers.some((l) => l.kind === 'group' || l.parent != null && layers.some((g) => g.id === l.parent))) return null;
   const vis = layers.filter((l) => l.visible && l.opacity > 0);
   for (const L of vis) {
-    if (L.kind === 'adjustment' || L.kind === 'group' || L.clipped || L.blend !== 'normal' || L.fxUnder || L.fxOver) return null;
+    if (L.kind === 'adjustment' || L.kind === 'group' || L.clipped || L.blend !== 'normal' || L.fxUnder.length || L.fxStyled || L.effects?.blendIf) return null;
   }
   const out = new Uint8ClampedArray(region.w * region.h * 4);
   const acc = new Float32Array(TILE * TILE * 4);

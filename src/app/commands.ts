@@ -1,5 +1,6 @@
 import { engine } from '../engine/client';
 import { useStore, toRgba, savePrefs, type DialogId } from './store';
+import { askLocalFonts } from './localFonts';
 import type { AdjustmentType, BlendMode, ShapeKind, ToolId } from '../engine/types';
 import { BLEND_MODES, BLEND_GROUPS } from '../engine/types';
 
@@ -45,7 +46,20 @@ export async function openFile(file?: File) {
 export async function placeFile(file?: File) {
   const f = file ?? (await pickFile('image/*'));
   if (!f) return;
-  await engine.call('placeImage', f.name, await f.arrayBuffer(), f.type || 'image/png', null);
+  // Como Photoshop, lo colocado es un objeto inteligente (se puede escalar sin perder calidad).
+  await engine.call('placeSmart', f.name, await f.arrayBuffer(), f.type || 'image/png', null);
+}
+
+export async function replaceSmartFile() {
+  const f = await pickFile('image/*,.psd,.psb');
+  if (!f) return;
+  await engine.call('replaceSmartContents', f.name, await f.arrayBuffer(), f.type || 'image/png');
+}
+
+/** Ctrl+S: en la pestaña de contenido de un objeto inteligente, actualiza la capa; si no, guarda el PSD. */
+export async function saveCurrent() {
+  if (S().doc.smartParent) { await engine.call('saveSmartContents'); return true; }
+  return savePsd();
 }
 
 function pickFile(accept = OPEN_TYPES): Promise<File | null> {
@@ -59,7 +73,7 @@ function pickFile(accept = OPEN_TYPES): Promise<File | null> {
   });
 }
 
-function download(blob: Blob, name: string) {
+export function download(blob: Blob, name: string) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = name;
@@ -223,7 +237,7 @@ export const COMMANDS: Command[] = [
   { id: 'file.close', label: 'Cerrar', keys: ['Ctrl+W', 'Ctrl+F4'], needsDoc: true, run: () => closeDocAsk() },
   { id: 'window.nextDoc', label: 'Documento siguiente', keys: ['Ctrl+Tab', 'Ctrl+F6'], needsDoc: true, run: call('cycleDoc', 1) },
   { id: 'window.prevDoc', label: 'Documento anterior', keys: ['Ctrl+Shift+Tab', 'Ctrl+Shift+F6'], needsDoc: true, run: call('cycleDoc', -1) },
-  { id: 'file.save', label: 'Guardar (PSD)', keys: ['Ctrl+S'], needsDoc: true, run: () => savePsd() },
+  { id: 'file.save', label: 'Guardar (PSD)', keys: ['Ctrl+S'], needsDoc: true, run: () => { void saveCurrent(); } },
   { id: 'file.saveAs', label: 'Guardar como…', keys: ['Ctrl+Shift+S'], needsDoc: true, run: () => savePsd() },
   { id: 'file.saveCopy', label: 'Guardar una copia…', keys: ['Ctrl+Alt+S'], needsDoc: true, run: () => savePsd() },
   { id: 'file.savePsb', label: 'Guardar como PSB (documento grande)', needsDoc: true, run: () => savePsd(true) },
@@ -316,6 +330,8 @@ export const COMMANDS: Command[] = [
   { id: 'layer.adj.gradientMap', label: 'Mapa de degradado', needsDoc: true, rec: true, run: newAdjustment('gradientMap') },
   { id: 'layer.adj.photoFilter', label: 'Filtro de fotografía', needsDoc: true, rec: true, run: newAdjustment('photoFilter') },
   { id: 'layer.adj.channelMixer', label: 'Mezclador de canales', needsDoc: true, rec: true, run: newAdjustment('channelMixer') },
+  { id: 'layer.adj.colorLookup', label: 'Consulta de colores', needsDoc: true, rec: true, run: newAdjustment('colorLookup') },
+  { id: 'image.colorLookup', label: 'Consulta de colores…', needsDoc: true, run: dlg({ kind: 'adjust', type: 'colorLookup' }) },
   { id: 'layer.adj.selectiveColor', label: 'Corrección selectiva', needsDoc: true, rec: true, run: newAdjustment('selectiveColor') },
   { id: 'layer.fill.solid', label: 'Capa de relleno: color sólido', needsDoc: true, rec: true, run: newAdjustment('solidColor') },
   { id: 'layer.style', label: 'Estilo de capa…', needsDoc: true, run: dlg({ kind: 'layerStyle' }) },
@@ -325,6 +341,13 @@ export const COMMANDS: Command[] = [
   { id: 'layer.mask.apply', label: 'Aplicar máscara', needsDoc: true, rec: true, run: call('deleteMask', true) },
   { id: 'layer.mask.delete', label: 'Eliminar máscara', needsDoc: true, rec: true, run: call('deleteMask', false) },
   { id: 'layer.rasterize', label: 'Rasterizar capa', needsDoc: true, rec: true, run: call('rasterizeLayer') },
+  { id: 'layer.newArtboard', label: 'Mesa de trabajo…', needsDoc: true, run: dlg({ kind: 'newArtboard' }) },
+  { id: 'layer.artboardFromLayers', label: 'Mesa de trabajo desde capas', needsDoc: true, rec: true, run: call('artboardFromLayers') },
+  { id: 'layer.smart.convert', label: 'Convertir en objeto inteligente', needsDoc: true, rec: true, run: call('convertToSmart') },
+  { id: 'layer.smart.edit', label: 'Editar contenido', needsDoc: true, run: call('editSmartContents') },
+  { id: 'layer.smart.replace', label: 'Reemplazar contenido…', needsDoc: true, run: () => { void replaceSmartFile(); } },
+  { id: 'layer.smart.rasterize', label: 'Rasterizar', needsDoc: true, rec: true, run: call('rasterizeLayer') },
+  { id: 'filter.smart', label: 'Convertir para filtros inteligentes', needsDoc: true, rec: true, run: call('convertToSmart') },
   { id: 'layer.group', label: 'Agrupar capas', keys: ['Ctrl+G'], needsDoc: true, rec: true, run: call('groupLayers') },
   { id: 'layer.ungroup', label: 'Desagrupar capas', keys: ['Ctrl+Shift+G'], needsDoc: true, rec: true, run: call('ungroupLayers') },
   { id: 'layer.newGroup', label: 'Nuevo grupo', needsDoc: true, rec: true, run: call('groupLayers', true) },
@@ -348,6 +371,8 @@ export const COMMANDS: Command[] = [
 
   // Texto
   { id: 'type.tool', label: 'Herramienta Texto horizontal', run: () => selectTool('text') },
+  { id: 'type.warp', label: 'Deformar texto…', needsDoc: true, run: dlg({ kind: 'warpText' }) },
+  { id: 'type.loadLocalFonts', label: 'Usar las fuentes de mi equipo…', run: () => { void askLocalFonts(); } },
 
   // Selección
   { id: 'select.all', label: 'Todo', keys: ['Ctrl+A'], needsDoc: true, rec: true, run: call('selectAll') },

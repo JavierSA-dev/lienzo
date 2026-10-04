@@ -1,14 +1,17 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { engine } from '../engine/client';
-import { useStore, toHex, toRgba } from './store';
-import { exportImage, savePsd, COMMANDS, formatKeys, BROWSER_RESERVED } from './commands';
+import { useStore, toRgba } from './store';
+import { saveCurrent, COMMANDS, formatKeys, BROWSER_RESERVED } from './commands';
 import { PRESETS } from './Home';
 import { AdjustmentEditor } from './Adjustments';
 import { defaultAdjustment, ADJUSTMENT_LABELS } from '../engine/adjust';
-import { BLEND_GROUPS, type AdjustmentParams, type AdjustmentType, type BlendMode, type LayerEffects, type RGBA } from '../engine/types';
+import { BLEND_GROUPS, type AdjustmentParams, type AdjustmentType, type BlendMode, type RGBA } from '../engine/types';
 import type { FilterName, FilterParams } from '../engine/filters';
 import { LiquifyDialog } from './Liquify';
 import { ColorPickerDialog } from './ColorPicker';
+import { LayerStyleDialog } from './LayerStyle';
+import { WarpTextDialog } from './TextPanels';
+import { NewArtboardDialog, ExportAsDialog } from './Artboards';
 import { GenerativeDialog } from './Generative';
 
 export function Modal({ title, children, onOk, okLabel = 'OK', onClose, wide }: { title: string; children: ReactNode; onOk: () => void; okLabel?: string; onClose: () => void; wide?: boolean }) {
@@ -48,8 +51,9 @@ function NewDocDialog({ close }: { close: () => void }) {
   const [h, setH] = useState(1080);
   const [name, setName] = useState('Sin título-1');
   const [bgMode, setBg] = useState<'white' | 'black' | 'transparent' | 'bg'>('white');
+  const [artboard, setArtboard] = useState(false);
   return (
-    <Modal title="Nuevo documento" okLabel="Crear" onClose={close} onOk={() => { engine.call('newDoc', w, h, bgMode, `${name}.psd`); close(); }}>
+    <Modal title="Nuevo documento" okLabel="Crear" onClose={close} onOk={() => { engine.call('newDoc', w, h, bgMode, `${name}.psd`, artboard); close(); }}>
       <div className="preset-list">{PRESETS.map((p) => <button type="button" key={p.name} className="chip" onClick={() => { setW(p.w); setH(p.h); }}>{p.name}</button>)}</div>
       <label className="field">Nombre<input value={name} onChange={(e) => setName(e.target.value)} autoFocus /></label>
       <label className="field">Anchura (px)<input type="number" min={1} max={30000} value={w} onChange={(e) => setW(num(e.target.value, 1))} /></label>
@@ -59,6 +63,7 @@ function NewDocDialog({ close }: { close: () => void }) {
           <option value="white">Blanco</option><option value="black">Negro</option><option value="bg">Color de fondo</option><option value="transparent">Transparente</option>
         </select>
       </label>
+      <label className="field">Mesas de trabajo<span><input type="checkbox" checked={artboard} onChange={(e) => setArtboard(e.target.checked)} aria-label="Mesas de trabajo" /> Para varias piezas (post, historia, miniatura…)</span></label>
     </Modal>
   );
 }
@@ -95,20 +100,6 @@ function CanvasSizeDialog({ close }: { close: () => void }) {
   );
 }
 
-function ExportDialog({ close }: { close: () => void }) {
-  const [fmt, setFmt] = useState<'image/png' | 'image/jpeg' | 'image/webp'>('image/png');
-  const [q, setQ] = useState(90);
-  return (
-    <Modal title="Exportar como" okLabel="Exportar" onClose={close} onOk={() => { exportImage(fmt, q / 100); close(); }}>
-      <label className="field">Formato
-        <select value={fmt} onChange={(e) => setFmt(e.target.value as typeof fmt)}>
-          <option value="image/png">PNG</option><option value="image/jpeg">JPEG</option><option value="image/webp">WebP</option>
-        </select>
-      </label>
-      {fmt !== 'image/png' && <label className="field">Calidad: {q}<input type="range" min={1} max={100} value={q} onChange={(e) => setQ(Number(e.target.value))} /></label>}
-    </Modal>
-  );
-}
 
 /** Ajuste destructivo (Imagen > Ajustes) con vista previa en vivo. */
 function AdjustDialog({ type, close }: { type: AdjustmentType; close: () => void }) {
@@ -131,7 +122,7 @@ function AdjustDialog({ type, close }: { type: AdjustmentType; close: () => void
   );
 }
 
-const FILTER_FIELDS: Record<FilterName, { title: string; fields: [keyof FilterParams, string, number, number, number, number?][]; checks?: [keyof FilterParams, string][] }> = {
+export const FILTER_FIELDS: Record<FilterName, { title: string; fields: [keyof FilterParams, string, number, number, number, number?][]; checks?: [keyof FilterParams, string][] }> = {
   gaussianBlur: { title: 'Desenfoque gaussiano', fields: [['radius', 'Radio (px)', 0.1, 250, 5, 0.1]] },
   boxBlur: { title: 'Desenfoque de cuadro', fields: [['radius', 'Radio (px)', 1, 250, 5]] },
   motionBlur: { title: 'Desenfoque de movimiento', fields: [['angle', 'Ángulo (°)', -90, 90, 0], ['distance', 'Distancia (px)', 1, 500, 20]] },
@@ -221,52 +212,6 @@ function FillDialog({ close }: { close: () => void }) {
   );
 }
 
-/** Estilo de capa: sombra paralela, resplandor exterior, trazo y superposición de color. */
-function LayerStyleDialog({ close }: { close: () => void }) {
-  const doc = useStore((s) => s.doc);
-  const L = doc.layers.find((l) => l.id === doc.activeLayerId);
-  const initial = useMemo<LayerEffects>(() => structuredClone(L?.effects ?? {}), []); // eslint-disable-line react-hooks/exhaustive-deps
-  const [fx, setFx] = useState<LayerEffects>(() => ({
-    dropShadow: { enabled: false, color: [0, 0, 0, 255], opacity: 0.75, angle: 120, distance: 10, size: 10, ...initial.dropShadow },
-    outerGlow: { enabled: false, color: [255, 255, 190, 255], opacity: 0.75, size: 12, ...initial.outerGlow },
-    stroke: { enabled: false, color: [255, 0, 0, 255], size: 3, ...initial.stroke },
-    colorOverlay: { enabled: false, color: [255, 0, 0, 255], opacity: 1, ...initial.colorOverlay },
-  }));
-  useEffect(() => { if (L) engine.call('setEffects', L.id, fx, false); }, [fx]); // eslint-disable-line react-hooks/exhaustive-deps
-  const invalid = !L || L.kind === 'adjustment';
-  useEffect(() => { if (invalid) { useStore.getState().toast('Los estilos de capa se aplican a capas de píxeles, texto o forma.'); close(); } }, [invalid]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (invalid) return null;
-  const upd = <K extends keyof LayerEffects>(k: K, patch: Partial<NonNullable<LayerEffects[K]>>) => setFx((cur) => ({ ...cur, [k]: { ...cur[k]!, ...patch } }));
-  // Funciones de ayuda (no componentes) para que los controles no se vuelvan a montar al arrastrar.
-  const section = (k: keyof LayerEffects, title: string, children: ReactNode) => (
-    <fieldset className="adj-group" key={k}>
-      <legend><label><input type="checkbox" checked={!!fx[k]?.enabled} onChange={(e) => upd(k, { enabled: e.target.checked })} /> {title}</label></legend>
-      {fx[k]?.enabled && children}
-    </fieldset>
-  );
-  const col = (k: keyof LayerEffects) => (
-    <label className="adj-row" key={`${k}-c`}><span>Color</span><input type="color" value={toHex(fx[k]!.color)} onChange={(e) => upd(k, { color: toRgba(e.target.value) })} /></label>
-  );
-  const rng = (k: keyof LayerEffects, f: string, label: string, min: number, max: number, scale = 1) => {
-    const v = (fx[k] as unknown as Record<string, number>)[f] * scale;
-    return (
-      <label className="adj-row" key={`${k}-${f}`}><span>{label}</span>
-        <input type="range" min={min} max={max} value={v} onChange={(e) => upd(k, { [f]: Number(e.target.value) / scale } as never)} />
-        <span className="val">{Math.round(v)}</span>
-      </label>
-    );
-  };
-  const restore = Object.keys(initial).length ? initial : undefined;
-  return (
-    <Modal title={`Estilo de capa · ${L.name}`} wide onClose={() => { engine.call('setEffects', L.id, restore, true); close(); }}
-      onOk={() => { engine.call('setEffects', L.id, fx, true); close(); }}>
-      {section('dropShadow', 'Sombra paralela', [col('dropShadow'), rng('dropShadow', 'opacity', 'Opacidad %', 0, 100, 100), rng('dropShadow', 'angle', 'Ángulo', -180, 180), rng('dropShadow', 'distance', 'Distancia', 0, 200), rng('dropShadow', 'size', 'Tamaño', 0, 100)])}
-      {section('outerGlow', 'Resplandor exterior', [col('outerGlow'), rng('outerGlow', 'opacity', 'Opacidad %', 0, 100, 100), rng('outerGlow', 'size', 'Tamaño', 1, 100)])}
-      {section('stroke', 'Trazo (exterior)', [col('stroke'), rng('stroke', 'size', 'Tamaño', 1, 50)])}
-      {section('colorOverlay', 'Superposición de color', [col('colorOverlay'), rng('colorOverlay', 'opacity', 'Opacidad %', 0, 100, 100)])}
-    </Modal>
-  );
-}
 
 /** Lista de atajos con buscador; marca los que el navegador se reserva. */
 function ShortcutsDialog({ close }: { close: () => void }) {
@@ -311,7 +256,7 @@ export function Dialogs() {
     case 'new': return <NewDocDialog close={close} />;
     case 'imageSize': return <ImageSizeDialog close={close} />;
     case 'canvasSize': return <CanvasSizeDialog close={close} />;
-    case 'export': return <ExportDialog close={close} />;
+    case 'export': return <ExportAsDialog close={close} />;
     case 'adjust': return <AdjustDialog type={dialog.type} close={close} />;
     case 'filter': return <FilterDialog name={dialog.name} close={close} />;
     case 'feather': return <NumberDialog title="Calar selección" label="Radio de calado (px)" initial={5} min={0.5} max={500} onOk={(v) => engine.call('featherSelection', v)} close={close} />;
@@ -322,6 +267,8 @@ export function Dialogs() {
     case 'applyImage': return <ApplyImageDialog close={close} />;
     case 'stroke': return <StrokeDialog close={close} />;
     case 'newLayer': return <NewLayerDialog close={close} />;
+    case 'warpText': return <WarpTextDialog close={close} />;
+    case 'newArtboard': return <NewArtboardDialog close={close} />;
     case 'colorPicker': return <ColorPickerDialog which={dialog.which} close={close} />;
     case 'confirmClose': return <ConfirmCloseDialog docId={dialog.docId} close={close} />;
     case 'shortcuts': return <ShortcutsDialog close={close} />;
@@ -339,7 +286,7 @@ function ConfirmCloseDialog({ docId, close }: { docId: number; close: () => void
   const save = async () => {
     if (useStore.getState().doc.activeDocId !== docId) await engine.call('switchDoc', docId);
     close();
-    if (await savePsd()) await engine.call('closeDoc', docId);
+    if (await saveCurrent()) await engine.call('closeDoc', docId);
   };
   return (
     <Modal title="Lienzo" okLabel="Guardar" onClose={close} onOk={save}>

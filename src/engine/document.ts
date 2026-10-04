@@ -1,9 +1,23 @@
 import type { VectorPath } from './path';
 import {
   TILE, type BlendMode, type LayerInfo, type Rect, type RGBA, type LayerKind, type AdjustmentParams,
-  type TextParams, type ShapeParams, type LayerEffects,
+  type TextParams, type ShapeParams, type LayerEffects, type Matrix, type SmartFilter, type Artboard,
 } from './types';
 import type { Selection } from './selection';
+
+/** Objeto inteligente: contenido original (píxeles y, si lo hay, el documento con sus capas), transformación y filtros. */
+export interface SmartObject {
+  w: number;
+  h: number;
+  /** Composición del contenido en su propia resolución (no se modifica: se comparte entre copias). */
+  data: Uint8ClampedArray;
+  /** Documento del contenido (capas editables) cuando se creó a partir de capas o de un PSD. */
+  contents: EditorDocument | null;
+  /** Contenido (px) → documento. */
+  matrix: Matrix;
+  filters: SmartFilter[];
+  source?: string;
+}
 
 /** Clave numérica de un tile; admite índices negativos (capas desplazadas). */
 export const tileKey = (tx: number, ty: number) => (ty + 32768) * 65536 + (tx + 32768);
@@ -41,22 +55,25 @@ export class MaskChannel {
   fill: number;
   gpuDirty = new Set<number>();
   gpuRemoved = new Set<number>();
+  /** Cambia con cada edición (para recalcular los estilos de capa). */
+  version = 0;
   constructor(fill = 255) { this.fill = fill; }
 
   getTile(k: number) { return this.tiles.get(k); }
 
   ensureTile(k: number): Uint8Array {
     let t = this.tiles.get(k);
-    if (!t) { t = new Uint8Array(TILE * TILE).fill(this.fill); this.tiles.set(k, t); this.gpuRemoved.delete(k); }
+    if (!t) { t = new Uint8Array(TILE * TILE).fill(this.fill); this.tiles.set(k, t); this.gpuRemoved.delete(k); this.version++; }
     return t;
   }
 
   setTile(k: number, t: Uint8Array | null) {
+    this.version++;
     if (t) { this.tiles.set(k, t); this.gpuRemoved.delete(k); this.gpuDirty.add(k); }
     else if (this.tiles.has(k)) { this.tiles.delete(k); this.gpuDirty.delete(k); this.gpuRemoved.add(k); }
   }
 
-  touch(k: number) { this.gpuDirty.add(k); }
+  touch(k: number) { this.gpuDirty.add(k); this.version++; }
 
   get(lx: number, ly: number): number {
     const tx = Math.floor(lx / TILE), ty = Math.floor(ly / TILE);
@@ -100,9 +117,11 @@ export class PixelLayer {
   text?: TextParams;
   shape?: ShapeParams;
   effects?: LayerEffects;
-  /** Capas auxiliares con los estilos (sombra/resplandor debajo, trazo/superposición encima). */
-  fxUnder: PixelLayer | null = null;
-  fxOver: PixelLayer | null = null;
+  smart?: SmartObject;
+  artboard?: Artboard;
+  /** Estilos calculados: efectos por debajo (cada uno con su modo) y el contenido con los efectos interiores. */
+  fxUnder: PixelLayer[] = [];
+  fxStyled: PixelLayer | null = null;
   /** Versión de contenido: cambia al editar (para invalidar cachés como los estilos). */
   version = 0;
   /** Grupo que la contiene (null = raíz del documento). */
@@ -116,12 +135,16 @@ export class PixelLayer {
     this.name = name;
   }
 
+  /** Capas auxiliares de los estilos. */
+  fxLayers(): PixelLayer[] { return this.fxStyled ? [...this.fxUnder, this.fxStyled] : this.fxUnder; }
+
   info(): LayerInfo {
     return {
       id: this.id, name: this.name, kind: this.kind, visible: this.visible, opacity: this.opacity, blend: this.blend,
       x: this.x, y: this.y, hasMask: !!this.mask, maskEnabled: this.maskEnabled, lockAlpha: this.lockAlpha,
       adjustment: this.adjustment, text: this.text, shape: this.shape, effects: this.effects,
-      parent: this.parent, clipped: this.clipped, collapsed: this.kind === 'group' ? this.collapsed : undefined,
+      smart: this.smart && { w: this.smart.w, h: this.smart.h, matrix: this.smart.matrix, filters: this.smart.filters, source: this.smart.source, hasContents: !!this.smart.contents },
+      artboard: this.artboard, parent: this.parent, clipped: this.clipped, collapsed: this.kind === 'group' ? this.collapsed : undefined,
     };
   }
 
@@ -199,6 +222,9 @@ export class PixelLayer {
     l.text = this.text && structuredClone(this.text);
     l.shape = this.shape && structuredClone(this.shape);
     l.effects = this.effects && structuredClone(this.effects);
+    l.artboard = this.artboard && { ...this.artboard };
+    // Objeto inteligente: el contenido se comparte (como una instancia enlazada de Photoshop al duplicar).
+    l.smart = this.smart && { ...this.smart, filters: this.smart.filters.map((f) => ({ ...f, params: { ...f.params } })) };
     // Duplicar es instantáneo: se comparten los tiles hasta que alguna capa los modifica.
     for (const [k, t] of this.tiles) {
       l.tiles.set(k, t);

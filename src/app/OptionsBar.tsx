@@ -7,7 +7,7 @@ import { penFinish } from './Pen';
 import { isEmpty as isEmptyPath } from '../engine/path';
 import { engine } from '../engine/client';
 import { TOOL_NAMES } from './commands';
-import { FONTS } from '../engine/vector';
+import { FontPicker } from './TextPanels';
 import type { ShapeKind } from '../engine/types';
 import type { GradientType } from '../engine/ops';
 
@@ -140,9 +140,7 @@ export function OptionsBar() {
       )}
       {tool === 'text' && (
         <>
-          <select className="sel" value={opts.font} onChange={(e) => { setOpts({ font: e.target.value }); applyText({ font: e.target.value }); }}>
-            {FONTS.map((f) => <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>)}
-          </select>
+          <FontPicker compact value={opts.font} onChange={(f) => { setOpts({ font: f }); applyText({ font: f }); }} />
           <Slider label="" value={opts.fontSize} min={4} max={500} unit="pt" width={80} onChange={(v) => { setOpts({ fontSize: v }); applyText({ size: v }); }} />
           <Toggle on={opts.bold} label={<Bold size={13} />} title="Negrita" onClick={() => { setOpts({ bold: !opts.bold }); applyText({ bold: !opts.bold }); }} />
           <Toggle on={opts.italic} label={<Italic size={13} />} title="Cursiva" onClick={() => { setOpts({ italic: !opts.italic }); applyText({ italic: !opts.italic }); }} />
@@ -150,7 +148,8 @@ export function OptionsBar() {
             <Toggle key={a} on={opts.align === a} label={a === 'left' ? <AlignLeft size={13} /> : a === 'center' ? <AlignCenter size={13} /> : <AlignRight size={13} />}
               onClick={() => { setOpts({ align: a }); applyText({ align: a }); }} />
           ))}
-          <span className="hint">Clic: texto nuevo · clic en un texto: editar · Esc o Ctrl+Intro: aplicar</span>
+          <button className="chip" title="Texto > Deformar texto" onClick={() => useStore.getState().setDialog({ kind: 'warpText' })}>Deformar</button>
+          <span className="hint">Clic: texto de punto · arrastrar: texto de párrafo · Esc o Ctrl+Intro: aplicar · Carácter y Párrafo en Propiedades</span>
         </>
       )}
       {tool === 'shape' && (

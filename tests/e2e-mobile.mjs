@@ -171,6 +171,28 @@ try {
   const [dl] = await Promise.all([page.waitForEvent('download'), sheet().getByRole('button', { name: 'Guardar PNG' }).click()]);
   ok('Guardar PNG descarga el archivo', /\.png$/.test(dl.suggestedFilename()));
 
+  // Fase 9 en el móvil: estilos de capa, texto y exportar como.
+  await call('createShape', { shape: 'rect', x: 300, y: 300, w: 300, h: 300, fill: [40, 120, 220, 255], stroke: null, strokeWidth: 0, radius: 0, sides: 6 }); await wait(300);
+  await page.evaluate(() => window.__lienzoStore.getState().setDialog({ kind: 'layerStyle' })); await wait(400);
+  {
+    const mb2 = await page.locator('.modal').boundingBox();
+    ok('Estilo de capa cabe en la pantalla del móvil', mb2.x >= 0 && mb2.x + mb2.width <= 391 && (await page.locator('.lstyle-item').count()) === 11);
+    await page.getByRole('button', { name: 'Sombra paralela' }).click(); await wait(200);
+    await page.getByRole('button', { name: 'OK' }).click(); await wait(400);
+    const stm = await S();
+    ok('Aplicar un estilo desde el móvil', !!stm.doc.layers.find((l) => l.id === stm.doc.activeLayerId)?.effects?.dropShadow?.enabled);
+  }
+  await call('createText', { text: 'Hola', x: 300, y: 200, size: 60, color: [0, 0, 0, 255] }); await wait(300);
+  await page.getByTestId('m-layers').click(); await wait();
+  await page.getByTestId('layer-row').first().click(); await wait();
+  await page.getByTestId('m-props').click(); await wait(300);
+  ok('Propiedades del texto (Carácter y Párrafo) en la hoja del móvil', await page.getByTestId('m-sheet').getByLabel('Seguimiento (milésimas de eme)').isVisible());
+  await page.getByTestId('m-sheet').getByRole('button', { name: 'Cerrar' }).click(); await wait();
+  await page.getByTestId('m-export').click(); await wait();
+  await page.getByTestId('m-sheet').getByRole('button', { name: 'Exportar como…' }).click(); await wait(300);
+  ok('Exportar como (con tamaños) desde el móvil', await page.getByRole('button', { name: '2x' }).isVisible());
+  await page.getByRole('button', { name: 'Cancelar' }).click(); await wait();
+
   // Lápiz: los dedos ya no pintan (rechazo de la palma) y desplazan.
   await page.evaluate(() => window.__lienzoStore.getState().setTool('brush'));
   await page.evaluate(() => {

@@ -1,9 +1,9 @@
 import {
   TILE, IDENTITY, type BrushSettings, type DocState, type FromWorker, type PointerMsg, type Rect, type RGBA,
-  type ToolId, type ViewState, type BlendMode, type AdjustmentParams, type AdjustmentType, type TextParams,
+  type SmartFilter, type Artboard, type ToolId, type ViewState, type BlendMode, type AdjustmentParams, type AdjustmentType, type TextParams,
   type ShapeParams, type LayerEffects, type Matrix,
 } from './types';
-import { EditorDocument, PixelLayer, MaskChannel, tileKey, keyTx, keyTy, cloneLayers } from './document';
+import { EditorDocument, PixelLayer, MaskChannel, tileKey, keyTx, keyTy, cloneLayers, type SmartObject } from './document';
 import { History, TilePatch, FnEntry, GroupEntry, type HistoryEntry } from './history';
 import { BrushStroke, type BrushMode } from './brush';
 import { Renderer } from './renderer';
@@ -18,7 +18,20 @@ import { filterApron, WHOLE_FILTERS, type FilterName, type FilterParams } from '
 import { defaultAdjustment, ADJUSTMENT_LABELS } from './adjust';
 import { fixRedEye, strokeCoverage, type StrokeLocation } from './retouch';
 import { rasterizeText, rasterizeShape, rasterLimit, mul, invert as invertM, textBox, transformRect } from './vector';
-import { buildEffects } from './effects';
+import { buildEffects, hasEffects } from './effects';
+import { fontReady, loadGoogleFont } from './fonts';
+import { resetTextCache } from './text';
+
+/** Clave de caché de los estilos: contenido, máscara, posición y parámetros. */
+function fxKey(L: PixelLayer): string {
+  if (!hasEffects(L.effects)) return '';
+  return `${L.version}|${L.mask ? `${L.mask.version}:${L.maskEnabled}` : '-'}|${L.x},${L.y}|${JSON.stringify(L.effects)}`;
+}
+function fxBounds(L: PixelLayer): Rect | null {
+  let r: Rect | null = null;
+  for (const f of L.fxLayers()) r = union(r, f.bounds());
+  return r;
+}
 import { flatten as flattenPath, pathBounds, toSvg, isEmpty as isEmptyPath, clonePath, traceMask, type VectorPath } from './path';
 
 /** Color neutro de cada modo de fusión (el que no cambia nada): gris 50 %, blanco o negro. */
@@ -65,6 +78,8 @@ interface DocSlot {
   lastSelection: Selection | null;
   cloneSource: { x: number; y: number } | null;
   cloneOffset: { dx: number; dy: number } | null;
+  /** Pestaña con el contenido de un objeto inteligente: capa de origen. */
+  smartLink?: { slotId: number; layerId: number; name: string };
 }
 
 /** Motor del editor: vive entero en el worker; la interfaz sólo envía comandos. */
@@ -89,6 +104,8 @@ export class Engine {
   private thumbTimer: ReturnType<typeof setTimeout> | null = null;
   private fxTimer: ReturnType<typeof setTimeout> | null = null;
   private fxVersions = new Map<number, string>();
+  /** Google Fonts que se están descargando. */
+  private fontWait = new Set<string>();
   private layerCounter = 1;
   private groupCounter = 1;
   private healing = false;
@@ -106,7 +123,7 @@ export class Engine {
   private base: string;
 
   private stroke: BrushStroke | null = null;
-  private drag: { kind: 'pan' | 'move'; x0: number; y0: number; panX: number; panY: number; lx: number; ly: number; layer?: PixelLayer; moved?: boolean; set?: { L: PixelLayer; x: number; y: number; text?: TextParams; shape?: ShapeParams }[]; box?: Rect | null } | null = null;
+  private drag: { kind: 'pan' | 'move'; x0: number; y0: number; panX: number; panY: number; lx: number; ly: number; layer?: PixelLayer; moved?: boolean; set?: { L: PixelLayer; x: number; y: number; text?: TextParams; shape?: ShapeParams; smart?: SmartObject; artboard?: Artboard }[]; box?: Rect | null } | null = null;
   private pendingProps = new Map<number, unknown>();
   private cloneSource: { x: number; y: number } | null = null;
   private cloneOffset: { dx: number; dy: number } | null = null;
@@ -117,7 +134,7 @@ export class Engine {
   private busy = false;
   private clipboard: { data: Uint8ClampedArray; rect: Rect } | null = null;
   /** Vista previa de un ajuste/filtro destructivo: aplicado pero aún fuera del historial. */
-  private preview: TilePatch | null = null;
+  private preview: HistoryEntry | null = null;
   private previewSeq = 0;
 
   constructor(canvas: OffscreenCanvas, width: number, height: number, dpr: number, post: Post, base = '/') {
@@ -126,6 +143,9 @@ export class Engine {
     this.r = new Renderer(canvas);
     this.resize(width, height, dpr);
     post({ type: 'ready', renderer: this.r.info, maxTexture: this.r.maxTexture });
+    // El primer texto que se pinta en el worker carga el sistema de fuentes (puede tardar ~1 s):
+    // se hace ya, en segundo plano, para que la herramienta Texto responda al instante.
+    setTimeout(() => { try { const c = new OffscreenCanvas(8, 8).getContext('2d')!; c.font = '16px Arial, sans-serif'; c.fillText('Aa', 0, 8); c.measureText('Hg'); } catch { /* sin texto */ } }, 50);
   }
 
   // ================================================================ vista
@@ -270,6 +290,7 @@ export class Engine {
       historySource: d.historySource,
       docs: this.slots.map((x) => ({ id: x.id, name: x.id === this.slotId ? d.name : x.doc.name, dirty: x.id === this.slotId ? d.dirty : x.doc.dirty })),
       activeDocId: this.slotId,
+      smartParent: this.slots.find((x) => x.id === this.slotId)?.smartLink?.name ?? null,
     };
   }
 
@@ -313,14 +334,14 @@ export class Engine {
       const d = this.doc;
       if (!d) return;
       for (const L of d.layers) {
-        const key = L.effects ? `${L.version}|${L.x},${L.y}|${JSON.stringify(L.effects)}` : '';
+        const key = fxKey(L);
         if ((this.fxVersions.get(L.id) ?? '') === key) continue;
         this.fxVersions.set(L.id, key);
-        const before = union(L.fxUnder?.bounds() ?? null, L.fxOver?.bounds() ?? null);
-        const { under, over } = key ? buildEffects(L) : { under: null, over: null };
+        const before = fxBounds(L);
+        const { under, styled } = key ? buildEffects(L) : { under: [], styled: null };
         L.fxUnder = under;
-        L.fxOver = over;
-        this.invalidate(union(before, union(under?.bounds() ?? null, over?.bounds() ?? null)));
+        L.fxStyled = styled;
+        this.invalidate(union(before, union(fxBounds(L), L.bounds())));
       }
     }, 120);
   }
@@ -439,15 +460,26 @@ export class Engine {
     this.r.clearPreview();
   }
 
-  newDoc(width: number, height: number, background: 'white' | 'black' | 'transparent' | 'bg', name = 'Sin título-1') {
+  newDoc(width: number, height: number, background: 'white' | 'black' | 'transparent' | 'bg', name = 'Sin título-1', artboard = false) {
     const w = Math.max(1, Math.min(30000, Math.round(width)));
     const h = Math.max(1, Math.min(30000, Math.round(height)));
     const doc = new EditorDocument(name, w, h);
-    const L = new PixelLayer(background === 'transparent' ? 'Capa 1' : 'Fondo');
     const color: RGBA | null = background === 'white' ? [255, 255, 255, 255] : background === 'black' ? [0, 0, 0, 255] : background === 'bg' ? this.bg : null;
-    if (color) EditorDocument.fillLayer(L, { x: 0, y: 0, w, h }, color);
-    doc.layers.push(L);
-    doc.activeLayerId = L.id;
+    if (artboard) {
+      // Documento con mesa de trabajo (como Photoshop para web y redes): el fondo es el de la mesa.
+      const G = new PixelLayer('Mesa de trabajo 1');
+      G.kind = 'group'; G.blend = 'normal';
+      G.artboard = { x: 0, y: 0, w, h, bg: color };
+      const L = new PixelLayer('Capa 1');
+      L.parent = G.id;
+      doc.layers.push(L, G);
+      doc.activeLayerId = L.id;
+    } else {
+      const L = new PixelLayer(background === 'transparent' ? 'Capa 1' : 'Fondo');
+      if (color) EditorDocument.fillLayer(L, { x: 0, y: 0, w, h }, color);
+      doc.layers.push(L);
+      doc.activeLayerId = L.id;
+    }
     this.setDoc(doc, 'Nuevo');
     return { width: w, height: h };
   }
@@ -611,6 +643,7 @@ export class Engine {
     const out = new Set<PixelLayer>();
     for (const U of units) {
       if (U.kind !== 'group') { if (U.kind !== 'adjustment') out.add(U); continue; }
+      if (U.artboard) out.add(U); // la mesa de trabajo se mueve con su contenido
       for (const l of d.descendants(U.id)) if (l.kind !== 'group' && l.kind !== 'adjustment') out.add(l);
     }
     return [...out];
@@ -692,7 +725,7 @@ export class Engine {
   private shiftUnit(U: PixelLayer, dx: number, dy: number) {
     const d = this.doc!;
     const set = U.kind === 'group' ? d.descendants(U.id).filter((l) => l.kind !== 'group' && l.kind !== 'adjustment') : [U];
-    const pos = (l: PixelLayer) => ({ x: l.x, y: l.y, text: l.text, shape: l.shape });
+    const pos = (l: PixelLayer) => ({ x: l.x, y: l.y, text: l.text, shape: l.shape, smart: l.smart, artboard: l.artboard });
     const from = set.map(pos);
     let dirty: Rect | null = null;
     for (const L of set) { dirty = union(dirty, this.fullBounds(L)); this.shiftLayer(L, dx, dy); dirty = union(dirty, this.fullBounds(L)); }
@@ -902,7 +935,7 @@ export class Engine {
     };
     remove(d);
     this.commit(new FnEntry('Eliminar capa', (doc) => { doc.layers.splice(idx, 0, L); doc.activeLayerId = prevActive; }, remove));
-    this.invalidate(L.kind === 'adjustment' ? null : union(L.bounds(), union(L.fxUnder?.bounds() ?? null, L.fxOver?.bounds() ?? null)));
+    this.invalidate(L.kind === 'adjustment' ? null : union(L.bounds(), fxBounds(L)));
   }
 
   /** mode: 'replace' (clic), 'toggle' (Ctrl+clic), 'range' (Mayús+clic). */
@@ -955,7 +988,7 @@ export class Engine {
     if (props.blend !== undefined) L.blend = props.blend;
     if (props.lockAlpha !== undefined) L.lockAlpha = props.lockAlpha;
     if (props.maskEnabled !== undefined) L.maskEnabled = props.maskEnabled;
-    this.invalidate(L.kind === 'adjustment' ? null : union(L.bounds(), union(L.fxUnder?.bounds() ?? null, L.fxOver?.bounds() ?? null)));
+    this.invalidate(L.kind === 'adjustment' ? null : union(L.bounds(), fxBounds(L)));
     if (!record) {
       this.pendingProps.set(id, before);
       this.pushState(false);
@@ -1039,7 +1072,7 @@ export class Engine {
     let r: Rect | null = null;
     for (const L of layers) {
       if (L.kind === 'adjustment') return this.docRect();
-      r = union(r, union(L.bounds(), union(L.fxUnder?.bounds() ?? null, L.fxOver?.bounds() ?? null)));
+      r = union(r, union(L.bounds(), fxBounds(L)));
     }
     return r;
   }
@@ -1157,11 +1190,11 @@ export class Engine {
     const d = this.doc;
     const L = id ? d?.layer(id) : d?.active();
     if (!d || !L || L.kind === 'pixel' || L.kind === 'adjustment' || L.kind === 'group') return;
-    const before = { kind: L.kind, text: L.text, shape: L.shape };
-    L.kind = 'pixel'; L.text = undefined; L.shape = undefined;
+    const before = { kind: L.kind, text: L.text, shape: L.shape, smart: L.smart };
+    L.kind = 'pixel'; L.text = undefined; L.shape = undefined; L.smart = undefined;
     this.commit(new FnEntry('Rasterizar capa',
       (doc) => { const l = doc.layer(L.id); if (l) Object.assign(l, before); },
-      (doc) => { const l = doc.layer(L.id); if (l) { l.kind = 'pixel'; l.text = undefined; l.shape = undefined; } }));
+      (doc) => { const l = doc.layer(L.id); if (l) { l.kind = 'pixel'; l.text = undefined; l.shape = undefined; l.smart = undefined; } }));
   }
 
   /** Antes de pintar/filtrar una capa vectorial se rasteriza (Photoshop pregunta; aquí avisa). */
@@ -1566,14 +1599,14 @@ export class Engine {
   private shiftDocument(w: number, h: number, dx: number, dy: number, label: string) {
     const d = this.doc!;
     const oldW = d.width, oldH = d.height, oldSel = d.selection;
-    const before = d.layers.map((L) => ({ L, x: L.x, y: L.y, text: L.text, shape: L.shape, mask: L.mask }));
+    const before = d.layers.map((L) => ({ L, x: L.x, y: L.y, text: L.text, shape: L.shape, mask: L.mask, smart: L.smart, artboard: L.artboard }));
     for (const L of d.layers) {
       if (L.kind === 'adjustment') { if (L.mask) L.mask = shiftMask(L.mask, dx, dy); continue; }
       this.shiftLayer(L, dx, dy);
     }
     d.width = w; d.height = h; d.selection = null;
-    const after = d.layers.map((L) => ({ L, x: L.x, y: L.y, text: L.text, shape: L.shape, mask: L.mask }));
-    const restore = (s: typeof before) => { for (const m of s) { m.L.x = m.x; m.L.y = m.y; m.L.text = m.text; m.L.shape = m.shape; m.L.mask = m.mask; } };
+    const after = d.layers.map((L) => ({ L, x: L.x, y: L.y, text: L.text, shape: L.shape, mask: L.mask, smart: L.smart, artboard: L.artboard }));
+    const restore = (s: typeof before) => { for (const m of s) { m.L.x = m.x; m.L.y = m.y; m.L.text = m.text; m.L.shape = m.shape; m.L.mask = m.mask; m.L.smart = m.smart; m.L.artboard = m.artboard; } };
     this.commit(new FnEntry(label,
       (doc) => { doc.width = oldW; doc.height = oldH; doc.selection = oldSel; restore(before); },
       (doc) => { doc.width = w; doc.height = h; doc.selection = null; restore(after); }));
@@ -1714,6 +1747,17 @@ export class Engine {
     while (this.busy) await new Promise((r) => setTimeout(r, 20));
     if (seq !== this.previewSeq) return; // llegó una petición más reciente
     this.restorePreview();
+    if (L.kind === 'smart' && L.smart) {
+      // Objeto inteligente: el filtro se añade como filtro inteligente (editable y reversible).
+      this.busy = true;
+      try {
+        const next = { ...L.smart, filters: [...L.smart.filters, { name, params: { ...params, seed: Math.floor(Math.random() * 1e6) } as Record<string, unknown>, enabled: true }] };
+        const e = await this.smartUpdate(L, next, `Filtro inteligente: ${FILTER_LABELS[name]}`);
+        if (preview && seq !== this.previewSeq) { e.undo(this.doc!); this.invalidate(null); return; }
+        if (preview) this.preview = e; else { this.commit(e); this.lastFilter = { name, params }; }
+      } finally { this.busy = false; this.post({ type: 'busy', label: null }); }
+      return;
+    }
     if (!this.ensurePixel(L)) return;
     const lb = name === 'clouds' ? this.docRect() : L.bounds();
     if (!lb) return;
@@ -1725,27 +1769,8 @@ export class Engine {
     const t0 = performance.now();
     this.post({ type: 'busy', label: `${FILTER_LABELS[name]}…`, progress: 0 });
     try {
-      const seed = Math.floor(Math.random() * 1e6);
-      const p = { ...params, seed, fg: this.fg, bg: this.bg };
-      const W = region.w + apron * 2;
-      const src = L.readRegion(region.x - apron - L.x, region.y - apron - L.y, W, region.h + apron * 2);
-      const out = new Uint8ClampedArray(region.w * region.h * 4);
-      const bands = WHOLE_FILTERS.has(name) ? 1 : Math.max(1, Math.min(region.h, this.pool.size * 3));
-      const rowsPer = Math.ceil(region.h / bands);
-      let done = 0;
-      const jobs: Promise<void>[] = [];
+      const out = await this.filterRegion(L, region, name, params, apron);
       const reg = region;
-      for (let r0 = 0; r0 < reg.h; r0 += rowsPer) {
-        const r1 = Math.min(reg.h, r0 + rowsPer);
-        const s1 = r1 + apron * 2;
-        const slice = src.slice(r0 * W * 4, s1 * W * 4);
-        jobs.push(this.pool.run({ op: 'filter', name, params: p, src: slice, w: W, rows: s1 - r0, top: apron, outRows: r1 - r0, ox: reg.x - apron, oy: reg.y - apron + r0 })
-          .then((band) => {
-            for (let y = 0; y < r1 - r0; y++) out.set(band.subarray((y * W + apron) * 4, (y * W + apron + reg.w) * 4), (r0 + y) * reg.w * 4);
-            this.post({ type: 'busy', label: `${FILTER_LABELS[name]}…`, progress: ++done / bands });
-          }));
-      }
-      await Promise.all(jobs);
       // La vista previa se canceló o se pidió otra mientras se calculaba: se descarta.
       if (preview && seq !== this.previewSeq) return;
       const patch = new TilePatch(FILTER_LABELS[name], L);
@@ -1757,6 +1782,32 @@ export class Engine {
       this.busy = false;
       this.post({ type: 'busy', label: null });
     }
+  }
+
+  /** Calcula un filtro sobre una región de una capa (en paralelo por bandas); devuelve los píxeles nuevos. */
+  private async filterRegion(L: PixelLayer, region: Rect, name: FilterName, params: FilterParams, apron: number, progress = true): Promise<Uint8ClampedArray> {
+    const seed = (params as { seed?: number }).seed ?? Math.floor(Math.random() * 1e6);
+    const p = { ...params, seed, fg: this.fg, bg: this.bg };
+    const W = region.w + apron * 2;
+    const src = L.readRegion(region.x - apron - L.x, region.y - apron - L.y, W, region.h + apron * 2);
+    const out = new Uint8ClampedArray(region.w * region.h * 4);
+    const bands = WHOLE_FILTERS.has(name) ? 1 : Math.max(1, Math.min(region.h, this.pool.size * 3));
+    const rowsPer = Math.ceil(region.h / bands);
+    let done = 0;
+    const jobs: Promise<void>[] = [];
+    const reg = region;
+    for (let r0 = 0; r0 < reg.h; r0 += rowsPer) {
+      const r1 = Math.min(reg.h, r0 + rowsPer);
+      const s1 = r1 + apron * 2;
+      const slice = src.slice(r0 * W * 4, s1 * W * 4);
+      jobs.push(this.pool.run({ op: 'filter', name, params: p, src: slice, w: W, rows: s1 - r0, top: apron, outRows: r1 - r0, ox: reg.x - apron, oy: reg.y - apron + r0 })
+        .then((band) => {
+          for (let y = 0; y < r1 - r0; y++) out.set(band.subarray((y * W + apron) * 4, (y * W + apron + reg.w) * 4), (r0 + y) * reg.w * 4);
+          if (progress) this.post({ type: 'busy', label: `${FILTER_LABELS[name]}…`, progress: ++done / bands });
+        }));
+    }
+    await Promise.all(jobs);
+    return out;
   }
 
   repeatFilter() {
@@ -1908,6 +1959,332 @@ export class Engine {
     return L.id;
   }
 
+  // ================================================================ mesas de trabajo
+
+  private artboards(): PixelLayer[] { return this.doc?.layers.filter((l) => !!l.artboard) ?? []; }
+
+  /** Amplía el lienzo (sin mover nada) para que quepa `r`. */
+  private growCanvasFor(r: Rect) {
+    const d = this.doc!;
+    const w = Math.max(d.width, r.x + r.w), h = Math.max(d.height, r.y + r.h);
+    if (w !== d.width || h !== d.height) this.shiftDocument(w, h, 0, 0, 'Tamaño de lienzo');
+  }
+
+  /** Capa > Nueva > Mesa de trabajo: a la derecha de las que ya haya (el lienzo crece si hace falta). */
+  newArtboard(p: { w: number; h: number; name?: string; bg?: RGBA | null }) {
+    const d = this.doc;
+    if (!d) return;
+    const list = this.artboards();
+    const w = Math.max(1, Math.round(p.w)), h = Math.max(1, Math.round(p.h));
+    const x = list.length ? Math.max(...list.map((a) => a.artboard!.x + a.artboard!.w)) + 100 : 0;
+    const y = list.length ? Math.min(...list.map((a) => a.artboard!.y)) : 0;
+    let id = 0;
+    this.batched('Nueva mesa de trabajo', () => {
+      this.growCanvasFor({ x, y, w, h });
+      const G = new PixelLayer(p.name ?? `Mesa de trabajo ${list.length + 1}`);
+      G.kind = 'group';
+      G.blend = 'normal';
+      G.artboard = { x, y, w, h, bg: p.bg === undefined ? [255, 255, 255, 255] : p.bg };
+      this.insertLayer(G, d.layers.length, 'Nueva mesa de trabajo');
+      d.selectedIds = new Set([G.id]);
+      id = G.id;
+    });
+    this.fit(false);
+    this.invalidate(null);
+    return id;
+  }
+
+  /** Mesa de trabajo desde capas: agrupa las seleccionadas en una mesa del tamaño de su contenido. */
+  artboardFromLayers() {
+    const d = this.doc;
+    if (!d) return;
+    let bb: Rect | null = null;
+    for (const U of this.topSelected()) for (const l of U.kind === 'group' ? d.descendants(U.id) : [U]) if (l.kind !== 'group' && l.kind !== 'adjustment') bb = union(bb, exactBounds(l));
+    if (!bb) { this.toast('Las capas seleccionadas están vacías.', 'warn'); return; }
+    this.batched('Mesa de trabajo desde capas', () => {
+      const id = this.groupLayers()!;
+      const G = d.layer(id)!;
+      const n = this.artboards().length + 1;
+      const before = { name: G.name, blend: G.blend, artboard: G.artboard };
+      G.name = `Mesa de trabajo ${n}`; G.blend = 'normal'; G.artboard = { ...bb!, bg: null };
+      const after = { name: G.name, blend: G.blend, artboard: G.artboard };
+      this.commit(new FnEntry('', (doc) => { const l = doc.layer(id); if (l) Object.assign(l, before); }, (doc) => { const l = doc.layer(id); if (l) Object.assign(l, after); }));
+    });
+    this.invalidate(null);
+  }
+
+  /** Propiedades de la mesa de trabajo: posición, tamaño y fondo. */
+  setArtboard(id: number, patch: Partial<Artboard>) {
+    const d = this.doc, G = d?.layer(id);
+    if (!d || !G?.artboard) return;
+    const before = G.artboard;
+    const next = { ...before, ...patch };
+    next.w = Math.max(1, Math.round(next.w)); next.h = Math.max(1, Math.round(next.h)); next.x = Math.round(next.x); next.y = Math.round(next.y);
+    this.batched('Cambiar mesa de trabajo', () => {
+      G.artboard = next;
+      this.commit(new FnEntry('', (doc) => { const l = doc.layer(id); if (l) l.artboard = before; }, (doc) => { const l = doc.layer(id); if (l) l.artboard = next; }));
+      this.growCanvasFor(next);
+    });
+    this.invalidate(null);
+  }
+
+  /** Exporta cada mesa de trabajo (o el documento si no hay) en uno o varios tamaños. */
+  async exportSet(type: 'image/png' | 'image/jpeg' | 'image/webp', quality: number, scales: number[], which: 'document' | 'artboards'): Promise<{ name: string; blob: Blob }[]> {
+    const d = this.doc!;
+    const bg: RGBA | undefined = type === 'image/jpeg' ? [255, 255, 255, 255] : undefined;
+    const ext = type.split('/')[1].replace('jpeg', 'jpg');
+    const base = d.name.replace(/\.[^.]+$/, '');
+    const jobs: { name: string; rect: Rect; layers: PixelLayer[] }[] = [];
+    const abs = this.artboards();
+    if (which === 'artboards' && abs.length) {
+      for (const G of abs) jobs.push({ name: G.name, rect: { x: G.artboard!.x, y: G.artboard!.y, w: G.artboard!.w, h: G.artboard!.h }, layers: [...d.descendants(G.id), G] });
+    } else jobs.push({ name: base, rect: this.docRect(), layers: d.layers });
+    const out: { name: string; blob: Blob }[] = [];
+    for (const j of jobs) {
+      // Las capas del documento en orden (el árbol de composición necesita el orden original).
+      const layers = j.layers === d.layers ? d.layers : d.layers.filter((l) => j.layers.includes(l));
+      const px = this.r.flatten(d, layers, j.rect, bg);
+      for (const s of scales) {
+        const w = Math.max(1, Math.round(j.rect.w * s)), h = Math.max(1, Math.round(j.rect.h * s));
+        let data = px;
+        if (s !== 1) {
+          const bmp = await createImageBitmap(new ImageData(px as Uint8ClampedArray<ArrayBuffer>, j.rect.w, j.rect.h), { resizeWidth: w, resizeHeight: h, resizeQuality: 'high', premultiplyAlpha: 'none' });
+          const c = new OffscreenCanvas(w, h).getContext('2d')!;
+          c.drawImage(bmp, 0, 0);
+          bmp.close();
+          data = c.getImageData(0, 0, w, h).data;
+        }
+        const suffix = scales.length > 1 || s !== 1 ? (s === 1 ? '' : `@${s}x`) : '';
+        out.push({ name: `${j.name.replace(/[\\/:*?"<>|]/g, '_')}${suffix}.${ext}`, blob: await encodeRaster(data, w, h, type, quality) });
+      }
+    }
+    return out;
+  }
+
+  // ================================================================ objetos inteligentes
+
+  /** Vuelve a pintar un objeto inteligente (contenido → transformación → filtros inteligentes). */
+  private async renderSmart(L: PixelLayer, label: string): Promise<TilePatch> {
+    const d = this.doc!;
+    const sm = L.smart!;
+    const limit = rasterLimit(d.width, d.height);
+    const dst = intersect(transformRect(sm.matrix, { x: 0, y: 0, w: sm.w, h: sm.h }), limit);
+    let nl = new PixelLayer('smart');
+    if (dst) {
+      const inv = invertM(sm.matrix), m = sm.matrix;
+      const scale = Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2]));
+      const ss = scale < 0.7 ? Math.min(4, Math.ceil(1 / scale)) : 1;
+      const ident = Math.abs(m[0] - 1) < 1e-9 && Math.abs(m[3] - 1) < 1e-9 && !m[1] && !m[2] && Number.isInteger(m[4]) && Number.isInteger(m[5]);
+      if (ident) nl.writeRegion(sm.data.slice(), sm.w, sm.h, m[4], m[5]);
+      else {
+        const data = shareable(sm.data);
+        const bands = Math.max(1, Math.min(dst.h, this.pool.size * 3)), rows = Math.ceil(dst.h / bands);
+        const jobs: Promise<void>[] = [];
+        for (let y0 = 0; y0 < dst.h; y0 += rows) {
+          const r = Math.min(rows, dst.h - y0);
+          jobs.push(this.pool.run({ op: 'affine', src: data, sw: sm.w, sh: sm.h, sx: 0, sy: 0, inv, x: dst.x, y: dst.y + y0, w: dst.w, rows: r, ss })
+            .then((band) => nl.writeRegion(band, dst.w, r, dst.x, dst.y + y0)));
+        }
+        await Promise.all(jobs);
+      }
+      // Filtros inteligentes en orden (de abajo arriba, como en el panel de Photoshop).
+      for (const f of sm.filters) {
+        if (!f.enabled) continue;
+        const name = f.name as FilterName, params = f.params as FilterParams;
+        const b = name === 'clouds' ? this.docRect() : nl.bounds();
+        if (!b) break;
+        const apron = filterApron(name, params);
+        const region = intersect(name === 'clouds' ? b : { x: b.x - apron, y: b.y - apron, w: b.w + apron * 2, h: b.h + apron * 2 }, limit);
+        if (!region) continue;
+        let out = await this.filterRegion(nl, region, name, params, apron, false);
+        const op = f.opacity ?? 1;
+        if (op < 1) {
+          const orig = nl.readRegion(region.x, region.y, region.w, region.h);
+          for (let i = 0; i < out.length; i++) out[i] = orig[i] + (out[i] - orig[i]) * op;
+        }
+        const next = new PixelLayer('smart');
+        for (const [k, t] of nl.tiles) next.tiles.set(k, t);
+        next.writeRegion(out, region.w, region.h, region.x, region.y);
+        nl = next;
+        out = new Uint8ClampedArray(0);
+      }
+    }
+    const patch = new TilePatch(label, L);
+    const oldX = L.x, oldY = L.y;
+    if (oldX || oldY) {
+      // Las capas de objeto inteligente viven en (0,0); se pasan las teselas a coordenadas de documento.
+      const tmp = new PixelLayer('t');
+      const b = L.bounds();
+      if (b) tmp.writeRegion(L.readRegion(b.x - L.x, b.y - L.y, b.w, b.h), b.w, b.h, b.x, b.y);
+      for (const k of new Set([...L.tiles.keys(), ...tmp.tiles.keys()])) patch.capture(L, k);
+      for (const k of [...L.tiles.keys()]) L.setTile(k, null);
+      L.x = 0; L.y = 0;
+    }
+    for (const k of new Set([...L.tiles.keys(), ...nl.tiles.keys()])) patch.capture(L, k);
+    for (const k of [...L.tiles.keys()]) L.setTile(k, null);
+    for (const [k, t] of nl.tiles) L.setTile(k, t);
+    L.version++;
+    this.invalidate(null);
+    this.scheduleEffects();
+    return patch;
+  }
+
+  /** Cambia los datos del objeto inteligente, lo repinta y devuelve el paso de historial. */
+  private async smartUpdate(L: PixelLayer, next: SmartObject, label: string): Promise<HistoryEntry> {
+    const before = L.smart, bx = L.x, by = L.y;
+    L.smart = next;
+    const patch = await this.renderSmart(L, label);
+    const props = new FnEntry('', (doc) => { const l = doc.layer(L.id); if (l) { l.smart = before; l.x = bx; l.y = by; l.version++; } },
+      (doc) => { const l = doc.layer(L.id); if (l) { l.smart = next; l.x = 0; l.y = 0; l.version++; } });
+    return new GroupEntry(label, [patch, props]);
+  }
+
+  private async newSmartLayer(name: string, w: number, h: number, data: Uint8ClampedArray, contents: EditorDocument | null, matrix: Matrix, source?: string) {
+    const L = new PixelLayer(name);
+    L.kind = 'smart';
+    L.smart = { w, h, data, contents, matrix, filters: [], source };
+    await this.renderSmart(L, 'Objeto inteligente');
+    return L;
+  }
+
+  /** Capa > Objetos inteligentes > Convertir en objeto inteligente (las capas seleccionadas). */
+  async convertToSmart() {
+    const d = this.doc;
+    if (!d) return;
+    const set = this.topSelected().filter((l) => l.kind !== 'adjustment' || this.topSelected().length > 1);
+    if (!set.length) { this.toast('Selecciona las capas que quieres convertir.', 'warn'); return; }
+    if (set.length === 1 && set[0].kind === 'smart') { this.toast('Ya es un objeto inteligente.'); return; }
+    const all: PixelLayer[] = [];
+    for (const l of set) { if (l.kind === 'group') all.push(...d.descendants(l.id)); all.push(l); }
+    all.sort((a, b) => d.indexOf(a.id) - d.indexOf(b.id));
+    let bb: Rect | null = null;
+    for (const l of all) {
+      if (l.kind === 'group' || l.kind === 'adjustment') continue;
+      bb = union(bb, exactBounds(l));
+      for (const f of l.fxLayers()) bb = union(bb, exactBounds(f));
+    }
+    bb = bb ? intersect(bb, rasterLimit(d.width, d.height)) : null;
+    if (!bb) { this.toast('Las capas están vacías.', 'warn'); return; }
+    // Contenido: un documento propio con copias de las capas, con el origen en la esquina de la caja.
+    const child = new EditorDocument(`${set[set.length - 1].name}.psb`, bb.w, bb.h);
+    const { copies } = cloneLayers(all);
+    for (const c of copies) {
+      this.shiftLayer(c, -bb.x, -bb.y);
+      if (hasEffects(c.effects)) { const fx = buildEffects(c); c.fxUnder = fx.under; c.fxStyled = fx.styled; }
+    }
+    child.layers = copies;
+    child.activeLayerId = copies[copies.length - 1].id;
+    const data = this.r.flatten(d, copies, { x: 0, y: 0, w: bb.w, h: bb.h });
+    const top = set[set.length - 1];
+    const L = await this.newSmartLayer(top.name, bb.w, bb.h, data, child, [1, 0, 0, 1, bb.x, bb.y]);
+    L.parent = top.parent;
+    const before = this.structSnap();
+    const idx = d.indexOf(top.id);
+    const gone = new Set(all.map((l) => l.id));
+    d.layers.splice(idx + 1, 0, L);
+    d.layers = d.layers.filter((l) => !gone.has(l.id));
+    d.activeLayerId = L.id;
+    d.selectedIds = new Set([L.id]);
+    this.commitStruct('Convertir en objeto inteligente', before);
+    this.invalidate(null);
+  }
+
+  /** Coloca una imagen como objeto inteligente (Archivo > Colocar incrustado, como Photoshop). */
+  async placeSmart(name: string, buffer: ArrayBuffer, mime: string, at?: { x: number; y: number } | null) {
+    const d = this.doc;
+    if (!d) return this.open(name, buffer, mime);
+    const res = await importRaster(name, buffer, mime);
+    const w = res.doc.width, h = res.doc.height;
+    const data = res.doc.layers.length === 1 && res.doc.layers[0].kind === 'pixel' && !res.doc.layers[0].x && !res.doc.layers[0].y
+      ? res.doc.layers[0].readRegion(0, 0, w, h) : this.r.flatten(d, res.doc.layers, { x: 0, y: 0, w, h });
+    // Como Photoshop: si la imagen es mayor que el documento, se encaja dentro.
+    const k = Math.min(1, d.width / w, d.height / h);
+    const x = at ? at.x : (d.width - w * k) / 2, y = at ? at.y : (d.height - h * k) / 2;
+    const m: Matrix = [k, 0, 0, k, k === 1 ? Math.round(x) : x, k === 1 ? Math.round(y) : y];
+    const L = await this.newSmartLayer(name.replace(/\.[^.]+$/, '') || 'Imagen', w, h, data, res.doc.layers.length > 1 ? res.doc : null, m, name);
+    this.insertLayer(L, this.above(L), 'Colocar incrustado');
+    return { layers: d.layers.length };
+  }
+
+  /** Objetos inteligentes > Reemplazar contenido (mockups): la nueva imagen ocupa el mismo sitio. */
+  async replaceSmartContents(name: string, buffer: ArrayBuffer, mime: string) {
+    const d = this.doc, L = d?.active();
+    if (!d || !L || L.kind !== 'smart' || !L.smart) { this.toast('Selecciona un objeto inteligente.', 'warn'); return; }
+    const res = await importRaster(name, buffer, mime);
+    const w = res.doc.width, h = res.doc.height;
+    const data = this.r.flatten(d, res.doc.layers, { x: 0, y: 0, w, h });
+    const sm = L.smart;
+    // Se conserva el marco: la nueva imagen se encaja (sin deformar ni salirse) en el rectángulo del contenido anterior.
+    const k = Math.min(sm.w / w, sm.h / h);
+    const fit: Matrix = [k, 0, 0, k, (sm.w - w * k) / 2, (sm.h - h * k) / 2];
+    const next = { ...sm, w, h, data, contents: res.doc.layers.length > 1 ? res.doc : null, matrix: mul(sm.matrix, fit), source: name };
+    this.commit(await this.smartUpdate(L, next, 'Reemplazar contenido'));
+  }
+
+  /** Objetos inteligentes > Editar contenido: se abre en una pestaña; al guardar se actualiza la capa. */
+  editSmartContents(id?: number) {
+    const d = this.doc, L = id ? d?.layer(id) : d?.active();
+    if (!d || !L || L.kind !== 'smart' || !L.smart) return;
+    const sm = L.smart;
+    let child: EditorDocument;
+    if (sm.contents) {
+      child = new EditorDocument(sm.contents.name, sm.contents.width, sm.contents.height);
+      child.layers = cloneLayers(sm.contents.layers).copies;
+      child.activeLayerId = child.layers[child.layers.length - 1]?.id ?? 0;
+    } else {
+      child = new EditorDocument(`${L.name}.psb`, sm.w, sm.h);
+      const pl = new PixelLayer(L.name);
+      pl.writeRegion(sm.data.slice(), sm.w, sm.h, 0, 0);
+      child.layers = [pl];
+      child.activeLayerId = pl.id;
+    }
+    const parent = this.slotId;
+    this.setDoc(child, 'Abrir contenido');
+    const slot = this.slots.find((x) => x.id === this.slotId)!;
+    slot.smartLink = { slotId: parent, layerId: L.id, name: L.name };
+    this.pushState(false);
+    this.toast('Edita el contenido y pulsa Ctrl+S para actualizar el objeto inteligente.');
+  }
+
+  /** Guardar en una pestaña de contenido: actualiza el objeto inteligente del documento de origen. */
+  async saveSmartContents(): Promise<boolean> {
+    const slot = this.slots.find((x) => x.id === this.slotId);
+    const d = this.doc;
+    if (!slot?.smartLink || !d) return false;
+    const link = slot.smartLink;
+    const parent = this.slots.find((x) => x.id === link.slotId);
+    const PL = parent?.doc.layer(link.layerId);
+    if (!parent || !PL || PL.kind !== 'smart' || !PL.smart) { this.toast('El objeto inteligente de origen ya no existe.', 'warn'); return false; }
+    const data = this.r.flatten(d, d.layers, { x: 0, y: 0, w: d.width, h: d.height });
+    const contents = new EditorDocument(d.name, d.width, d.height);
+    contents.layers = cloneLayers(d.layers).copies;
+    const sm = PL.smart;
+    // Si cambió el tamaño del lienzo del contenido, se mantiene la escala respecto al original.
+    const next = { ...sm, w: d.width, h: d.height, data, contents };
+    // El repintado necesita el documento de origen activo: se cambia un instante.
+    const here = this.slotId;
+    this.switchDoc(parent.id);
+    const e = await this.smartUpdate(PL, next, 'Actualizar objeto inteligente');
+    this.commit(e);
+    this.switchDoc(here);
+    d.dirty = false;
+    this.pushState(false);
+    this.toast(`"${link.name}" actualizado`);
+    return true;
+  }
+
+  /** Filtros inteligentes: activar/ocultar, cambiar parámetros u opacidad, quitar u ordenar. */
+  async setSmartFilter(id: number, index: number, patch: Partial<SmartFilter> | null, record = true) {
+    const L = this.doc?.layer(id);
+    if (!L?.smart) return;
+    this.restorePreview();
+    const filters = L.smart.filters.map((f) => ({ ...f }));
+    if (patch === null) filters.splice(index, 1);
+    else filters[index] = { ...filters[index], ...patch, params: { ...filters[index].params, ...(patch.params ?? {}) } };
+    const e = await this.smartUpdate(L, { ...L.smart, filters }, patch === null ? 'Eliminar filtro inteligente' : 'Editar filtro inteligente');
+    if (record) this.commit(e); else this.preview = e;
+  }
+
   // ================================================================ texto y formas
 
   private rasterizeInto(L: PixelLayer, docW: number, docH: number) {
@@ -1921,6 +2298,26 @@ export class Engine {
   private rerasterize(L: PixelLayer, silent = false) {
     const d = this.doc;
     if (!d || (L.kind !== 'text' && L.kind !== 'shape')) return;
+    // Google Fonts: se pinta con la de reserva y se repinta cuando llega la fuente.
+    if (L.text && !fontReady(L.text.font) && !this.fontWait.has(L.text.font)) {
+      const fam = L.text.font;
+      this.fontWait.add(fam);
+      loadGoogleFont(fam).then((ok) => {
+        this.fontWait.delete(fam);
+        const dd = this.doc;
+        if (!ok) { this.toast(`No se pudo descargar la fuente "${fam}" (¿sin conexión?).`, 'warn'); return; }
+        if (!dd) return;
+        // La fuente nueva se aplica al lienzo en la tarea siguiente: se repinta entonces.
+        setTimeout(() => {
+          const d2 = this.doc;
+          if (!d2) return;
+          resetTextCache();
+          for (const l of d2.layers) if (l.text?.font === fam) this.rerasterize(l);
+          this.scheduleEffects();
+          this.pushState(false);
+        }, 30);
+      });
+    }
     const before = L.bounds();
     this.rasterizeInto(L, d.width, d.height);
     if (!silent) this.invalidate(union(before, L.bounds()));
@@ -2010,6 +2407,7 @@ export class Engine {
     const before = this.pendingProps.has(key) ? (this.pendingProps.get(key) as LayerEffects | undefined) : L.effects;
     L.effects = effects;
     this.scheduleEffects();
+    this.invalidate(union(L.bounds(), fxBounds(L)));
     if (!record) { this.pendingProps.set(key, before); this.pushState(false); return; }
     this.pendingProps.delete(key);
     if (JSON.stringify(before ?? null) === JSON.stringify(effects ?? null)) { this.pushState(false); return; }
@@ -2037,7 +2435,7 @@ export class Engine {
       resizeWidth: Math.max(1, Math.round(src.w * s)), resizeHeight: Math.max(1, Math.round(src.h * s)), resizeQuality: 'medium',
     });
     const ids = [L.id];
-    for (const l of set) { ids.push(l.id); if (l.fxUnder) ids.push(l.fxUnder.id); if (l.fxOver) ids.push(l.fxOver.id); }
+    for (const l of set) { ids.push(l.id); for (const f of l.fxLayers()) ids.push(f.id); }
     this.r.setPreview(ids, bmp, src, [...IDENTITY] as Matrix);
     bmp.close();
     this.transform = { layers: set, src, matrix: [...IDENTITY] as Matrix };
@@ -2084,6 +2482,17 @@ export class Engine {
   /** Aplica la matriz a una capa y devuelve su paso de historial (sin registrarlo). */
   private async transformOne(L: PixelLayer, m: Matrix, label: string): Promise<HistoryEntry | null> {
     const d = this.doc!;
+    if (L.kind === 'smart' && L.smart) {
+      // Sin pérdida: se transforma desde el contenido original.
+      const e = await this.smartUpdate(L, { ...L.smart, matrix: mul(m, L.smart.matrix) }, label);
+      if (L.mask) {
+        const oldMask = L.mask;
+        const newMask = transformMask(L, m, d.width, d.height, { x: 0, y: 0 }, L, oldMask);
+        L.mask = newMask;
+        return new GroupEntry(label, [e, new FnEntry('', (doc) => { const l = doc.layer(L.id); if (l) l.mask = oldMask; }, (doc) => { const l = doc.layer(L.id); if (l) l.mask = newMask; })]);
+      }
+      return e;
+    }
     if (L.kind === 'text' || L.kind === 'shape') {
       const before = { text: L.text, shape: L.shape };
       if (L.text) L.text = { ...L.text, matrix: mul(m, L.text.matrix) };
@@ -2297,7 +2706,7 @@ export class Engine {
     if (!d || !A || A.kind === 'adjustment') return;
     const set = this.moveSet(A);
     if (!set.length) return;
-    const pos = (l: PixelLayer) => ({ x: l.x, y: l.y, text: l.text, shape: l.shape });
+    const pos = (l: PixelLayer) => ({ x: l.x, y: l.y, text: l.text, shape: l.shape, smart: l.smart, artboard: l.artboard });
     const from = set.map(pos);
     let dirty: Rect | null = null;
     for (const L of set) {
@@ -2312,7 +2721,7 @@ export class Engine {
   }
 
   private fullBounds(L: PixelLayer): Rect | null {
-    return union(L.bounds(), union(L.fxUnder?.bounds() ?? null, L.fxOver?.bounds() ?? null));
+    return union(L.bounds(), fxBounds(L));
   }
 
   private shiftLayer(L: PixelLayer, dx: number, dy: number) {
@@ -2320,11 +2729,12 @@ export class Engine {
     L.x += dx; L.y += dy;
     if (L.text) L.text = { ...L.text, matrix: mul([1, 0, 0, 1, dx, dy], L.text.matrix) };
     if (L.shape) L.shape = { ...L.shape, matrix: mul([1, 0, 0, 1, dx, dy], L.shape.matrix) };
+    if (L.smart) L.smart = { ...L.smart, matrix: mul([1, 0, 0, 1, dx, dy], L.smart.matrix) };
+    if (L.artboard) L.artboard = { ...L.artboard, x: L.artboard.x + dx, y: L.artboard.y + dy };
     // El contenido rasterizado se mueve con x/y; las matrices ya contemplan el desplazamiento
     // para la próxima rasterización, que vuelve a situar la capa en (0,0).
-    if (L.fxUnder) { L.fxUnder.x += dx; L.fxUnder.y += dy; }
-    if (L.fxOver) { L.fxOver.x += dx; L.fxOver.y += dy; }
-    this.fxVersions.set(L.id, L.effects ? `${L.version}|${L.x},${L.y}|${JSON.stringify(L.effects)}` : '');
+    for (const f of L.fxLayers()) { f.x += dx; f.y += dy; }
+    if (this.fxVersions.get(L.id)) this.fxVersions.set(L.id, fxKey(L));
   }
 
   pointer(m: PointerMsg) {
@@ -2356,7 +2766,7 @@ export class Engine {
           if (hit) { L = hit; d.activeLayerId = hit.id; this.pushState(false); }
         }
         if (!L || L.kind === 'adjustment') return;
-        const set = this.moveSet(L).map((l) => ({ L: l, x: l.x, y: l.y, text: l.text, shape: l.shape }));
+        const set = this.moveSet(L).map((l) => ({ L: l, x: l.x, y: l.y, text: l.text, shape: l.shape, smart: l.smart, artboard: l.artboard }));
         if (!set.length) return;
         let box: Rect | null = null;
         if (this.snap) for (const e of set) box = union(box, exactBounds(e.L));
@@ -2455,8 +2865,8 @@ export class Engine {
       this.invalidate(dirty);
       if (m.phase === 'up' && g.moved && (dx || dy)) {
         const set = g.set;
-        const prev = set.map((e) => ({ x: e.x, y: e.y, text: e.text, shape: e.shape }));
-        const cur = set.map((e) => ({ x: e.L.x, y: e.L.y, text: e.L.text, shape: e.L.shape }));
+        const prev = set.map((e) => ({ x: e.x, y: e.y, text: e.text, shape: e.shape, smart: e.smart, artboard: e.artboard }));
+        const cur = set.map((e) => ({ x: e.L.x, y: e.L.y, text: e.L.text, shape: e.L.shape, smart: e.L.smart, artboard: e.L.artboard }));
         const apply = (v: typeof cur) => (doc: EditorDocument) => { set.forEach((e, i) => { const l = doc.layer(e.L.id); if (l) Object.assign(l, v[i]); }); };
         this.commit(new FnEntry('Mover', apply(prev), apply(cur)));
       }
@@ -3046,6 +3456,11 @@ export class Engine {
   debugPixel(x: number, y: number) {
     if (this.doc) this.r.compose(this.doc);
     return this.r.readCompositePixel(x, y);
+  }
+
+  debugLayerBounds() {
+    const L = this.doc?.active();
+    return L ? exactBounds(L) : null;
   }
 
   debugLayerPixel(x: number, y: number) {

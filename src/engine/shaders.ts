@@ -134,9 +134,19 @@ uniform float uOpacity;
 uniform int uMode;
 uniform bool uPremul;  // la fuente es un grupo ya compuesto (premultiplicado)
 uniform bool uAtop;    // máscara de recorte: conserva el alfa del fondo
+uniform int uBif;      // "Fusionar si": 0 no, 1 gris, 2 rojo, 3 verde, 4 azul
+uniform vec4 uBifSelf; // negro inicio, negro fin, blanco inicio, blanco fin (0..1)
+uniform vec4 uBifUnder;
 out vec4 outColor;
 ${BLEND_LIB}
 ${MASK_LIB}
+float bifRamp(float v, vec4 r) {
+  float e = 0.5 / 255.0;
+  float lo = r.y > r.x ? clamp((v - r.x) / (r.y - r.x), 0.0, 1.0) : (v >= r.x - e ? 1.0 : 0.0);
+  float hi = r.w > r.z ? clamp((r.w - v) / (r.w - r.z), 0.0, 1.0) : (v <= r.z + e ? 1.0 : 0.0);
+  return lo * hi;
+}
+float bifValue(vec3 c) { return uBif == 1 ? lum(c) : (uBif == 2 ? c.r : (uBif == 3 ? c.g : c.b)); }
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
   vec4 back = texelFetch(uBack, p, 0);
@@ -146,6 +156,7 @@ void main() {
   float ab = back.a;
   vec3 cb = ab > 0.0 ? back.rgb / ab : vec3(0.0);
   vec3 cs = uPremul ? (src.a > 0.0 ? src.rgb / src.a : vec3(0.0)) : src.rgb;
+  if (uBif > 0) as *= bifRamp(bifValue(cs), uBifSelf) * bifRamp(bifValue(cb), uBifUnder);
   vec3 B = clamp(blendColor(uMode, cb, cs), 0.0, 1.0);
   if (uAtop) { outColor = vec4(as * ab * B + (1.0 - as) * back.rgb, ab); return; }
   vec3 co = as * (1.0 - ab) * cs + as * ab * B + (1.0 - as) * back.rgb;
@@ -181,6 +192,7 @@ precision highp float;
 precision highp int;
 uniform sampler2D uBack;
 uniform sampler2D uLut;
+uniform highp sampler3D uLut3;
 uniform int uKind;
 uniform vec4 uP0;
 uniform vec4 uP1;
@@ -286,6 +298,7 @@ vec3 adjust(vec3 c) {
     vec3 r = mix(c, c * uP0.rgb, uP0.a);
     return uP1.x > 0.5 ? setLum(r, lum(c)) : r;
   }
+  if (uKind == 11) return texture(uLut3, clamp(c, 0.0, 1.0) * uP0.x + uP0.y).rgb;
   if (uKind == 10) {
     return clamp(vec3(dot(c, uP0.rgb) + uP0.a, dot(c, uP1.rgb) + uP1.a, dot(c, uP2.rgb) + uP2.a), 0.0, 1.0);
   }

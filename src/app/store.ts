@@ -9,7 +9,7 @@ export type DialogId =
   | { kind: 'new' } | { kind: 'imageSize' } | { kind: 'canvasSize' } | { kind: 'export' }
   | { kind: 'adjust'; type: AdjustmentType } | { kind: 'filter'; name: FilterName }
   | { kind: 'feather' } | { kind: 'grow'; dir: 1 | -1 } | { kind: 'fill' } | { kind: 'layerStyle' }
-  | { kind: 'shortcuts' } | { kind: 'liquify' } | { kind: 'generative' } | { kind: 'about' } | { kind: 'confirmClose'; docId: number } | { kind: 'newGuide' } | { kind: 'colorPicker'; which: 'fg' | 'bg' } | { kind: 'applyImage' } | { kind: 'stroke' } | { kind: 'newLayer' }
+  | { kind: 'shortcuts' } | { kind: 'liquify' } | { kind: 'generative' } | { kind: 'about' } | { kind: 'confirmClose'; docId: number } | { kind: 'newGuide' } | { kind: 'colorPicker'; which: 'fg' | 'bg' } | { kind: 'applyImage' } | { kind: 'stroke' } | { kind: 'newLayer' } | { kind: 'warpText' } | { kind: 'newArtboard' }
   | null;
 
 export type MobileSheet = 'menu' | 'layers' | 'adjust' | 'props' | 'history' | 'color' | 'export' | 'tools' | 'select';
@@ -101,6 +101,8 @@ interface Store {
   layout: 'auto' | 'mobile' | 'desktop';
   /** Hoja inferior abierta en la interfaz móvil. */
   sheet: MobileSheet | null;
+  /** Fuentes instaladas en el equipo (tras dar permiso). */
+  localFonts: string[];
 
   setTool(t: ToolId): void;
   pushTempTool(t: ToolId, key: string): void;
@@ -112,7 +114,7 @@ interface Store {
   setDialog(d: DialogId): void;
 }
 
-export const toHex = (c: RGBA) => '#' + c.slice(0, 3).map((v) => v.toString(16).padStart(2, '0')).join('');
+export const toHex = (c: RGBA) => '#' + c.slice(0, 3).map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
 export const toRgba = (hex: string): RGBA => {
   const n = parseInt(hex.slice(1), 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255, 255];
@@ -214,6 +216,7 @@ export const useStore = create<Store>((set, get) => ({
   penLocal: false,
   layout: loadPrefs('layout', 'auto' as 'auto' | 'mobile' | 'desktop'),
   sheet: null,
+  localFonts: loadPrefs('localFonts', [] as string[]),
 
   setTool(t) {
     set({ tool: t, tempTool: null, ...brushSwap(get(), t) });

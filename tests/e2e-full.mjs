@@ -1,7 +1,7 @@
 // Prueba completa de las fases 2-4 en Chromium con ratón y teclado reales.
 import { chromium } from 'playwright';
 import { spawn, execSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 const PORT = 4175;
 const URL = `http://localhost:${PORT}/`;
@@ -45,6 +45,7 @@ const near = (a, b, t = 3) => a.every((v, i) => Math.abs(v - b[i]) <= t);
 const active = async () => { const { doc } = await S(); return doc.layers.find((l) => l.id === doc.activeLayerId); };
 const useTool = async (t) => { await page.evaluate((t) => window.__lienzoStore.getState().setTool(t), t); await wait(100); };
 const key = async (k, ms = 150) => { await page.keyboard.press(k); await wait(ms); };
+const closeAllButFirst = async () => { await page.evaluate(async () => { const s = window.__lienzoStore.getState(); for (const d of s.doc.docs.slice(1)) await window.__lienzo.call('closeDoc', d.id); }); await wait(200); };
 const newDoc = async (w = 800, h = 600, bg = 'white') => {
   // Cada bloque de pruebas empieza sin pestañas abiertas (para no acumular memoria).
   await page.evaluate(async () => { for (let i = 0; i < 20 && window.__lienzoStore.getState().doc.docs.length; i++) await window.__lienzo.call('closeDoc'); });
@@ -839,6 +840,189 @@ try {
   await menu('Capa', 'Nueva capa de ajuste', 'Mezclador de canales');
   await page.getByRole('checkbox', { name: 'Monocromo' }).click(); await wait();
   ok('Mezclador de canales monocromo (40/40/20)', near(await px(150, 50), [112, 112, 112, 255], 2), JSON.stringify(await px(150, 50)));
+
+  // =========================================================== FASE 9: PLANTILLAS Y REDES SOCIALES
+  const layerById = async (id) => (await S()).doc.layers.find((l) => l.id === id);
+  const styleDbl = async () => { const r = page.getByTestId('layer-row').first(); const b = await r.boundingBox(); await r.dblclick({ position: { x: b.width - 12, y: b.height / 2 } }); await wait(400); };
+  const roundtrip = async (name) => {
+    const bytes = await page.evaluate(async () => Array.from(await window.__lienzo.call('savePsd')));
+    await page.evaluate(async ([b, n]) => { await window.__lienzo.call('open', n, new Uint8Array(b).buffer, ''); }, [bytes, name]);
+    await wait(700);
+  };
+
+  // --- Estilos de capa (los 10) y opciones de fusión
+  await newDoc(400, 300, 'white');
+  await call('createShape', { shape: 'rect', x: 100, y: 80, w: 150, h: 120, fill: [40, 120, 220, 255], stroke: null, strokeWidth: 0, radius: 0, sides: 6 }); await wait();
+  const shp = await active();
+  await styleDbl();
+  ok('Doble clic en la capa abre Estilo de capa', await page.getByTestId('layer-style').isVisible());
+  ok('El diálogo tiene Opciones de fusión y los 10 efectos', (await page.locator('.lstyle-item').count()) === 11);
+  await page.getByRole('button', { name: 'Sombra paralela' }).click();
+  await page.getByLabel('Distancia (valor)').fill('20'); await page.getByLabel('Tamaño (valor)').fill('0'); await page.getByLabel('Opacidad (valor)').fill('100'); await wait(600);
+  ok('La vista previa del estilo es inmediata', (await px(240, 215))[0] < 80, JSON.stringify(await px(240, 215)));
+  await page.getByRole('button', { name: 'OK' }).click(); await wait(400);
+  {
+    const L = await layerById(shp.id);
+    ok('Sombra paralela guardada (distancia 20, multiplicar)', L.effects?.dropShadow?.enabled && L.effects.dropShadow.distance === 20 && L.effects.dropShadow.blend === 'multiply' && (await lastLabel()) === 'Estilo de capa');
+  }
+  await styleDbl();
+  await page.getByLabel('Activar Trazo').check(); await wait(200);
+  await page.getByRole('button', { name: 'Cancelar' }).click(); await wait(400);
+  ok('Cancelar deja el estilo como estaba', !(await layerById(shp.id)).effects?.stroke);
+  const fx10 = {
+    dropShadow: { enabled: true, color: [0, 0, 0, 255], opacity: 0.75, angle: 120, distance: 8, size: 8, spread: 0, blend: 'multiply' },
+    innerShadow: { enabled: true, color: [0, 0, 0, 255], opacity: 0.75, angle: 120, distance: 5, size: 5, spread: 0, blend: 'multiply' },
+    outerGlow: { enabled: true, color: [255, 255, 0, 255], opacity: 0.75, size: 10, spread: 0, blend: 'screen' },
+    innerGlow: { enabled: true, color: [255, 255, 190, 255], opacity: 0.75, size: 10, spread: 0, blend: 'screen', source: 'edge' },
+    bevel: { enabled: true, style: 'inner', technique: 'smooth', depth: 100, up: true, size: 10, soften: 0, angle: 120, altitude: 30, highlight: [255, 255, 255, 255], highlightOpacity: 0.75, highlightBlend: 'screen', shadow: [0, 0, 0, 255], shadowOpacity: 0.75, shadowBlend: 'multiply' },
+    satin: { enabled: true, color: [0, 0, 0, 255], opacity: 0.5, angle: 19, distance: 11, size: 14, invert: true, blend: 'multiply' },
+    colorOverlay: { enabled: true, color: [255, 0, 0, 255], opacity: 0.3, blend: 'normal' },
+    gradientOverlay: { enabled: true, from: [0, 0, 0, 255], to: [255, 255, 255, 255], opacity: 0.3, angle: 90, style: 'linear', reverse: false, scale: 100, blend: 'normal' },
+    patternOverlay: { enabled: true, pattern: 'dots', colorA: [255, 255, 255, 255], colorB: [0, 0, 0, 255], scale: 100, opacity: 0.2, blend: 'normal' },
+    stroke: { enabled: true, color: [0, 200, 0, 255], size: 4, position: 'outside', opacity: 1, blend: 'normal' },
+  };
+  await call('setEffects', shp.id, fx10, true); await wait(900);
+  ok('Los 10 efectos a la vez se dibujan (trazo verde fuera, relieve dentro)', near(await px(98, 140), [0, 200, 0, 255], 20) && JSON.stringify(await px(175, 140)) !== JSON.stringify([40, 120, 220, 255]), JSON.stringify([await px(98, 140), await px(175, 140)]));
+  await roundtrip('estilos.psd');
+  {
+    const L = (await S()).doc.layers.find((l) => l.kind === 'shape' || l.effects);
+    const fx = L?.effects ?? {};
+    ok('PSD: los 10 efectos se guardan y se vuelven a abrir', ['dropShadow', 'innerShadow', 'outerGlow', 'innerGlow', 'bevel', 'satin', 'colorOverlay', 'gradientOverlay', 'patternOverlay', 'stroke'].every((k) => fx[k]?.enabled) && fx.stroke.size === 4 && fx.bevel.style === 'inner', Object.keys(fx).join());
+  }
+  await newDoc(300, 200, 'white');
+  await call('newLayer'); await call('selectShape', { x: 50, y: 50, w: 100, h: 100 }, 'rect', 'replace', 0); await call('fill', [255, 0, 0, 255]); await call('deselect');
+  await call('setEffects', (await active()).id, { fill: 0, stroke: { enabled: true, color: [0, 0, 255, 255], size: 4, position: 'inside', opacity: 1 } }, true); await wait(700);
+  ok('Opacidad de relleno 0 %: el contenido desaparece y el trazo sigue', near(await px(100, 100), [255, 255, 255, 255]) && near(await px(52, 100), [0, 0, 255, 255]));
+  await newDoc(200, 100, 'white');
+  await call('selectShape', { x: 0, y: 0, w: 100, h: 100 }, 'rect', 'replace', 0); await call('fill', [0, 0, 0, 255]); await call('deselect');
+  await call('newLayer'); await call('selectShape', { x: 0, y: 0, w: 200, h: 100 }, 'rect', 'replace', 0); await call('fill', [255, 0, 0, 255]); await call('deselect');
+  const bifId = (await active()).id;
+  await styleDbl();
+  await page.getByRole('button', { name: 'Opciones de fusión' }).click();
+  {
+    const bar = await page.locator('.bif-bar').nth(1).boundingBox();
+    const knob = await page.getByTestId('bif-Capa subyacente-0').boundingBox();
+    await page.mouse.move(knob.x + knob.width / 2, knob.y + knob.height / 2); await page.mouse.down();
+    await page.mouse.move(bar.x + bar.width * 0.5, knob.y + knob.height / 2, { steps: 6 }); await page.mouse.up(); await wait(500);
+  }
+  ok('"Fusionar si" (capa subyacente): la capa roja no se ve sobre lo oscuro', near(await px(50, 50), [0, 0, 0, 255]) && near(await px(150, 50), [255, 0, 0, 255]), JSON.stringify([await px(50, 50), await px(150, 50)]));
+  await page.getByRole('button', { name: 'OK' }).click(); await wait(300);
+  ok('"Fusionar si" se guarda en la capa', (await layerById(bifId)).effects?.blendIf?.under[0] > 100);
+  await roundtrip('fusionar-si.psd');
+  ok('PSD: "Fusionar si" se conserva', (await S()).doc.layers.some((l) => l.effects?.blendIf?.under[0] > 100) && near(await px(50, 50), [0, 0, 0, 255]));
+
+  // --- Texto profesional
+  await newDoc(600, 400, 'white');
+  await useTool('text');
+  await drag([50, 50], [350, 200], 8);
+  await page.keyboard.type('Texto de párrafo que se ajusta solo dentro de la caja'); await key('Escape', 500);
+  {
+    const L = await active();
+    ok('Arrastrar con Texto crea texto de párrafo en caja', L.kind === 'text' && L.text.box?.w === 300 && L.text.box?.h === 150, JSON.stringify(L.text?.box));
+    const b = await call('debugLayerBounds');
+    ok('El texto de párrafo se ajusta en varias líneas dentro de la caja', !b || (b.w <= 305 && b.h > 60), JSON.stringify(b));
+  }
+  await page.getByLabel('Seguimiento (milésimas de eme)').fill('200'); await page.getByLabel('Seguimiento (milésimas de eme)').press('Enter'); await wait(300);
+  ok('Carácter: seguimiento', (await active()).text.tracking === 200);
+  await page.getByRole('button', { name: 'Todo mayúsculas' }).click(); await wait(200);
+  await page.getByRole('button', { name: 'Justificar (última línea a la izquierda)' }).click(); await wait(200);
+  ok('Mayúsculas y justificado', (await active()).text.caps === 'all' && (await active()).text.align === 'justify');
+  await menu('Texto', 'Deformar texto…');
+  await page.getByLabel('Estilo', { exact: true }).selectOption('flag'); await page.getByLabel('Curvar (valor)').fill('60'); await wait(600);
+  await page.getByRole('button', { name: 'OK' }).click();
+  await page.waitForFunction(() => { const s = window.__lienzoStore.getState(); return s.doc.layers.find((l) => l.id === s.doc.activeLayerId)?.text?.warp?.bend === 60; }, null, { timeout: 15000 }).catch(() => {});
+  ok('Texto > Deformar texto (Bandera 60 %)', (await active()).text.warp?.style === 'flag' && (await active()).text.warp?.bend === 60);
+  await roundtrip('texto.psd');
+  {
+    const T = (await S()).doc.layers.find((l) => l.kind === 'text');
+    ok('PSD: el texto vuelve editable con caja, seguimiento y deformación', !!T && !!T.text.box && T.text.tracking === 200 && T.text.warp?.style === 'flag' && T.text.caps === 'all', JSON.stringify(T?.text && { box: T.text.box, tr: T.text.tracking, w: T.text.warp, caps: T.text.caps }));
+  }
+  // Google Fonts (servidas por la prueba: el entorno no tiene internet).
+  const fontFile = readFileSync(new globalThis.URL('./fixtures/test-font.ttf', import.meta.url));
+  await ctx.route('https://fonts.googleapis.com/**', (r) => r.fulfill({ status: 200, contentType: 'text/css', headers: { 'access-control-allow-origin': '*' },
+    body: "/* latin */\n@font-face {\n  font-family: 'Lobster';\n  font-style: normal;\n  font-weight: 400;\n  src: url(https://fonts.gstatic.com/s/test/lobster.ttf) format('truetype');\n  unicode-range: U+0000-00FF;\n}\n" }));
+  await ctx.route('https://fonts.gstatic.com/**', (r) => r.fulfill({ status: 200, contentType: 'font/ttf', headers: { 'access-control-allow-origin': '*' }, body: fontFile }));
+  await newDoc(600, 200, 'white');
+  await call('createText', { text: 'iiiiiiiiii', x: 20, y: 100, size: 40, font: 'Arial', color: [0, 0, 0, 255] }); await wait(300);
+  const wArial = (await call('debugLayerBounds'))?.w ?? 0;
+  await page.getByTestId('font-picker').first().click();
+  await page.locator('.font-search input').fill('lobs');
+  await page.locator('.font-item', { hasText: 'Lobster' }).click(); await wait(1500);
+  const wG = (await call('debugLayerBounds'))?.w ?? 0;
+  ok('Google Fonts: se descarga la fuente y el texto se repinta con ella', (await active()).text.font === 'Lobster' && wG > wArial * 1.5, `${wArial} → ${wG}`);
+  await ctx.unroute('https://fonts.googleapis.com/**'); await ctx.unroute('https://fonts.gstatic.com/**');
+
+  // --- Consulta de colores (LUT)
+  await newDoc(200, 100, 'white');
+  await call('selectShape', { x: 0, y: 0, w: 200, h: 100 }, 'rect', 'replace', 0); await call('fill', [200, 120, 60, 255]); await call('deselect');
+  await menu('Capa', 'Nueva capa de ajuste', 'Consulta de colores'); await wait(300);
+  ok('Consulta de colores con un look incluido cambia el color', JSON.stringify(await px(50, 50)) !== JSON.stringify([200, 120, 60, 255]));
+  await page.getByLabel('Look').selectOption('Blanco y negro contrastado'); await wait(300);
+  { const c = await px(50, 50); ok('Look "Blanco y negro contrastado"', c[0] === c[1] && c[1] === c[2]); }
+  await page.getByLabel('Cargar archivo .cube').setInputFiles({ name: 'invertir.cube', mimeType: 'text/plain', buffer: Buffer.from('TITLE "inv"\nLUT_3D_SIZE 2\n1 1 1\n0 1 1\n1 0 1\n0 0 1\n1 1 0\n0 1 0\n1 0 0\n0 0 0\n') }); await wait(400);
+  ok('Cargar un archivo .cube', near(await px(50, 50), [55, 135, 195, 255], 2), JSON.stringify(await px(50, 50)));
+  await roundtrip('lut.psd');
+  ok('PSD: la LUT se guarda dentro del archivo', near(await px(50, 50), [55, 135, 195, 255], 2) && (await S()).doc.layers.some((l) => l.adjustment?.type === 'colorLookup'));
+
+  // --- Objetos inteligentes y filtros inteligentes
+  await newDoc(400, 300, 'white');
+  await call('newLayer'); await call('selectShape', { x: 100, y: 100, w: 100, h: 100 }, 'rect', 'replace', 0); await call('fill', [255, 0, 0, 255]); await call('deselect');
+  await menu('Capa', 'Objetos inteligentes', 'Convertir en objeto inteligente'); await wait(400);
+  ok('Convertir en objeto inteligente', (await active()).kind === 'smart' && (await active()).smart.w === 100);
+  await call('beginTransform'); await call('updateTransform', [0.1, 0, 0, 0.1, 135, 135]); await call('commitTransform'); await wait(300);
+  await call('beginTransform'); await call('updateTransform', [10, 0, 0, 10, -1350, -1350]); await call('commitTransform'); await wait(400);
+  ok('Reducir al 10 % y volver a ampliar no pierde calidad', near(await px(101, 150), [255, 0, 0, 255]) && near(await px(99, 150), [255, 255, 255, 255]));
+  await menu('Filtro', 'Desenfocar', 'Desenfoque gaussiano…');
+  await page.getByRole('button', { name: 'OK' }).click(); await wait(800);
+  ok('Un filtro sobre un objeto inteligente queda como filtro inteligente', (await active()).smart.filters.length === 1 && (await page.getByTestId('smart-filter').count()) === 1);
+  const blurred = await px(100, 150);
+  await page.getByRole('button', { name: /^Ocultar Desenfoque gaussiano/ }).click(); await wait(600);
+  ok('Ocultar el filtro inteligente recupera el original', near(await px(100, 150), [255, 0, 0, 255]) && !near(blurred, [255, 0, 0, 255], 5));
+  await key('Control+z', 600);
+  ok('Deshacer vuelve a mostrarlo', near(await px(100, 150), blurred, 3));
+  await menu('Capa', 'Objetos inteligentes', 'Editar contenido'); await wait(600);
+  ok('Editar contenido abre una pestaña .psb', (await S()).doc.smartParent && (await S()).doc.name.endsWith('.psb') && (await page.getByTestId('doc-tab').count()) === 2);
+  await call('selectShape', { x: 0, y: 0, w: 100, h: 100 }, 'rect', 'replace', 0); await call('fill', [0, 0, 255, 255]); await call('deselect');
+  await key('Control+s', 1200);
+  await page.getByTestId('doc-tab').nth(0).click(); await wait(500);
+  await call('setSmartFilter', (await active()).id, 0, { enabled: false }, true); await wait(600);
+  ok('Guardar el contenido actualiza el objeto inteligente', near(await px(150, 150), [0, 0, 255, 255]), JSON.stringify(await px(150, 150)));
+  {
+    const png = Buffer.from(await page.evaluate(async () => { const c = new OffscreenCanvas(40, 20); const g = c.getContext('2d'); g.fillStyle = '#00ff00'; g.fillRect(0, 0, 40, 20); return Array.from(new Uint8Array(await (await c.convertToBlob()).arrayBuffer())); }));
+    const [fc] = await Promise.all([page.waitForEvent('filechooser'), menu('Capa', 'Objetos inteligentes', 'Reemplazar contenido…')]);
+    await fc.setFiles({ name: 'verde.png', mimeType: 'image/png', buffer: png }); await wait(800);
+    ok('Reemplazar contenido (mockups): la nueva imagen ocupa el mismo sitio', near(await px(150, 150), [0, 255, 0, 255]) && near(await px(90, 150), [255, 255, 255, 255]) && (await active()).smart.source === 'verde.png');
+    const [fc2] = await Promise.all([page.waitForEvent('filechooser'), menu('Archivo', 'Colocar incrustado…')]);
+    await fc2.setFiles({ name: 'colocada.png', mimeType: 'image/png', buffer: png }); await wait(800);
+    ok('Colocar incrustado crea un objeto inteligente', (await active()).kind === 'smart' && (await active()).name === 'colocada');
+  }
+  await closeAllButFirst();
+
+  // --- Mesas de trabajo y exportar en varios tamaños
+  await newDoc(10, 10, 'white');
+  await menu('Archivo', 'Nuevo…'); await wait(300);
+  await page.getByLabel('Nombre').fill('redes');
+  await page.getByLabel('Mesas de trabajo').check();
+  await page.getByRole('button', { name: 'Crear', exact: true }).click(); await wait(600);
+  ok('Documento nuevo con mesa de trabajo', (await S()).doc.layers.some((l) => l.artboard) && (await S()).doc.layers.find((l) => l.kind === 'pixel')?.parent != null);
+  await menu('Capa', 'Nueva', 'Mesa de trabajo…');
+  await page.getByLabel('Medida').selectOption({ label: 'Historia / Reel / TikTok · 1080 × 1920' });
+  await page.getByRole('button', { name: 'Crear', exact: true }).click(); await wait(600);
+  {
+    const st = await S();
+    const abs = st.doc.layers.filter((l) => l.artboard);
+    ok('Nueva mesa de trabajo a la derecha (el lienzo crece)', abs.length === 2 && abs[1].artboard.w === 1080 && abs[1].artboard.h === 1920 && st.doc.height >= 1920 && abs[1].artboard.x > abs[0].artboard.x + abs[0].artboard.w);
+    ok('Fuera de las mesas el lienzo es transparente', (await px(abs[0].artboard.w + 50, 10))[3] === 0);
+  }
+  await menu('Archivo', 'Exportar', 'Exportar como…');
+  await page.getByRole('button', { name: '2x' }).click();
+  const [zip] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Exportar' }).click()]);
+  {
+    const p = await zip.path();
+    const buf = readFileSync(p);
+    const names = [...buf.toString('latin1').matchAll(/PK\x01\x02[\s\S]{42}([^\x00]*?\.png)/g)].map((m) => m[1]);
+    ok('Exportar como: cada mesa en 1x y 2x dentro de un ZIP', zip.suggestedFilename().endsWith('.zip') && buf.readUInt32LE(0) === 0x04034b50 && buf.includes(Buffer.from('Mesa de trabajo 1@2x.png')), zip.suggestedFilename() + ' ' + names.join(','));
+  }
 
   // =========================================================== RENDIMIENTO
   await newDoc(6000, 4000, 'white');

@@ -1,4 +1,4 @@
-import { TILE, type Matrix, type Rect, type ViewState } from './types';
+import { TILE, type Matrix, type Rect, type ViewState, type BlendIf } from './types';
 import { tileKey, keyTx, keyTy, type EditorDocument, type PixelLayer, type MaskChannel } from './document';
 import { RECT_VS, QUAD_VS, BLEND_FS, NORMAL_FS, ADJ_FS, VIEW_FS, CHECKER_FS, SOLID_FS, MIX_FS, MASKVIEW_FS, BLEND_INDEX } from './shaders';
 import { adjustmentUniforms } from './adjust';
@@ -13,7 +13,7 @@ interface CompTile { tex: WebGLTexture; fb: WebGLFramebuffer; mipsValid: boolean
 interface GpuTile { tex: WebGLTexture; refs: number; opaque: boolean }
 
 /** Elemento de la pila de composición (capa, estilos auxiliares o ajuste). */
-interface Item { L: PixelLayer; blend: string; opacity: number; useMask: boolean; adjust: boolean }
+interface Item { L: PixelLayer; blend: string; opacity: number; useMask: boolean; adjust: boolean; bif?: BlendIf }
 
 /** Nodo del árbol de composición. */
 type Node =
@@ -57,7 +57,7 @@ export class Renderer {
   private layerTex = new Map<number, Map<number, { data: Uint8ClampedArray; g: GpuTile }>>();
   private byData = new Map<Uint8ClampedArray, GpuTile>();
   private maskTex = new Map<number, Map<number, WebGLTexture>>();
-  private lutTex = new Map<number, { key: string; tex: WebGLTexture | null; u: ReturnType<typeof adjustmentUniforms> }>();
+  private lutTex = new Map<number, { key: string; tex: WebGLTexture | null; tex3?: WebGLTexture | null; u: ReturnType<typeof adjustmentUniforms> }>();
   private comp = new Map<number, CompTile>();
   private frames: Frame[] = [];
   private maskViewProg: Prog;
@@ -89,9 +89,9 @@ export class Renderer {
     const dbg = gl.getExtension('WEBGL_debug_renderer_info');
     this.info = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : 'WebGL2';
     this.maxTexture = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-    this.blendProg = this.program(RECT_VS, BLEND_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uBack', 'uSrc', 'uSrcOffset', 'uDocOrigin', 'uOpacity', 'uMode', 'uPremul', 'uAtop']);
+    this.blendProg = this.program(RECT_VS, BLEND_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uBack', 'uSrc', 'uSrcOffset', 'uDocOrigin', 'uOpacity', 'uMode', 'uPremul', 'uAtop', 'uBif', 'uBifSelf', 'uBifUnder']);
     this.normalProg = this.program(RECT_VS, NORMAL_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uSrc', 'uSrcOffset', 'uOpacity', 'uPremul']);
-    this.adjProg = this.program(RECT_VS, ADJ_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uBack', 'uLut', 'uKind', 'uP0', 'uP1', 'uP2', 'uSel', 'uOpacity', 'uMode', 'uAtop']);
+    this.adjProg = this.program(RECT_VS, ADJ_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uBack', 'uLut', 'uKind', 'uP0', 'uP1', 'uP2', 'uSel', 'uLut3', 'uOpacity', 'uMode', 'uAtop']);
     this.viewProg = this.program(RECT_VS, VIEW_FS, [...UNIFORMS_BASE, 'uTex', 'uUV', 'uAlpha', 'uChannel']);
     this.quadProg = this.program(QUAD_VS, VIEW_FS, ['uP', 'uTarget', 'uTex', 'uUV', 'uAlpha', 'uChannel']);
     this.maskViewProg = this.program(RECT_VS, MASKVIEW_FS, [...UNIFORMS_BASE, 'uTex', 'uUV', 'uFill', 'uHasTex']);
@@ -203,16 +203,16 @@ export class Renderer {
     const mm = this.maskTex.get(id);
     if (mm) { for (const t of mm.values()) this.gl.deleteTexture(t); this.maskTex.delete(id); }
     const l = this.lutTex.get(id);
-    if (l) { if (l.tex) this.gl.deleteTexture(l.tex); this.lutTex.delete(id); }
+    if (l) { if (l.tex) this.gl.deleteTexture(l.tex); if (l.tex3) this.gl.deleteTexture(l.tex3); this.lutTex.delete(id); }
   }
 
   /** Todas las capas que se dibujan, incluidas las auxiliares de estilos. */
   private allLayers(doc: EditorDocument): PixelLayer[] {
     const out: PixelLayer[] = [];
     for (const L of doc.layers) {
-      if (L.fxUnder) out.push(L.fxUnder);
+      out.push(...L.fxUnder);
       out.push(L);
-      if (L.fxOver) out.push(L.fxOver);
+      if (L.fxStyled) out.push(L.fxStyled);
     }
     return out;
   }
@@ -289,7 +289,21 @@ export class Renderer {
           gl.bindTexture(gl.TEXTURE_2D, tex);
           gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 1, gl.RGBA, gl.UNSIGNED_BYTE, u.lut);
         }
-        this.lutTex.set(L.id, { key, tex, u });
+        let tex3 = cur?.tex3 ?? null;
+        if (u.lut3) {
+          // Consulta de colores: tabla 3D con interpolación trilineal en la GPU.
+          if (tex3) gl.deleteTexture(tex3);
+          tex3 = gl.createTexture()!;
+          gl.bindTexture(gl.TEXTURE_3D, tex3);
+          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+          const n = u.lut3.size;
+          gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB8, n, n, n, 0, gl.RGB, gl.UNSIGNED_BYTE, u.lut3.data);
+          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+          gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          for (const w of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, w, gl.CLAMP_TO_EDGE);
+        }
+        this.lutTex.set(L.id, { key, tex, tex3, u });
       }
     }
   }
@@ -330,9 +344,10 @@ export class Renderer {
     const nodeOf = (L: PixelLayer): Node => {
       if (L.kind === 'group') return { t: 'group', L, children: build(L.id) };
       const items: Item[] = [];
-      if (L.fxUnder) items.push({ L: L.fxUnder, blend: 'normal', opacity: L.opacity, useMask: false, adjust: false });
-      items.push({ L, blend: L.blend, opacity: L.opacity, useMask: !!L.mask && L.maskEnabled, adjust: L.kind === 'adjustment' });
-      if (L.fxOver) items.push({ L: L.fxOver, blend: 'normal', opacity: L.opacity, useMask: false, adjust: false });
+      for (const f of L.fxUnder) items.push({ L: f, blend: f.blend, opacity: L.opacity, useMask: false, adjust: false });
+      // Con estilos, se dibuja el contenido ya estilizado (máscara y relleno incluidos).
+      if (L.fxStyled) items.push({ L: L.fxStyled, blend: L.blend, opacity: L.opacity, useMask: false, adjust: false, bif: L.effects?.blendIf });
+      else items.push({ L, blend: L.blend, opacity: L.opacity, useMask: !!L.mask && L.maskEnabled, adjust: L.kind === 'adjustment', bif: L.effects?.blendIf });
       return { t: 'layer', L, items };
     };
     const build = (pid: number | null): Node[] => {
@@ -374,6 +389,14 @@ export class Renderer {
     gl.uniform1i(prog.u.uHasMask, t ? 1 : 0);
     gl.uniform1f(prog.u.uMaskFill, it.L.mask!.fill / 255);
     if (t) { gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, t); }
+  }
+
+  private setBif(prog: Prog, b: BlendIf | undefined) {
+    const gl = this.gl;
+    gl.uniform1i(prog.u.uBif, b ? ({ gray: 1, red: 2, green: 3, blue: 4 } as const)[b.channel] : 0);
+    if (!b) return;
+    gl.uniform4f(prog.u.uBifSelf, b.self[0] / 255, b.self[1] / 255, b.self[2] / 255, b.self[3] / 255);
+    gl.uniform4f(prog.u.uBifUnder, b.under[0] / 255, b.under[1] / 255, b.under[2] / 255, b.under[3] / 255);
   }
 
   /** Copia F[0] en F[1], deja F[1] como destino y F[0] en la unidad 0 (fondo). */
@@ -443,7 +466,7 @@ export class Renderer {
       const G = n.L;
       const blend = ov?.blend ?? G.blend, opacity = ov?.opacity ?? G.opacity;
       const gi: Item = { L: G, blend: blend === 'pass-through' ? 'normal' : blend, opacity, useMask: !!G.mask && G.maskEnabled, adjust: false };
-      if (blend === 'pass-through' && !atop) {
+      if (blend === 'pass-through' && !atop && !G.artboard) {
         if (opacity >= 1 && !gi.useMask) return this.composeNodes(n.children, lvl, tx, ty, false, any);
         // Con opacidad o máscara: se compone sobre una copia del fondo y se mezcla con él.
         const P = this.frame(lvl), C = this.frame(lvl + 1);
@@ -471,6 +494,36 @@ export class Renderer {
       }
       const C = this.frame(lvl + 1);
       this.clearFrame(C);
+      const ab = G.artboard;
+      if (ab) {
+        // Mesa de trabajo: fondo propio y todo lo de dentro recortado a su rectángulo.
+        const x0 = Math.max(0, ab.x - tx * TILE), y0 = Math.max(0, ab.y - ty * TILE);
+        const x1 = Math.min(TILE, ab.x + ab.w - tx * TILE), y1 = Math.min(TILE, ab.y + ab.h - ty * TILE);
+        if (x1 <= x0 || y1 <= y0) return any;
+        let cany = false;
+        if (ab.bg && ab.bg[3] > 0) {
+          const a = ab.bg[3] / 255;
+          gl.enable(gl.SCISSOR_TEST);
+          gl.scissor(x0, y0, x1 - x0, y1 - y0);
+          gl.clearColor((ab.bg[0] / 255) * a, (ab.bg[1] / 255) * a, (ab.bg[2] / 255) * a, a);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.disable(gl.SCISSOR_TEST);
+          cany = true;
+        }
+        cany = this.composeNodes(n.children, lvl + 1, tx, ty, false, cany);
+        if (!cany) return any;
+        // Fuera del rectángulo, transparente (cuatro franjas).
+        gl.bindFramebuffer(gl.FRAMEBUFFER, C[0].fb);
+        gl.enable(gl.SCISSOR_TEST);
+        gl.clearColor(0, 0, 0, 0);
+        for (const [sx, sy, sw, sh] of [[0, 0, TILE, y0], [0, y1, TILE, TILE - y1], [0, y0, x0, y1 - y0], [x1, y0, TILE - x1, y1 - y0]]) {
+          if (sw <= 0 || sh <= 0) continue;
+          gl.scissor(sx, sy, sw, sh);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+        }
+        gl.disable(gl.SCISSOR_TEST);
+        return this.drawFrame(C[0].tex, gi, lvl, tx, ty, atop, any);
+      }
       const cany = this.composeNodes(n.children, lvl + 1, tx, ty, false, false);
       if (!cany) return any;
       return this.drawFrame(C[0].tex, gi, lvl, tx, ty, atop, any);
@@ -507,6 +560,7 @@ export class Renderer {
       gl.uniform2i(prog.u.uDocOrigin, tx * TILE, ty * TILE);
       gl.uniform1i(prog.u.uMode, BLEND_INDEX[it.blend] ?? 0);
       gl.uniform1i(prog.u.uAtop, atop ? 1 : 0);
+      this.setBif(prog, undefined);
     }
     gl.viewport(0, 0, TILE, TILE);
     gl.uniform1i(prog.u.uPremul, 1);
@@ -546,6 +600,8 @@ export class Renderer {
       gl.uniform4fv(J.u.uP1, lut.u.p1);
       gl.uniform4fv(J.u.uP2, lut.u.p2);
       if (lut.u.sel) gl.uniform4fv(J.u.uSel, lut.u.sel);
+      gl.uniform1i(J.u.uLut3, 4);
+      if (lut.tex3) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_3D, lut.tex3); }
       gl.uniform1f(J.u.uOpacity, it.opacity);
       gl.uniform1i(J.u.uMode, BLEND_INDEX[it.blend] ?? 0);
       gl.uniform1i(J.u.uAtop, atop ? 1 : 0);
@@ -570,7 +626,8 @@ export class Renderer {
       }
     }
     if (!hits.length) return any;
-    const normal = it.blend === 'normal';
+    // "Fusionar si" necesita leer el fondo: siempre por el programa de fusión.
+    const normal = it.blend === 'normal' && !it.bif;
     const prog = normal ? N : P;
     if (normal) {
       gl.bindFramebuffer(gl.FRAMEBUFFER, F[0].fb);
@@ -585,6 +642,7 @@ export class Renderer {
       gl.uniform2i(P.u.uDocOrigin, dx0, dy0);
       gl.uniform1i(P.u.uMode, BLEND_INDEX[it.blend] ?? 0);
       gl.uniform1i(P.u.uAtop, atop ? 1 : 0);
+      this.setBif(P, it.bif);
     }
     gl.uniform1i(prog.u.uPremul, 0);
     gl.uniform1i(prog.u.uSrc, 1);
@@ -854,7 +912,7 @@ export class Renderer {
     const saved = this.preview;
     this.preview = null; // la exportación ignora la vista previa
     this.sync(doc);
-    for (const L of layers) if (!doc.layers.includes(L)) this.syncLayer(L);
+    for (const L of layers) if (!doc.layers.includes(L)) { for (const f of L.fxLayers()) this.syncLayer(f); this.syncLayer(L); }
     const out = new Uint8ClampedArray(region.w * region.h * 4);
     const buf = new Uint8Array(TILE * TILE * 4);
     const bg: [number, number, number, number] = background

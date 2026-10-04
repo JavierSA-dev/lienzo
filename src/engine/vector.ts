@@ -1,4 +1,5 @@
 import type { Matrix, Rect, ShapeParams, TextParams } from './types';
+import { textBox, drawText } from './text';
 
 /**
  * Capas vectoriales (texto y formas): guardan sus parámetros y se rasterizan
@@ -6,10 +7,7 @@ import type { Matrix, Rect, ShapeParams, TextParams } from './types';
  * La matriz actúa en coordenadas de documento (la aplica la transformación libre).
  */
 
-export const FONTS = [
-  'Arial', 'Helvetica', 'Verdana', 'Tahoma', 'Trebuchet MS', 'Segoe UI', 'Roboto', 'Open Sans',
-  'Georgia', 'Times New Roman', 'Garamond', 'Courier New', 'Consolas', 'Impact', 'Comic Sans MS', 'system-ui',
-];
+export { SYSTEM_FONTS as FONTS } from './fonts';
 
 export interface Raster { data: Uint8ClampedArray; x: number; y: number; w: number; h: number }
 
@@ -60,31 +58,11 @@ function draw(local: Rect, m: Matrix, limit: Rect, paint: (ctx: OffscreenCanvasR
   return { data: img.data, x: box.x, y: box.y, w: box.w, h: box.h };
 }
 
-export function fontString(t: Pick<TextParams, 'italic' | 'bold' | 'size' | 'font'>) {
-  return `${t.italic ? 'italic ' : ''}${t.bold ? 'bold ' : ''}${Math.max(1, t.size)}px "${t.font}", sans-serif`;
-}
-
-/** Caja del texto en coordenadas de documento sin transformar. */
-export function textBox(t: TextParams): Rect {
-  const c = new OffscreenCanvas(1, 1).getContext('2d')!;
-  c.font = fontString(t);
-  const lines = t.text.split('\n');
-  const lh = t.size * t.lineHeight;
-  let maxW = 0;
-  for (const l of lines) maxW = Math.max(maxW, c.measureText(l || ' ').width);
-  const asc = t.size * 0.95, desc = t.size * 0.3;
-  const x0 = t.align === 'left' ? t.x : t.align === 'center' ? t.x - maxW / 2 : t.x - maxW;
-  return { x: Math.floor(x0 - 2), y: Math.floor(t.y - asc - 2), w: Math.ceil(maxW + 4), h: Math.ceil(asc + desc + lh * (lines.length - 1) + 4) };
-}
+export { fontString, textBox } from './text';
 
 export function rasterizeText(t: TextParams, limit: Rect): Raster | null {
-  return draw(textBox(t), t.matrix, limit, (ctx) => {
-    ctx.font = fontString(t);
-    ctx.fillStyle = css(t.color);
-    ctx.textAlign = t.align;
-    ctx.textBaseline = 'alphabetic';
-    t.text.split('\n').forEach((line, i) => ctx.fillText(line, t.x, t.y + i * t.size * t.lineHeight));
-  });
+  const scale = Math.sqrt(Math.abs(t.matrix[0] * t.matrix[3] - t.matrix[1] * t.matrix[2]));
+  return draw(textBox(t), t.matrix, limit, (ctx) => drawText(ctx, t, scale));
 }
 
 export function shapeBox(s: ShapeParams): Rect {

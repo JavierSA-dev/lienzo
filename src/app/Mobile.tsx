@@ -259,7 +259,14 @@ export function MobileSheets() {
     case 'tools': return <ToolsSheet />;
     case 'adjust': return <AdjustSheet />;
     case 'export': return <ExportSheet />;
-    case 'layers': return <Sheet title="Capas" tall><div className="m-panel"><LayersPanel /></div></Sheet>;
+    case 'layers': return (
+      <Sheet title="Capas" tall>
+        <div className="m-panel">
+          <div className="m-actions"><button className="chip" onClick={() => openSheet('props')} data-testid="m-props">Propiedades de la capa</button><button className="chip" onClick={() => useStore.getState().setDialog({ kind: 'layerStyle' })}>Estilo de capa</button></div>
+          <LayersPanel />
+        </div>
+      </Sheet>
+    );
     case 'props': return <Sheet title="Propiedades" tall onBack={() => openSheet('layers')}><div className="m-panel"><PropertiesPanel /></div></Sheet>;
     case 'history': return <Sheet title="Historial" tall><div className="m-panel"><HistoryPanel /></div></Sheet>;
     case 'color': return <Sheet title="Color"><div className="m-panel"><ColorPanel /></div></Sheet>;

@@ -1,6 +1,8 @@
 import { useRef, useState } from 'react';
 import { SELECTIVE_RANGES, type AdjustmentParams, type RGBA, type SelectiveRange } from '../engine/types';
 import { curveLut, PHOTO_FILTERS } from '../engine/adjust';
+import { LUT_PRESETS, presetLut, encodeLut, parseCube } from '../engine/lut';
+import { useStore as useAppStore } from './store';
 import { toHex, toRgba } from './store';
 
 type OnChange = (p: AdjustmentParams, commit: boolean) => void;
@@ -127,6 +129,28 @@ export function AdjustmentEditor({ params, onChange }: { params: AdjustmentParam
     }
     case 'selectiveColor': return <SelectiveColorEditor params={params} onChange={onChange} />;
     case 'channelMixer': return <ChannelMixerEditor params={params} onChange={onChange} />;
+    case 'colorLookup': {
+      const isPreset = LUT_PRESETS.some(([n]) => n === params.name);
+      return (
+        <>
+          <label className="adj-row"><span>Look</span>
+            <select value={isPreset ? params.name : ''} aria-label="Look" onChange={(e) => { const l = presetLut(e.target.value); if (l) onChange({ ...params, name: e.target.value, size: l.size, data: encodeLut(l) }, true); }}>
+              {!isPreset && <option value="">{params.name}</option>}
+              {LUT_PRESETS.map(([n]) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </label>
+          <label className="adj-row"><span>Archivo 3D LUT</span>
+            <input type="file" accept=".cube,.CUBE" aria-label="Cargar archivo .cube" onChange={async (e) => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              try { const l = parseCube(await f.text()); onChange({ ...params, name: f.name.replace(/\.cube$/i, ''), size: l.size, data: encodeLut(l) }, true); }
+              catch (err) { useAppStore.getState().toast(`No se pudo leer ${f.name}: ${(err as Error).message}`, 'error'); }
+            }} />
+          </label>
+          <p className="hint">Tablas .cube de DaVinci Resolve, Premiere o cualquier pack de LUT. La intensidad se regula con la opacidad de la capa.</p>
+        </>
+      );
+    }
   }
 }
 

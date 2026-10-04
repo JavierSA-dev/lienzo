@@ -49,7 +49,14 @@ export type ToolId =
   | 'text' | 'shape' | 'hand' | 'zoom'
   | 'spotHeal' | 'heal' | 'patch' | 'pen' | 'pathSelect' | 'blur' | 'sharpen' | 'smudge' | 'historyBrush' | 'rotateView' | 'redEye';
 
-export type LayerKind = 'pixel' | 'adjustment' | 'text' | 'shape' | 'group';
+export type LayerKind = 'pixel' | 'adjustment' | 'text' | 'shape' | 'group' | 'smart';
+
+export interface Artboard { x: number; y: number; w: number; h: number; bg: RGBA | null }
+
+/** Filtro inteligente: se vuelve a calcular cada vez; se puede ocultar, editar o quitar. */
+export interface SmartFilter { name: string; params: Record<string, unknown>; enabled: boolean; opacity?: number }
+/** Datos visibles de un objeto inteligente (los píxeles del contenido viven en el motor). */
+export interface SmartInfo { w: number; h: number; matrix: Matrix; filters: SmartFilter[]; source?: string; hasContents: boolean }
 
 export type AdjustmentParams =
   | { type: 'brightness'; brightness: number; contrast: number }
@@ -67,6 +74,7 @@ export type AdjustmentParams =
   | { type: 'solidColor'; color: RGBA }
   | { type: 'photoFilter'; color: RGBA; density: number; preserveLuminosity: boolean }
   | { type: 'selectiveColor'; relative: boolean; ranges: Record<SelectiveRange, [number, number, number, number]> }
+  | { type: 'colorLookup'; name: string; size: number; data: string }
   | { type: 'channelMixer'; red: [number, number, number, number]; green: [number, number, number, number]; blue: [number, number, number, number]; monochrome: boolean };
 
 /** Gamas de Corrección selectiva (cada una con cian, magenta, amarillo y negro en %). */
@@ -82,6 +90,10 @@ export type AdjustmentType = AdjustmentParams['type'];
 export type Matrix = [number, number, number, number, number, number];
 export const IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
 
+export type WarpStyle = 'none' | 'arc' | 'arcLower' | 'arcUpper' | 'arch' | 'bulge' | 'shellLower' | 'shellUpper' | 'flag' | 'wave' | 'fish' | 'rise' | 'fisheye' | 'inflate' | 'squeeze' | 'twist';
+/** Deformar texto: estilo, curvatura y distorsiones horizontal/vertical (−100..100, como Photoshop). */
+export interface TextWarp { style: WarpStyle; bend: number; hDist: number; vDist: number; vertical?: boolean }
+
 export interface TextParams {
   text: string;
   font: string;
@@ -89,11 +101,29 @@ export interface TextParams {
   color: RGBA;
   bold: boolean;
   italic: boolean;
-  align: 'left' | 'center' | 'right';
+  align: 'left' | 'center' | 'right' | 'justify';
+  /** Interlineado como múltiplo del cuerpo (1,2 = automático). */
   lineHeight: number;
+  /** Punto de origen (texto de punto: línea base) o esquina superior izquierda de la caja (texto de párrafo). */
   x: number;
   y: number;
   matrix: Matrix;
+  /** Carácter: seguimiento (milésimas de eme), escalas (%), desplazamiento de la línea base (px). */
+  tracking?: number;
+  hScale?: number;
+  vScale?: number;
+  baselineShift?: number;
+  caps?: 'none' | 'all' | 'small';
+  underline?: boolean;
+  strike?: boolean;
+  /** Texto de párrafo: caja donde se ajustan las líneas. */
+  box?: { w: number; h: number } | null;
+  /** Párrafo: sangrías y espacio después (px). */
+  indentLeft?: number;
+  indentRight?: number;
+  indentFirst?: number;
+  spaceAfter?: number;
+  warp?: TextWarp | null;
 }
 
 export type ShapeKind = 'rect' | 'ellipse' | 'line' | 'polygon' | 'path';
@@ -114,11 +144,41 @@ export interface ShapeParams {
   path?: string;
 }
 
+/** Sombra (paralela o interior): `spread` es Extensión/Estrangular en %. */
+export interface ShadowFx { enabled: boolean; color: RGBA; opacity: number; angle: number; distance: number; size: number; spread?: number; blend?: BlendMode }
+/** Resplandor (exterior o interior). */
+export interface GlowFx { enabled: boolean; color: RGBA; opacity: number; size: number; spread?: number; blend?: BlendMode; source?: 'edge' | 'center' }
+export type BevelStyle = 'inner' | 'outer' | 'emboss' | 'pillow';
+export interface BevelFx {
+  enabled: boolean; style: BevelStyle; technique?: 'smooth' | 'chisel'; depth: number; up: boolean; size: number; soften: number;
+  angle: number; altitude: number; highlight: RGBA; highlightOpacity: number; highlightBlend?: BlendMode;
+  shadow: RGBA; shadowOpacity: number; shadowBlend?: BlendMode;
+}
+export interface SatinFx { enabled: boolean; color: RGBA; opacity: number; angle: number; distance: number; size: number; invert: boolean; blend?: BlendMode }
+export interface OverlayFx { enabled: boolean; color: RGBA; opacity: number; blend?: BlendMode }
+export type GradientStyle = 'linear' | 'radial' | 'angle' | 'reflected' | 'diamond';
+export interface GradientOverlayFx { enabled: boolean; from: RGBA; to: RGBA; opacity: number; angle: number; style: GradientStyle; reverse: boolean; scale: number; blend?: BlendMode }
+export type PatternId = 'checker' | 'dots' | 'stripes' | 'grid' | 'noise' | 'canvas';
+export interface PatternOverlayFx { enabled: boolean; pattern: PatternId; colorA: RGBA; colorB: RGBA; scale: number; opacity: number; blend?: BlendMode }
+export interface StrokeFx { enabled: boolean; color: RGBA; size: number; position?: 'outside' | 'inside' | 'center'; opacity?: number; blend?: BlendMode }
+/** Fusión condicional ("Fusionar si"): [negro inicio, negro fin, blanco inicio, blanco fin] en 0..255. */
+export interface BlendIf { channel: 'gray' | 'red' | 'green' | 'blue'; self: [number, number, number, number]; under: [number, number, number, number] }
+
+/** Estilos de capa y opciones de fusión (los mismos 10 efectos de Photoshop). */
 export interface LayerEffects {
-  dropShadow?: { enabled: boolean; color: RGBA; opacity: number; angle: number; distance: number; size: number };
-  outerGlow?: { enabled: boolean; color: RGBA; opacity: number; size: number };
-  stroke?: { enabled: boolean; color: RGBA; size: number };
-  colorOverlay?: { enabled: boolean; color: RGBA; opacity: number };
+  dropShadow?: ShadowFx;
+  innerShadow?: ShadowFx;
+  outerGlow?: GlowFx;
+  innerGlow?: GlowFx;
+  bevel?: BevelFx;
+  satin?: SatinFx;
+  colorOverlay?: OverlayFx;
+  gradientOverlay?: GradientOverlayFx;
+  patternOverlay?: PatternOverlayFx;
+  stroke?: StrokeFx;
+  /** Opacidad de relleno (0..1): afecta al contenido pero no a los efectos. */
+  fill?: number;
+  blendIf?: BlendIf;
 }
 
 export interface BrushSettings {
@@ -151,6 +211,9 @@ export interface LayerInfo {
   text?: TextParams;
   shape?: ShapeParams;
   effects?: LayerEffects;
+  smart?: SmartInfo;
+  /** Mesa de trabajo (grupo especial): rectángulo y fondo (null = transparente). */
+  artboard?: Artboard;
   /** Grupo que contiene la capa (null = raíz). */
   parent: number | null;
   /** Máscara de recorte: la capa se recorta a la capa base de debajo. */
@@ -190,6 +253,8 @@ export interface DocState {
   /** Pestañas abiertas. */
   docs: { id: number; name: string; dirty: boolean }[];
   activeDocId: number;
+  /** Si el documento es el contenido de un objeto inteligente: nombre de la capa (Guardar lo actualiza). */
+  smartParent?: string | null;
 }
 
 export interface DocPathInfo { id: number; name: string; work: boolean; path: import('./path').VectorPath }

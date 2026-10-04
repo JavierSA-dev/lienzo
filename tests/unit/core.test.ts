@@ -294,3 +294,24 @@ describe('retoques (pupilas rojas y contornear)', () => {
     expect([...px.slice(0, 4)]).toEqual([224, 172, 140, 255]);
   });
 });
+
+describe('LUT .cube', () => {
+  it('lee una tabla 3D, la remuestrea y la vuelve a escribir', async () => {
+    const { parseCube, toCube, lutFrom } = await import('../../src/engine/lut');
+    const inv = 'TITLE "x"\nLUT_3D_SIZE 2\n1 1 1\n0 1 1\n1 0 1\n0 0 1\n1 1 0\n0 1 0\n1 0 0\n0 0 0\n';
+    const l = parseCube(inv);
+    expect(l.size).toBe(2);
+    expect([...l.data.slice(0, 3)]).toEqual([255, 255, 255]);
+    const again = parseCube(toCube(l));
+    expect([...again.data]).toEqual([...l.data]);
+    const id = lutFrom((r, g, b) => [r, g, b], 5);
+    expect(id.data[(((4 * 5) + 4) * 5 + 4) * 3]).toBe(255);
+    expect(() => parseCube('hola')).toThrow();
+  });
+  it('convierte una tabla 1D en 3D', async () => {
+    const { parseCube } = await import('../../src/engine/lut');
+    const l = parseCube('LUT_1D_SIZE 2\n1 1 1\n0 0 0\n');
+    expect(l.size).toBe(17);
+    expect(l.data[0]).toBe(255); // negro -> blanco
+  });
+});

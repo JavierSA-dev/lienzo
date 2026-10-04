@@ -10,6 +10,7 @@ import { penDown, pathEditDown, penMove, penUp, penFinish, penBackspace, PathOve
 import { isEmpty as isEmptyPath } from '../engine/path';
 import { Rulers, GuideLines, hitGuide, snapPoint } from './Rulers';
 import { TouchGestures } from './touch';
+import { ArtboardLabels } from './Artboards';
 
 const CURSORS: Partial<Record<ToolId, string>> = {
   move: 'move', marquee: 'crosshair', marqueeEllipse: 'crosshair', lasso: 'crosshair', polylasso: 'crosshair',
@@ -32,7 +33,8 @@ type UIDrag =
   | { kind: 'patchDrag'; start: Pt; cur: Pt }
   | { kind: 'guide'; id: number; dir: 'h' | 'v'; pos: number }
   | { kind: 'rotate'; a0: number; rot0: number }
-  | { kind: 'redEye'; start: Pt; cur: Pt };
+  | { kind: 'redEye'; start: Pt; cur: Pt }
+  | { kind: 'textBox'; start: Pt; cur: Pt };
 
 /** Parámetros de la transformación libre (en coordenadas de documento). */
 interface TParams { tx: number; ty: number; sx: number; sy: number; rot: number }
@@ -61,7 +63,10 @@ export function CanvasArea() {
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [grabbing, setGrabbing] = useState(false);
-  const [ui, setUi] = useState<UIDrag | null>(null);
+  const [ui, setUiState] = useState<UIDrag | null>(null);
+  // Espejo síncrono: un clic muy rápido suelta el botón antes de que React vuelva a pintar.
+  const uiRef = useRef<UIDrag | null>(null);
+  const setUi = (v: UIDrag | null) => { uiRef.current = v; setUiState(v); };
   const [poly, setPoly] = useState<{ pts: Pt[]; mode: CombineMode } | null>(null);
   const [tparams, setTparams] = useState<TParams>({ tx: 0, ty: 0, sx: 1, sy: 1, rot: 0 });
   const [caps, setCaps] = useState(false);
@@ -337,16 +342,8 @@ export function CanvasArea() {
         }
         case 'text': {
           if (s.textEdit) { await commitText(); return; }
-          const hit = await engine.call<number | null>('hitText', p[0], p[1]);
-          if (hit) {
-            const L = useStore.getState().doc.layers.find((l) => l.id === hit)!;
-            engine.call('selectLayer', hit);
-            useStore.setState({ textEdit: { layerId: hit, x: L.text!.x, y: L.text!.y, text: L.text!.text } });
-          } else {
-            const o = s.opts;
-            const id = await engine.call<number>('createText', { text: '', x: p[0], y: p[1], font: o.font, size: o.fontSize, bold: o.bold, italic: o.italic, align: o.align, color: toRgba(s.fg) });
-            useStore.setState({ textEdit: { layerId: id, x: p[0], y: p[1], text: '' } });
-          }
+          // Clic: editar el texto de debajo o crear texto de punto; arrastrar: caja de párrafo (se decide al soltar).
+          setUi({ kind: 'textBox', start: p, cur: p });
           return;
         }
       }
@@ -361,10 +358,11 @@ export function CanvasArea() {
     const v = useStore.getState().view;
     useStore.setState({ cursor: { x: Math.floor((s.x - v.panX) / v.zoom), y: Math.floor((s.y - v.panY) / v.zoom) } });
     const raw = toDoc(s.x, s.y);
-    const p: Pt = ui && ['marquee', 'shape', 'crop', 'pen', 'gradient'].includes(ui.kind) && !(ui.kind === 'crop' && ui.handle === 'move') ? snapPoint(raw) : raw;
+    const cu = uiRef.current;
+    const p: Pt = cu && ['marquee', 'shape', 'crop', 'pen', 'gradient'].includes(cu.kind) && !(cu.kind === 'crop' && cu.handle === 'move') ? snapPoint(raw) : raw;
     if (!ui && tool === 'move') { const hg = hitGuide(s.x, s.y); setOverGuide(hg ? hg.dir : null); }
-    if (ui) {
-      moveUi(ui, p, e);
+    if (uiRef.current) {
+      moveUi(uiRef.current, p, e);
       return;
     }
     if (!owns(e)) return;
@@ -423,7 +421,7 @@ export function CanvasArea() {
       }
       case 'transform': moveTransform(g, p, e); return;
       case 'pen': penMove(g.g, p, e, useStore.getState().view.zoom); return;
-      case 'patchDrag': case 'redEye': setUi({ ...g, cur: p }); return;
+      case 'patchDrag': case 'redEye': case 'textBox': setUi({ ...g, cur: p }); return;
       case 'guide': setUi({ ...g, pos: Math.round(g.dir === 'h' ? p[1] : p[0]) }); return;
       case 'rotate': {
         const r = rectRef.current!, sp = sample(e), a = Math.atan2(sp.y - r.height / 2, sp.x - r.width / 2);
@@ -498,7 +496,7 @@ export function CanvasArea() {
     downPointer.current = null;
     try { (e.target as Element).releasePointerCapture(e.pointerId); } catch { /* ya liberado */ }
     setGrabbing(false);
-    const g = ui;
+    const g = uiRef.current;
     if (g) {
       setUi(null);
       const s = useStore.getState();
@@ -535,6 +533,23 @@ export function CanvasArea() {
         }
         case 'pen': penUp(g.g); return;
         case 'guide': engine.call('moveGuide', g.id, g.pos); return;
+        case 'textBox': {
+          const o = s.opts, r = normRect(g.start, g.cur), z = s.view.zoom;
+          const box = r.w * z >= 10 && r.h * z >= 10 ? { w: Math.round(r.w), h: Math.round(r.h) } : null;
+          if (!box) {
+            const hit = await engine.call<number | null>('hitText', g.start[0], g.start[1]);
+            if (hit) {
+              const L = useStore.getState().doc.layers.find((l) => l.id === hit)!;
+              engine.call('selectLayer', hit);
+              useStore.setState({ textEdit: { layerId: hit, x: L.text!.x, y: L.text!.y, text: L.text!.text } });
+              return;
+            }
+          }
+          const at = box ? { x: Math.round(r.x), y: Math.round(r.y) } : { x: g.start[0], y: g.start[1] };
+          const id = await engine.call<number>('createText', { text: '', ...at, box, font: o.font, size: o.fontSize, bold: o.bold, italic: o.italic, align: o.align, color: toRgba(s.fg) });
+          useStore.setState({ textEdit: { layerId: id, x: at.x, y: at.y, text: '' } });
+          return;
+        }
         case 'redEye': {
           const o = useStore.getState().opts;
           engine.call('redEye', g.start[0], g.start[1], g.cur[0], g.cur[1], o.pupilSize, o.darkenAmount);
@@ -575,6 +590,9 @@ export function CanvasArea() {
     preview = ui.ellipse
       ? <ellipse className="ants" cx={X(rr.x + rr.w / 2)} cy={Y(rr.y + rr.h / 2)} rx={(rr.w / 2) * Z} ry={(rr.h / 2) * Z} />
       : <rect className="ants" x={X(rr.x)} y={Y(rr.y)} width={rr.w * Z} height={rr.h * Z} />;
+  } else if (ui?.kind === 'textBox') {
+    const rr = normRect(ui.start, ui.cur);
+    preview = <rect className="redeye-box" x={X(rr.x)} y={Y(rr.y)} width={rr.w * Z} height={rr.h * Z} />;
   } else if (ui?.kind === 'redEye') {
     const rr = normRect(ui.start, ui.cur);
     preview = <rect className="redeye-box" x={X(rr.x)} y={Y(rr.y)} width={rr.w * Z} height={rr.h * Z} />;
@@ -672,6 +690,7 @@ export function CanvasArea() {
             <path className="ants" d={selectionPath} vectorEffect="non-scaling-stroke" />
           </g>
         )}
+        <ArtboardLabels X={X} Y={Y} />
         <GuideLines width={area.w} height={area.h} moving={ui?.kind === 'guide' ? ui : null} />
         {preview}
         {polyPreview}
@@ -751,20 +770,29 @@ function TextEditor() {
   const t = layer?.text;
   if (!t) return null;
   const size = t.size * view.zoom;
-  const left = view.panX + te.x * view.zoom, top = view.panY + te.y * view.zoom - size * 0.95;
   const lines = te.text.split('\n');
   const longest = Math.max(4, ...lines.map((l) => l.length));
+  const box = t.box;
+  const left = view.panX + te.x * view.zoom, top = box ? view.panY + t.y * view.zoom : view.panY + te.y * view.zoom - size * 0.95;
+  const common: React.CSSProperties = {
+    fontSize: size, lineHeight: `${size * t.lineHeight}px`, fontFamily: `"${t.font}", sans-serif`, fontWeight: t.bold ? 700 : 400,
+    fontStyle: t.italic ? 'italic' : 'normal', textAlign: t.align === 'justify' ? 'justify' : t.align,
+    letterSpacing: `${((t.tracking ?? 0) / 1000) * size}px`, textTransform: t.caps === 'all' ? 'uppercase' : 'none', fontVariantCaps: t.caps === 'small' ? 'small-caps' : 'normal',
+    textDecoration: [t.underline ? 'underline' : '', t.strike ? 'line-through' : ''].filter(Boolean).join(' ') || 'none',
+  };
   return (
     <textarea
       ref={ref}
-      className="text-edit"
+      className={`text-edit ${box ? 'box' : ''}`}
       value={te.text}
       spellCheck={false}
-      style={{
-        left: t.align === 'left' ? left : t.align === 'center' ? left - (longest * size * 0.3) : left - longest * size * 0.6,
-        top, fontSize: size, lineHeight: `${size * t.lineHeight}px`, fontFamily: t.font, fontWeight: t.bold ? 700 : 400,
-        fontStyle: t.italic ? 'italic' : 'normal', textAlign: t.align, width: `${longest * 0.62 + 1}em`, height: `${lines.length * t.lineHeight + 0.3}em`,
-      }}
+      style={box
+        ? { ...common, left, top, width: box.w * view.zoom, height: box.h * view.zoom, whiteSpace: 'pre-wrap' }
+        : {
+          ...common,
+          left: t.align === 'left' || t.align === 'justify' ? left : t.align === 'center' ? left - (longest * size * 0.3) : left - longest * size * 0.6,
+          top, width: `${longest * 0.62 + 1}em`, height: `${lines.length * t.lineHeight + 0.3}em`,
+        }}
       onPointerDown={(e) => e.stopPropagation()}
       onChange={(e) => {
         useStore.setState({ textEdit: { ...te, text: e.target.value } });
