@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  Move, SquareDashed, Grid2x2Check, Circle, Lasso, Spline, WandSparkles, Crop, Pipette, Bandage, Brush, Pencil, Stamp, History, Eraser, Blend,
+  Move, SquareDashed, BrushCleaning, Grid2x2Check, Circle, Lasso, Spline, WandSparkles, Crop, Pipette, Bandage, Brush, Pencil, Stamp, History, Eraser, Blend,
   PaintBucket, Droplet, Sun, Moon, PenTool, Type, MousePointer2, Shapes, Hand, ZoomIn, ArrowLeftRight, Triangle, Pointer, Puzzle, RotateCw, Eye, SquareDashedMousePointer, Paintbrush2, type LucideIcon,
 } from 'lucide-react';
 import { useStore } from './store';
@@ -12,7 +12,7 @@ export const ICONS: Record<ToolId, LucideIcon> = {
   move: Move, marquee: SquareDashed, marqueeEllipse: Circle, lasso: Lasso, polylasso: Spline, wand: WandSparkles,
   crop: Crop, perspectiveCrop: Grid2x2Check, eyedropper: Pipette, brush: Brush, pencil: Pencil, clone: Stamp, eraser: Eraser, gradient: Blend,
   bucket: PaintBucket, dodge: Sun, burn: Moon, text: Type, shape: Shapes, hand: Hand, zoom: ZoomIn,
-  spotHeal: Bandage, heal: Bandage, patch: Puzzle, pen: PenTool, pathSelect: MousePointer2, blur: Droplet, sharpen: Triangle, smudge: Pointer, historyBrush: History, rotateView: RotateCw, redEye: Eye, objectSelect: SquareDashedMousePointer, quickSelect: Paintbrush2,
+  spotHeal: Bandage, remove: BrushCleaning, heal: Bandage, patch: Puzzle, pen: PenTool, pathSelect: MousePointer2, blur: Droplet, sharpen: Triangle, smudge: Pointer, historyBrush: History, rotateView: RotateCw, redEye: Eye, objectSelect: SquareDashedMousePointer, quickSelect: Paintbrush2,
 };
 
 /** Orden de la barra de Photoshop; los grupos sin herramienta aún se ven atenuados. */

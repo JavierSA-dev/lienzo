@@ -3,14 +3,14 @@ import { PixelLayer, tileKey, isTileEmpty } from './document';
 import type { Selection } from './selection';
 import type { TilePatch } from './history';
 import type { Rect as R2 } from './types';
-import { sourceRows } from './resample';
+import { sourceRows, type ResampleMethod } from './resample';
 import type { Pool } from './pool';
 
 /**
  * Redimensiona una capa escalando también su posición. El trabajo se divide en
  * bandas de filas que se calculan en paralelo en el pool de workers.
  */
-export async function resampleLayer(L: PixelLayer, sx: number, sy: number, pool: Pool): Promise<PixelLayer> {
+export async function resampleLayer(L: PixelLayer, sx: number, sy: number, pool: Pool, method: ResampleMethod = 'bilinear'): Promise<PixelLayer> {
   const out = new PixelLayer(L.name);
   out.visible = L.visible; out.opacity = L.opacity; out.blend = L.blend;
   const b = L.bounds();
@@ -23,9 +23,9 @@ export async function resampleLayer(L: PixelLayer, sx: number, sy: number, pool:
   const jobs: Promise<void>[] = [];
   for (let d0 = 0; d0 < nh; d0 += bandRows) {
     const d1 = Math.min(nh, d0 + bandRows);
-    const [y0, y1] = sourceRows(b.h, nh, d0, d1);
+    const [y0, y1] = sourceRows(b.h, nh, d0, d1, method);
     const slice = px.slice(y0 * b.w * 4, y1 * b.w * 4);
-    jobs.push(pool.resample({ slice, sw: b.w, sh: b.h, y0, rows: y1 - y0, dw: nw, dh: nh, d0, d1 })
+    jobs.push(pool.resample({ slice, sw: b.w, sh: b.h, y0, rows: y1 - y0, dw: nw, dh: nh, d0, d1, method })
       .then((band) => out.writeRegion(band, nw, d1 - d0, nx0, ny0 + d0)));
   }
   await Promise.all(jobs);

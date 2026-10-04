@@ -25,7 +25,7 @@ export interface StrokeOptions {
   aliased?: boolean;
   label?: string;
   /** Pinceles correctores: sólo cambia el nombre del paso del historial. */
-  healTool?: 'spotHeal' | 'heal';
+  healTool?: 'spotHeal' | 'heal' | 'remove';
 }
 
 /**
@@ -50,7 +50,7 @@ export class BrushStroke {
   constructor(o: StrokeOptions) {
     this.o = o;
     const names: Record<BrushMode, string> = { paint: 'Pincel', erase: 'Borrador', clone: 'Tampón de clonar', dodge: 'Sobreexponer', burn: 'Subexponer', blur: 'Desenfocar', sharpen: 'Enfocar', smudge: 'Dedo' };
-    if (!o.label && o.healTool) o.label = o.healTool === 'spotHeal' ? 'Pincel corrector puntual' : 'Pincel corrector';
+    if (!o.label && o.healTool) o.label = o.healTool === 'spotHeal' ? 'Pincel corrector puntual' : o.healTool === 'remove' ? 'Quitar' : 'Pincel corrector';
     this.patch = new TilePatch(o.label ?? (o.target === 'mask' ? `${names[o.mode]} (máscara)` : names[o.mode]), o.layer, o.target);
   }
 

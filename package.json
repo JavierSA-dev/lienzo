@@ -7,7 +7,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "e2e": "node tests/e2e.mjs && node tests/e2e-full.mjs && node tests/e2e-select.mjs && node tests/e2e-mobile.mjs",
+    "e2e": "node tests/e2e.mjs && node tests/e2e-full.mjs && node tests/e2e-select.mjs && node tests/e2e-photo.mjs && node tests/e2e-mobile.mjs",
     "e2e:mobile": "node tests/e2e-mobile.mjs",
     "bench": "node bench/bench.mjs"
   },
@@ -16,6 +16,7 @@
   "license": "ISC",
   "dependencies": {
     "ag-psd": "^31.0.2",
+    "libraw-wasm": "^1.6.0",
     "lucide-react": "^1.48.0",
     "onnxruntime-web": "^1.30.0",
     "react": "^19.3.0",

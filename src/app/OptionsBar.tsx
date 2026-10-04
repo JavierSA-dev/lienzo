@@ -140,11 +140,13 @@ export function OptionsBar() {
           {doc.editMask && <span className="hint mask-hint">Pintando en la máscara: negro oculta, blanco muestra</span>}
         </>
       )}
-      {(tool === 'spotHeal' || tool === 'heal') && (
+      {(tool === 'spotHeal' || tool === 'heal' || tool === 'remove') && (
         <>
           <Slider label="Tamaño" value={brush.size} min={1} max={1000} unit="px" onChange={(v) => setBrush({ size: v })} />
           <Slider label="Dureza" value={brush.hardness * 100} min={0} max={100} unit="%" onChange={(v) => setBrush({ hardness: v / 100 })} />
-          <span className="hint">{tool === 'spotHeal'
+          <span className="hint">{tool === 'remove'
+            ? 'Pinta sobre lo que quieras quitar (o rodéalo con un trazo) y suelta: se rellena según el contenido'
+            : tool === 'spotHeal'
             ? 'Tipo: según el contenido · pinta sobre la imperfección y suelta'
             : 'Alt+clic define el origen · la textura se adapta al color y la luz del destino'}</span>
         </>

@@ -491,7 +491,9 @@ try {
   await call('selectShape', { x: 0, y: 0, w: 100, h: 200 }, 'rect', 'replace', 0); await call('fill', [60, 60, 60, 255]);
   await call('selectShape', { x: 100, y: 0, w: 200, h: 200 }, 'rect', 'replace', 0); await call('fill', [200, 150, 100, 255]); await call('deselect');
   await key('Shift+j');
-  ok('Mayús+J → Pincel corrector', (await S()).tool === 'heal');
+  ok('Mayús+J → Quitar (orden de Photoshop)', (await S()).tool === 'remove');
+  await key('Shift+j');
+  ok('Mayús+J otra vez → Pincel corrector', (await S()).tool === 'heal');
   await click([50, 100], ['Alt']);
   await drag([200, 100], [202, 100], 2);
   await page.waitForFunction(() => !window.__lienzoStore.getState().busy, null, { timeout: 15000 }).catch(() => {});
@@ -928,7 +930,10 @@ try {
   await page.getByRole('button', { name: 'Justificar (última línea a la izquierda)' }).click(); await wait(200);
   ok('Mayúsculas y justificado', (await active()).text.caps === 'all' && (await active()).text.align === 'justify');
   await menu('Texto', 'Deformar texto…');
-  await page.getByLabel('Estilo', { exact: true }).selectOption('flag'); await page.getByLabel('Curvar (valor)').fill('60'); await wait(600);
+  await page.getByLabel('Estilo', { exact: true }).selectOption('flag'); await wait(300);
+  await page.getByLabel('Curvar (valor)').fill('60'); await wait(600);
+  // El diálogo aplica en vivo: se espera a que el motor tenga la deformación antes de aceptar.
+  await page.waitForFunction(() => { const s = window.__lienzoStore.getState(); const t = s.doc.layers.find((l) => l.id === s.doc.activeLayerId)?.text; return t?.warp?.style === 'flag' && t.warp.bend === 60; }, null, { timeout: 10000 }).catch(() => {});
   await page.getByRole('button', { name: 'OK' }).click();
   await page.waitForFunction(() => { const s = window.__lienzoStore.getState(); return s.doc.layers.find((l) => l.id === s.doc.activeLayerId)?.text?.warp?.bend === 60; }, null, { timeout: 15000 }).catch(() => {});
   ok('Texto > Deformar texto (Bandera 60 %)', (await active()).text.warp?.style === 'flag' && (await active()).text.warp?.bend === 60);

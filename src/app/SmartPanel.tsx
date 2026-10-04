@@ -6,6 +6,8 @@ import { replaceSmartFile } from './commands';
 import { FILTER_FIELDS } from './Dialogs';
 import type { LayerInfo } from '../engine/types';
 import type { FilterName } from '../engine/filters';
+import type { CameraRaw } from '../engine/camraw';
+import { useStore } from './store';
 
 export function SmartProperties({ L }: { L: LayerInfo }) {
   const sm = L.smart!;
@@ -39,6 +41,7 @@ export function SmartProperties({ L }: { L: LayerInfo }) {
               </div>
               {open === i && (
                 <div className="sf-body">
+                  {f.name === 'cameraRaw' && <button className="chip" onClick={() => useStore.getState().setDialog({ kind: 'develop', edit: { layerId: L.id, index: i, cr: f.params.cr as CameraRaw } })}>Editar revelado…</button>}
                   {def?.fields.map(([key, label, min, max, dflt, step]) => {
                     const v = Number(f.params[key] ?? dflt);
                     return (

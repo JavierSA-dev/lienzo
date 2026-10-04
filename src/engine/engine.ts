@@ -23,6 +23,13 @@ import { downscale, quickRegion, upscaleMask, snapEdges, component, colorRange, 
 import { fontReady, loadGoogleFont } from './fonts';
 import { resetTextCache } from './text';
 import { newVectorMask, nextRev, rasterVectorMask, combineMasks, type VectorMask } from './vmask';
+import { cameraRawBand, cameraRawApron, CAMERA_RAW_DEFAULTS, localRadius, type CameraRaw } from './camraw';
+import type { ResampleMethod } from './resample';
+import { blurGalleryBand, type BlurGallery } from './blurgal';
+import { grayDown, detect, match, ransac, scaleH, mulH, mtbAlign, exposureFusion, type Pt as Pt2 } from './stitch';
+import { blurF } from './camraw';
+import { resample } from './resample';
+import { applyH as applyHm, invertH } from './meshwarp';
 import { specToMesh, specBounds, specMinScale, backMap, specForward, homography as homographyOf, toPts as toQuad, type WarpSpec } from './meshwarp';
 
 /** Clave de caché de los estilos: contenido, máscara, posición y parámetros. */
@@ -62,11 +69,11 @@ const union = (a: Rect | null, b: Rect | null): Rect | null => {
 };
 const lumOf = (c: RGBA) => Math.round(c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114);
 
-const TOOL_LABEL = { spotHeal: 'Pincel corrector puntual', heal: 'Pincel corrector' };
+const TOOL_LABEL = { spotHeal: 'Pincel corrector puntual', heal: 'Pincel corrector', remove: 'Quitar' };
 
 const BRUSH_TOOLS: Partial<Record<ToolId, BrushMode>> = {
   brush: 'paint', pencil: 'paint', eraser: 'erase', clone: 'clone', dodge: 'dodge', burn: 'burn',
-  spotHeal: 'paint', heal: 'clone', blur: 'blur', sharpen: 'sharpen', smudge: 'smudge', historyBrush: 'paint',
+  spotHeal: 'paint', remove: 'paint', heal: 'clone', blur: 'blur', sharpen: 'sharpen', smudge: 'smudge', historyBrush: 'paint',
 };
 
 /** Una pestaña: su documento con su historial, vista y estado propio. */
@@ -501,6 +508,289 @@ export class Engine {
     } finally {
       this.post({ type: 'busy', label: null });
     }
+  }
+
+  // ================================================================ fotografía: Photomerge, HDR, alinear y fusionar
+
+  /** Decodifica un archivo y lo devuelve acoplado (RGBA). */
+  private async decodeFlat(f: { name: string; buffer: ArrayBuffer; mime: string }): Promise<{ name: string; px: Uint8ClampedArray; w: number; h: number }> {
+    const isPsd = /\.(psd|psb)$/i.test(f.name) || f.mime === 'image/vnd.adobe.photoshop';
+    const res = isPsd ? (await import('./psd')).importPsd(f.name, f.buffer) : await importRaster(f.name, f.buffer, f.mime);
+    const D = res.doc, rect = { x: 0, y: 0, w: D.width, h: D.height };
+    const one = D.layers.length === 1 && D.layers[0].kind === 'pixel' && !D.layers[0].x && !D.layers[0].y;
+    const px = one ? D.layers[0].readRegion(0, 0, D.width, D.height) : this.r.flatten(D, D.layers, rect);
+    return { name: f.name.replace(/\.[^.]+$/, ''), px, w: D.width, h: D.height };
+  }
+
+  /** Homografías de cada imagen a la de referencia (la mejor conectada); null si alguna no encaja. */
+  private registerImages(imgs: { px: Uint8ClampedArray; w: number; h: number }[]): { H: (number[] | null)[]; ref: number } {
+    const n = imgs.length;
+    const feats = imgs.map((im) => { const g = grayDown(im.px, im.w, im.h, 1000); return { f: detect(g.g, g.w, g.h, 1000), s: g.s }; });
+    const edges: { i: number; j: number; H: number[]; inl: number }[] = [];
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+      const m = match(feats[i].f, feats[j].f);
+      const r = ransac(m, 2.5);
+      if (!r || r.inliers < 12) continue;
+      const Hij = scaleH(r.H, feats[i].s, feats[j].s);
+      edges.push({ i, j, H: Hij, inl: r.inliers });
+    }
+    const score = new Array(n).fill(0);
+    for (const e of edges) { score[e.i] += e.inl; score[e.j] += e.inl; }
+    const ref = score.indexOf(Math.max(...score));
+    const H: (number[] | null)[] = new Array(n).fill(null);
+    H[ref] = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    // Árbol de máxima confianza desde la referencia (Prim por número de parejas buenas).
+    const done = new Set([ref]);
+    while (done.size < n) {
+      let best: { from: number; to: number; Hm: number[]; inl: number } | null = null;
+      for (const e of edges) {
+        const a = done.has(e.i), b = done.has(e.j);
+        if (a === b) continue;
+        if (best && e.inl <= best.inl) continue;
+        // H_to→ref = H_from→ref · H_to→from
+        best = a ? { from: e.i, to: e.j, Hm: invertH(e.H), inl: e.inl } : { from: e.j, to: e.i, Hm: e.H, inl: e.inl };
+      }
+      if (!best) break;
+      H[best.to] = mulH(H[best.from]!, best.Hm);
+      done.add(best.to);
+    }
+    return { H, ref };
+  }
+
+  /** Archivo > Automatizar > Panorámica: une fotos en una panorámica (capas con máscaras, como Photoshop). */
+  async photomerge(files: { name: string; buffer: ArrayBuffer; mime: string }[], blend = true, vignetteFix = true) {
+    if (files.length < 2) { this.toast('Elige al menos dos fotos.', 'warn'); return null; }
+    this.post({ type: 'busy', label: 'Panorámica: leyendo…' });
+    const t0 = performance.now();
+    try {
+      const imgs: { name: string; px: Uint8ClampedArray; w: number; h: number }[] = [];
+      for (const f of files) imgs.push(await this.decodeFlat(f));
+      this.post({ type: 'busy', label: 'Panorámica: buscando coincidencias…' });
+      const { H, ref } = this.registerImages(imgs);
+      const ok = imgs.map((_, i) => i).filter((i) => H[i]);
+      if (ok.length < 2) { this.toast('No se encontraron zonas comunes entre las fotos (deben solaparse un 20-30 %).', 'warn'); return null; }
+      const lost = imgs.length - ok.length;
+      // Lienzo: unión de las fotos transformadas.
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const i of ok) for (const [x, y] of [[0, 0], [imgs[i].w, 0], [imgs[i].w, imgs[i].h], [0, imgs[i].h]]) {
+        const [u, v] = applyHm(H[i]!, x, y); x0 = Math.min(x0, u); y0 = Math.min(y0, v); x1 = Math.max(x1, u); y1 = Math.max(y1, v);
+      }
+      const W = Math.min(30000, Math.ceil(x1 - x0)), Hh = Math.min(30000, Math.ceil(y1 - y0));
+      const T = [1, 0, -Math.floor(x0), 0, 1, -Math.floor(y0), 0, 0, 1];
+      const doc = new EditorDocument('Panorámica.psd', W, Hh);
+      const prev = this.doc;
+      this.setDoc(doc, 'Panorámica');
+      const order = [ref, ...ok.filter((i) => i !== ref)];
+      const layers: PixelLayer[] = [];
+      const placed = new Uint8Array(W * Hh); // cobertura acumulada (para compensar la exposición)
+      const acc = new Float32Array(W * Hh);   // luminancia acumulada
+      this.post({ type: 'busy', label: 'Panorámica: fundiendo…' });
+      for (const i of order) {
+        const L = new PixelLayer(imgs[i].name || `Foto ${i + 1}`);
+        const Hi = mulH(T, H[i]!);
+        await this.warpPixels(imgs[i].px, { x: 0, y: 0, w: imgs[i].w, h: imgs[i].h }, { kind: 'proj', h: Hi, dst: { x: 0, y: 0, w: W, h: Hh } }, L);
+        // Compensación de exposición con lo ya colocado.
+        const px = L.readRegion(0, 0, W, Hh);
+        if (layers.length && vignetteFix) {
+          let sa = 0, sb = 0;
+          for (let k = 0; k < W * Hh; k += 7) if (placed[k] && px[k * 4 + 3] > 250) { sa += acc[k]; sb += px[k * 4] * 0.299 + px[k * 4 + 1] * 0.587 + px[k * 4 + 2] * 0.114; }
+          const gain = sb > 0 ? Math.max(0.7, Math.min(1.4, sa / sb)) : 1;
+          if (Math.abs(gain - 1) > 0.01) {
+            for (let k = 0; k < px.length; k += 4) { px[k] = Math.min(255, px[k] * gain); px[k + 1] = Math.min(255, px[k + 1] * gain); px[k + 2] = Math.min(255, px[k + 2] * gain); }
+            L.clearTiles(); L.writeRegion(px, W, Hh, 0, 0);
+          }
+        }
+        for (let k = 0; k < W * Hh; k++) if (px[k * 4 + 3] > 250 && !placed[k]) { placed[k] = 1; acc[k] = px[k * 4] * 0.299 + px[k * 4 + 1] * 0.587 + px[k * 4 + 2] * 0.114; }
+        pruneEmpty(L);
+        layers.push(L);
+      }
+      // La primera abajo; el resto encima, con máscaras de costura.
+      doc.layers = layers;
+      doc.activeLayerId = layers[layers.length - 1].id;
+      if (blend) this.seamMasks(layers, order.map((i) => mulH(T, H[i]!)), order.map((i) => imgs[i]), W, Hh);
+      void prev;
+      // Instantánea inicial con el resultado (origen del pincel de historia).
+      doc.snapshots = []; this.takeSnapshot(doc, 'Panorámica'); doc.historySource = doc.snapshots[0].id;
+      this.invalidate(null);
+      this.pushState(true);
+      this.fit(true);
+      this.post({ type: 'perf', label: 'Panorámica', ms: performance.now() - t0 });
+      if (lost) this.toast(`${lost} foto(s) no encajaban con las demás y se han dejado fuera.`, 'warn');
+      return { w: W, h: Hh, layers: layers.length };
+    } finally {
+      this.post({ type: 'busy', label: null });
+    }
+  }
+
+  /**
+   * Máscaras de costura: cada píxel es de la foto en la que queda más lejos de su borde (el centro
+   * de la foto se ve mejor); las máscaras se suavizan para que la transición no se note.
+   */
+  private seamMasks(layers: PixelLayer[], Hs: number[][], imgs: { w: number; h: number }[], W: number, Hh: number) {
+    const n = layers.length, inv = Hs.map((h) => invertH(h));
+    const best = new Int16Array(W * Hh).fill(-1);
+    const bestW = new Float32Array(W * Hh);
+    // Capa más baja que cubre cada píxel: donde una capa es la única, su máscara queda llena.
+    const lowest = new Int16Array(W * Hh).fill(-1);
+    for (let k = 0; k < n; k++) {
+      const im = imgs[k], hi = inv[k];
+      for (let y = 0; y < Hh; y++) for (let x = 0; x < W; x++) {
+        const [u, v] = applyHm(hi, x + 0.5, y + 0.5);
+        if (u < 0 || v < 0 || u > im.w || v > im.h) continue;
+        if (lowest[y * W + x] < 0) lowest[y * W + x] = k;
+        const wgt = Math.min(u, im.w - u) / im.w * (Math.min(v, im.h - v) / im.h);
+        const i = y * W + x;
+        if (wgt > bestW[i]) { bestW[i] = wgt; best[i] = k; }
+      }
+    }
+    const r = Math.max(6, Math.round(Math.min(W, Hh) * 0.012));
+    for (let k = 1; k < n; k++) {
+      const m = new Float32Array(W * Hh);
+      for (let i = 0; i < m.length; i++) m[i] = best[i] === k ? 1 : 0;
+      const f = blurF(m, W, Hh, r);
+      const mask = new MaskChannel(0);
+      forTiles({ x: 0, y: 0, w: W, h: Hh }, (tx, ty, xa, ya, xb, yb) => {
+        let any = false;
+        const t = new Uint8Array(TILE * TILE);
+        for (let y = ya; y < yb; y++) for (let x = xa; x < xb; x++) {
+          const i = (ty * TILE + y) * W + tx * TILE + x;
+          const v = lowest[i] === k ? 255 : Math.round(f[i] * 255);
+          if (v) { t[y * TILE + x] = v; any = true; }
+        }
+        if (any) mask.setTile(tileKey(tx, ty), t);
+      });
+      layers[k].mask = mask; layers[k].maskEnabled = true;
+    }
+  }
+
+  /** Archivo > Automatizar > Combinar para HDR: alinea las exposiciones y las funde (Mertens). */
+  async mergeHdr(files: { name: string; buffer: ArrayBuffer; mime: string }[], align = true, strength = 1) {
+    if (files.length < 2) { this.toast('Elige al menos dos exposiciones.', 'warn'); return null; }
+    this.post({ type: 'busy', label: 'HDR: leyendo…' });
+    const t0 = performance.now();
+    try {
+      const imgs: { name: string; px: Uint8ClampedArray; w: number; h: number }[] = [];
+      for (const f of files) imgs.push(await this.decodeFlat(f));
+      const w = imgs[0].w, h = imgs[0].h;
+      const same = imgs.map((im) => (im.w === w && im.h === h ? im.px : resample(im.px, im.w, im.h, w, h)));
+      // Alineación por traslación respecto a la exposición media.
+      const mid = Math.floor(imgs.length / 2);
+      let shifts: Pt2[] = same.map(() => [0, 0]);
+      if (align) {
+        this.post({ type: 'busy', label: 'HDR: alineando…' });
+        const gs = same.map((px) => grayDown(px, w, h, 1600));
+        shifts = gs.map((g, k) => { if (k === mid) return [0, 0]; const [dx, dy] = mtbAlign(gs[mid].g, g.g, g.w, g.h); return [Math.round(dx / g.s), Math.round(dy / g.s)]; });
+      }
+      this.post({ type: 'busy', label: 'HDR: fundiendo exposiciones…' });
+      const out = exposureFusion(same, w, h, shifts, strength);
+      const L = layerFromPixels('Fondo', out, w, h);
+      const doc = new EditorDocument('HDR.psd', w, h);
+      doc.layers = [L]; doc.activeLayerId = L.id;
+      this.setDoc(doc, 'Combinar para HDR');
+      this.post({ type: 'perf', label: 'Combinar para HDR', ms: performance.now() - t0 });
+      return { w, h, shifts };
+    } finally {
+      this.post({ type: 'busy', label: null });
+    }
+  }
+
+  /** Edición > Alinear capas automáticamente (las seleccionadas; la de abajo es la referencia). */
+  async autoAlignLayers() {
+    const d = this.doc;
+    if (!d) return;
+    let set = this.topSelected().filter((l) => l.kind === 'pixel' || l.kind === 'smart');
+    if (set.length < 2) set = d.layers.filter((l) => (l.kind === 'pixel' || l.kind === 'smart') && l.visible);
+    if (set.length < 2) { this.toast('Selecciona al menos dos capas con fotos.', 'warn'); return; }
+    set.sort((a, b) => d.indexOf(a.id) - d.indexOf(b.id));
+    this.post({ type: 'busy', label: 'Alineando capas…' });
+    try {
+      const rect = this.docRect();
+      const imgs = set.map((L) => ({ px: L.readRegion(-L.x, -L.y, d.width, d.height), w: d.width, h: d.height }));
+      // La referencia es la de abajo: se calculan las demás contra ella (o encadenadas).
+      const { H } = this.registerImages(imgs);
+      const H0 = H[0];
+      if (!H0) { this.toast('No se encontraron coincidencias entre las capas.', 'warn'); return; }
+      const toRef = invertH(H0);
+      const entries: HistoryEntry[] = [];
+      let moved = 0;
+      for (let k = 1; k < set.length; k++) {
+        if (!H[k]) continue;
+        const h = mulH(toRef, H[k]!);
+        const e = await this.warpOne(set[k], { kind: 'proj', h, dst: rect }, 'Alinear capas automáticamente');
+        if (e) { entries.push(e); moved++; }
+      }
+      if (entries.length) this.commit(new GroupEntry('Alinear capas automáticamente', entries));
+      this.invalidate(null);
+      if (moved < set.length - 1) this.toast(`${set.length - 1 - moved} capa(s) no se pudieron alinear.`, 'warn');
+    } finally {
+      this.post({ type: 'busy', label: null });
+    }
+  }
+
+  /** Edición > Fusionar capas automáticamente: panorámica (costuras) o apilar (enfoque por píxel). */
+  autoBlendLayers(mode: 'panorama' | 'stack' = 'panorama') {
+    const d = this.doc;
+    if (!d) return;
+    let set = this.topSelected().filter((l) => l.kind === 'pixel' || l.kind === 'smart');
+    if (set.length < 2) set = d.layers.filter((l) => (l.kind === 'pixel' || l.kind === 'smart') && l.visible);
+    if (set.length < 2) { this.toast('Selecciona al menos dos capas.', 'warn'); return; }
+    set.sort((a, b) => d.indexOf(a.id) - d.indexOf(b.id));
+    const W = d.width, Hh = d.height, n = set.length;
+    const px = set.map((L) => L.readRegion(-L.x, -L.y, W, Hh));
+    const best = new Int16Array(W * Hh).fill(-1), bestW = new Float32Array(W * Hh);
+    for (let k = 0; k < n; k++) {
+      let wmap: Float32Array;
+      if (mode === 'stack') {
+        // Nitidez local: energía del laplaciano, suavizada.
+        const g = new Float32Array(W * Hh);
+        for (let i = 0; i < g.length; i++) g[i] = (px[k][i * 4] + px[k][i * 4 + 1] + px[k][i * 4 + 2]) / 765;
+        const lap = new Float32Array(W * Hh);
+        for (let y = 1; y < Hh - 1; y++) for (let x = 1; x < W - 1; x++) { const i = y * W + x; const v = 4 * g[i] - g[i - 1] - g[i + 1] - g[i - W] - g[i + W]; lap[i] = v * v; }
+        wmap = blurF(lap, W, Hh, Math.max(2, Math.min(W, Hh) * 0.004));
+      } else {
+        // Distancia al borde del contenido de la capa (las zonas centrales ganan).
+        wmap = new Float32Array(W * Hh);
+        const a = new Float32Array(W * Hh);
+        for (let i = 0; i < a.length; i++) a[i] = px[k][i * 4 + 3] > 250 ? 1 : 0;
+        const bl = blurF(a, W, Hh, Math.max(8, Math.min(W, Hh) * 0.05));
+        for (let i = 0; i < a.length; i++) wmap[i] = a[i] ? bl[i] + 1e-3 : 0;
+      }
+      for (let i = 0; i < W * Hh; i++) if (px[k][i * 4 + 3] > 250 && wmap[i] > bestW[i]) { bestW[i] = wmap[i]; best[i] = k; }
+    }
+    const lowest = new Int16Array(W * Hh).fill(-1);
+    for (let k = n - 1; k >= 0; k--) for (let i = 0; i < W * Hh; i++) if (px[k][i * 4 + 3] > 250) lowest[i] = k;
+    const before = set.map((L) => ({ L, mask: L.mask, en: L.maskEnabled }));
+    const r = mode === 'stack' ? 3 : Math.max(6, Math.round(Math.min(W, Hh) * 0.012));
+    for (let k = 1; k < n; k++) {
+      const m = new Float32Array(W * Hh);
+      for (let i = 0; i < m.length; i++) m[i] = best[i] === k ? 1 : 0;
+      const f = blurF(m, W, Hh, r);
+      const L = set[k], mask = new MaskChannel(0);
+      forTiles({ x: -L.x, y: -L.y, w: W, h: Hh }, (tx, ty, xa, ya, xb, yb) => {
+        const t = new Uint8Array(TILE * TILE);
+        let any = false;
+        for (let y = ya; y < yb; y++) for (let x = xa; x < xb; x++) {
+          const X = tx * TILE + x + L.x, Y = ty * TILE + y + L.y;
+          const v = X >= 0 && Y >= 0 && X < W && Y < Hh ? (lowest[Y * W + X] === k ? 255 : Math.round(f[Y * W + X] * 255)) : 0;
+          if (v) { t[y * TILE + x] = v; any = true; }
+        }
+        if (any) mask.setTile(tileKey(tx, ty), t);
+      });
+      L.mask = mask; L.maskEnabled = true;
+    }
+    const after = set.map((L) => ({ L, mask: L.mask, en: L.maskEnabled }));
+    const apply = (v: typeof before) => (doc: EditorDocument) => { for (const e of v) { const l = doc.layer(e.L.id); if (l) { l.mask = e.mask; l.maskEnabled = e.en; } } };
+    this.commit(new FnEntry(mode === 'stack' ? 'Apilar imágenes' : 'Fusionar capas automáticamente', apply(before), apply(after)));
+    this.invalidate(null);
+  }
+
+  /** Abre píxeles ya decodificados (RAW revelado en la interfaz) como documento nuevo. */
+  openPixels(name: string, w: number, h: number, rgba: Uint8ClampedArray) {
+    const doc = new EditorDocument(name, w, h);
+    const L = layerFromPixels('Fondo', rgba, w, h);
+    doc.layers = [L]; doc.activeLayerId = L.id;
+    this.setDoc(doc, 'Abrir');
+    return { layers: 1 };
   }
 
   /** Coloca una imagen como capa nueva (Archivo > Colocar, arrastrar, pegar). */
@@ -1595,12 +1885,21 @@ export class Engine {
 
   // ================================================================ imagen
 
-  async resizeImage(width: number, height: number) {
+  /**
+   * Imagen > Tamaño de imagen. `method`: automático, conservar detalles (ampliación nítida con
+   * reducción de ruido), bicúbica, más suavizada, más nítida, bilineal o por aproximación.
+   */
+  async resizeImage(width: number, height: number, method: ResampleMethod | 'auto' | 'details' = 'auto', detailNoise = 0) {
     const d = this.doc;
     if (!d) return;
     const w = Math.max(1, Math.round(width)), h = Math.max(1, Math.round(height));
     if (w === d.width && h === d.height) return;
     const sx = w / d.width, sy = h / d.height;
+    const up = sx * sy > 1;
+    // Automático (como Photoshop): bicúbica más suavizada al ampliar y bicúbica al reducir.
+    // Conservar detalles es opcional (más lento: enfoca los bordes de lo ampliado).
+    const mode = method === 'auto' ? (up ? 'smoother' : 'bicubic') : method;
+    const kernel: ResampleMethod = mode === 'details' ? 'bicubic' : mode;
     const t0 = performance.now();
     const oldLayers = d.layers, oldW = d.width, oldH = d.height, oldActive = d.activeLayerId;
     const activeIdx = d.indexOf(oldActive);
@@ -1617,7 +1916,7 @@ export class Engine {
       } else if (L.kind === 'adjustment') {
         nl = L.clone(L.name);
       } else {
-        nl = await resampleLayer(L, sx, sy, this.pool);
+        nl = await resampleLayer(L, sx, sy, this.pool, kernel);
       }
       if (L.mask) nl.mask = transformMask(L, [sx, 0, 0, sy, 0, 0], w, h, { x: L.x, y: L.y }, nl);
       nl.vmask = L.vmask && mapVM(L.vmask, (x, y) => [(x + L.x) * sx - nl.x, (y + L.y) * sy - nl.y]);
@@ -1627,6 +1926,21 @@ export class Engine {
     }));
     this.post({ type: 'busy', label: null });
     if (this.doc !== d) return;
+    // Conservar detalles: enfoque ligero de bordes (y reducción de ruido si se pide) sobre lo ampliado.
+    if (mode === 'details' && up) {
+      const cr = { ...CAMERA_RAW_DEFAULTS, noise: detailNoise, colorNoise: detailNoise ? 25 : 0, frame: { x: 0, y: 0, w, h } };
+      for (const nl of newLayers) {
+        if (nl.kind === 'adjustment' || oldLayers[newLayers.indexOf(nl)].kind !== 'pixel') continue;
+        const b = nl.bounds();
+        if (!b) continue;
+        let px = await this.filterRegion(nl, b, 'detailSharpen', { amount: Math.min(90, 35 + 15 * Math.sqrt(sx * sy)) }, 3, false);
+        if (detailNoise) {
+          nl.writeRegion(px, b.w, b.h, b.x, b.y);
+          px = await this.filterRegion(nl, b, 'cameraRaw', { cr }, cameraRawApron(cr), false);
+        }
+        nl.writeRegion(px, b.w, b.h, b.x, b.y);
+      }
+    }
     // Conserva la estructura (grupos, recortes, objetos inteligentes, mesas de trabajo) con los ids nuevos.
     const ids = new Map(oldLayers.map((L, i) => [L.id, newLayers[i].id]));
     oldLayers.forEach((L, i) => {
@@ -1935,6 +2249,59 @@ export class Engine {
     }
     await Promise.all(jobs);
     return out;
+  }
+
+  /** Copia reducida (promedio de área) de la capa activa para las vistas previas de los diálogos. */
+  private layerPreview(size: number): { w: number; h: number; k: number; before: Uint8ClampedArray; b: Rect } | null {
+    const d = this.doc;
+    const L = d?.active();
+    if (!d || !L || L.kind === 'adjustment' || L.kind === 'group') return null;
+    const b = exactBounds(L);
+    if (!b) return null;
+    const full = L.readRegion(b.x - L.x, b.y - L.y, b.w, b.h);
+    const k = Math.min(1, size / Math.max(b.w, b.h));
+    const w = Math.max(1, Math.round(b.w * k)), h = Math.max(1, Math.round(b.h * k));
+    const before = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      const y0 = Math.floor(y / k), y1 = Math.max(y0 + 1, Math.min(b.h, Math.floor((y + 1) / k)));
+      for (let x = 0; x < w; x++) {
+        const x0 = Math.floor(x / k), x1 = Math.max(x0 + 1, Math.min(b.w, Math.floor((x + 1) / k)));
+        let r = 0, g = 0, bb = 0, a = 0, c = 0;
+        for (let yy = y0; yy < y1; yy += Math.max(1, ((y1 - y0) / 4) | 0)) for (let xx = x0; xx < x1; xx += Math.max(1, ((x1 - x0) / 4) | 0)) {
+          const i = (yy * b.w + xx) * 4; r += full[i]; g += full[i + 1]; bb += full[i + 2]; a += full[i + 3]; c++;
+        }
+        const o = (y * w + x) * 4; before[o] = r / c; before[o + 1] = g / c; before[o + 2] = bb / c; before[o + 3] = a / c;
+      }
+    }
+    return { w, h, k, before, b };
+  }
+
+  /** Galería de desenfoques (diálogo): vista previa reducida; los controles van en coordenadas de documento. */
+  blurGalleryPreview(g: BlurGallery, size = 900): { w: number; h: number; k: number; before: Uint8ClampedArray; after: Uint8ClampedArray; frame: Rect } | null {
+    const P = this.layerPreview(size);
+    if (!P) return null;
+    const { w, h, k, before, b } = P;
+    const tx = (x: number) => (x - b.x) * k, ty = (y: number) => (y - b.y) * k;
+    const gp: BlurGallery = {
+      ...g, blur: g.blur * k, scale: 1,
+      pins: g.pins.map((p) => ({ x: tx(p.x), y: ty(p.y), blur: p.blur * k })),
+      iris: { ...g.iris, cx: tx(g.iris.cx), cy: ty(g.iris.cy), rx: g.iris.rx * k, ry: g.iris.ry * k },
+      tilt: { ...g.tilt, cx: tx(g.tilt.cx), cy: ty(g.tilt.cy), focus: g.tilt.focus * k, transition: g.tilt.transition * k },
+    };
+    const after = blurGalleryBand(before, w, h, 0, h, 0, 0, gp);
+    return { w, h, k, before, after, frame: b };
+  }
+
+  /** Revelado (diálogo): vista previa reducida de la capa activa, antes/después e histograma. */
+  developPreview(cr: CameraRaw, size = 900): { w: number; h: number; before: Uint8ClampedArray; after: Uint8ClampedArray; hist: Uint32Array; frame: Rect } | null {
+    const P = this.layerPreview(size);
+    if (!P) return null;
+    const { w, h, k, before, b } = P;
+    const frame = { x: 0, y: 0, w, h };
+    const after = cameraRawBand(before, w, h, 0, h, 0, 0, { ...CAMERA_RAW_DEFAULTS, ...cr, frame, scale: k, radius: localRadius({ ...CAMERA_RAW_DEFAULTS, frame: b }) });
+    const hist = new Uint32Array(768);
+    for (let i = 0; i < after.length; i += 4) if (after[i + 3] > 8) { hist[after[i]]++; hist[256 + after[i + 1]]++; hist[512 + after[i + 2]]++; }
+    return { w, h, before, after, hist, frame: b };
   }
 
   repeatFilter() {
@@ -3231,7 +3598,7 @@ export class Engine {
         const selB = d.selection?.bounds() ?? null;
         const clip = selB ? intersect(selB, this.docRect()) : this.docRect();
         if (!clip) return;
-        const healTool = tool === 'spotHeal' || tool === 'heal';
+        const healTool = tool === 'spotHeal' || tool === 'heal' || tool === 'remove';
         let sourceLayer: PixelLayer | undefined;
         if (tool === 'historyBrush') {
           const snap = d.snapshots.find((x) => x.id === d.historySource);
@@ -3240,13 +3607,14 @@ export class Engine {
           if (snap && (snap.width !== d.width || snap.height !== d.height)) { this.toast('El tamaño del documento ha cambiado desde la instantánea de origen.', 'warn'); return; }
         }
         if (healTool && toMask) { this.toast('Los pinceles correctores actúan sobre los píxeles, no sobre la máscara.', 'warn'); return; }
-        const color: RGBA = tool === 'spotHeal' ? [20, 20, 20, 255] : mode === 'erase' && toMask ? this.bg : this.fg;
+        const color: RGBA = tool === 'spotHeal' ? [20, 20, 20, 255] : tool === 'remove' ? [235, 40, 150, 255] : mode === 'erase' && toMask ? this.bg : this.fg;
         this.strokeTool = tool as ToolId;
         this.stroke = new BrushStroke({
           layer: L,
           // Corrector puntual: una marca translúcida indica la zona; al soltar se rellena.
           settings: tool === 'pencil' ? { ...this.brush, hardness: 1 }
             : tool === 'spotHeal' ? { ...this.brush, opacity: 0.45, flow: 1 }
+            : tool === 'remove' ? { ...this.brush, opacity: 0.5, flow: 1, hardness: 1 }
             : tool === 'heal' ? { ...this.brush, opacity: 1, flow: 1 } : this.brush,
           color,
           mode: toMask ? 'paint' : mode,
@@ -3255,7 +3623,7 @@ export class Engine {
           target: toMask ? 'mask' : 'pixels',
           maskValue: lumOf(color),
           cloneOffset: tool === 'clone' || tool === 'heal' ? this.cloneOffset! : undefined,
-          healTool: healTool ? tool as 'spotHeal' | 'heal' : undefined,
+          healTool: healTool ? tool as 'spotHeal' | 'heal' | 'remove' : undefined,
           sourceLayer,
           label: tool === 'historyBrush' ? 'Pincel de historia' : undefined,
           aliased: tool === 'pencil',
@@ -3270,7 +3638,7 @@ export class Engine {
       if (m.phase === 'up') {
         const st = this.stroke;
         this.stroke = null;
-        if (this.strokeTool === 'spotHeal' || this.strokeTool === 'heal') { void this.finishHeal(st, this.strokeTool); return; }
+        if (this.strokeTool === 'spotHeal' || this.strokeTool === 'heal' || this.strokeTool === 'remove') { void this.finishHeal(st, this.strokeTool); return; }
         const patch = st.finish();
         if (patch) this.commit(patch);
         this.requestFrame();
@@ -3802,12 +4170,12 @@ export class Engine {
    * - puntual: rellena la zona pintada con textura del entorno (PatchMatch) y funde los bordes;
    * - corrector: mantiene la textura clonada y adapta color y luz al destino (Poisson).
    */
-  private async finishHeal(st: BrushStroke, tool: 'spotHeal' | 'heal') {
+  private async finishHeal(st: BrushStroke, tool: 'spotHeal' | 'heal' | 'remove') {
     const d = this.doc!;
     const L = d.layer(st.layerId);
     const t = st.total;
     if (!L || !t) { const p = st.finish(); if (p) this.commit(p); return; }
-    const margin = tool === 'spotHeal' ? Math.max(48, Math.round(this.brush.size * 2.5)) : 4;
+    const margin = tool === 'remove' ? Math.max(96, Math.round(this.brush.size * 4)) : tool === 'spotHeal' ? Math.max(48, Math.round(this.brush.size * 2.5)) : 4;
     const R = intersect({ x: t.x - margin, y: t.y - margin, w: t.w + margin * 2, h: t.h + margin * 2 }, this.docRect());
     if (!R) { const p = st.finish(); if (p) this.commit(p); return; }
     const cov = st.coverage(R);
@@ -3818,11 +4186,18 @@ export class Engine {
     const patch = st.finish();
     if (!patch) return;
     this.healing = true;
-    this.post({ type: 'busy', label: tool === 'spotHeal' ? 'Corrigiendo…' : 'Fundiendo…' });
+    this.post({ type: 'busy', label: tool === 'remove' ? 'Quitando…' : tool === 'spotHeal' ? 'Corrigiendo…' : 'Fundiendo…' });
     const t0 = performance.now();
     try {
       let out: Uint8ClampedArray;
-      if (tool === 'spotHeal') {
+      if (tool === 'remove') {
+        // Quitar: lo pintado y lo que el trazo rodea (como al dibujar un contorno alrededor del objeto),
+        // ampliado un poco para no dejar el borde del objeto; transición corta.
+        const hole = removeHole(cov, R.w, R.h, Math.max(2, Math.round(this.brush.size * 0.12)));
+        const blend = new Float32Array(hole.length);
+        for (let i = 0; i < hole.length; i++) blend[i] = hole[i];
+        out = await this.pool.run({ op: 'inpaint', src: orig.slice(), w: R.w, h: R.h, hole, blend: featherMask(blend, R.w, R.h, 2), seed: (Math.random() * 1e6) | 0 });
+      } else if (tool === 'spotHeal') {
         const hole = new Uint8Array(cov.length);
         for (let i = 0; i < cov.length; i++) hole[i] = cov[i] > 0.01 ? 1 : 0;
         out = await this.pool.run({ op: 'inpaint', src: orig.slice(), w: R.w, h: R.h, hole, blend: cov, seed: (Math.random() * 1e6) | 0 });
@@ -3941,6 +4316,7 @@ export class Engine {
 // ================================================================ auxiliares
 
 export const FILTER_LABELS: Record<FilterName, string> = {
+  cameraRaw: 'Revelado', lensCorrection: 'Corrección de lente', reduceNoise: 'Reducir ruido', dustScratches: 'Polvo y rascaduras', blurGallery: 'Galería de desenfoques', detailSharpen: 'Conservar detalles',
   gaussianBlur: 'Desenfoque gaussiano', boxBlur: 'Desenfoque de cuadro', motionBlur: 'Desenfoque de movimiento',
   unsharpMask: 'Máscara de enfoque', sharpen: 'Enfocar', addNoise: 'Añadir ruido', mosaic: 'Mosaico', highPass: 'Paso alto',
   findEdges: 'Hallar bordes', emboss: 'Relieve', clouds: 'Nubes', median: 'Mediana',
@@ -4097,4 +4473,52 @@ function blend1(mode: string, b: number, s: number, scale = 1, offset = 0): numb
     case 'divide': return s <= 0 ? (b > 0 ? 1 : 0) : Math.min(1, b / s);
     default: return s; // normal
   }
+}
+
+/** Zona a quitar: lo pintado + lo encerrado por el trazo, dilatado `grow` px. */
+function removeHole(cov: Float32Array, w: number, h: number, grow: number): Uint8Array {
+  const m = new Uint8Array(w * h);
+  for (let i = 0; i < m.length; i++) m[i] = cov[i] > 0.02 ? 1 : 0;
+  // Relleno desde el borde: lo que no se alcanza sin cruzar el trazo está encerrado.
+  const seen = new Uint8Array(w * h), stack: number[] = [];
+  const push = (i: number) => { if (!seen[i] && !m[i]) { seen[i] = 1; stack.push(i); } };
+  for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); }
+  for (let y = 0; y < h; y++) { push(y * w); push(y * w + w - 1); }
+  while (stack.length) {
+    const i = stack.pop()!, x = i % w, y = (i / w) | 0;
+    if (x > 0) push(i - 1); if (x < w - 1) push(i + 1); if (y > 0) push(i - w); if (y < h - 1) push(i + w);
+  }
+  for (let i = 0; i < m.length; i++) if (!seen[i]) m[i] = 1;
+  // Dilatación (cuadrada, por pasadas separables).
+  let cur = m;
+  for (let k = 0; k < grow; k++) {
+    const nx = cur.slice();
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (cur[i]) continue;
+      if ((x > 0 && cur[i - 1]) || (x < w - 1 && cur[i + 1]) || (y > 0 && cur[i - w]) || (y < h - 1 && cur[i + w])) nx[i] = 1;
+    }
+    cur = nx;
+  }
+  return cur;
+}
+
+/** Suaviza una máscara 0..1 (caja de radio r, dos pasadas). */
+function featherMask(m: Float32Array, w: number, h: number, r: number): Float32Array {
+  const a = m.slice(), b = new Float32Array(m.length);
+  for (let pass = 0; pass < 2; pass++) {
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let s = 0, n = 0;
+      for (let k = -r; k <= r; k++) { const xx = x + k; if (xx >= 0 && xx < w) { s += a[y * w + xx]; n++; } }
+      b[y * w + x] = s / n;
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let s = 0, n = 0;
+      for (let k = -r; k <= r; k++) { const yy = y + k; if (yy >= 0 && yy < h) { s += b[yy * w + x]; n++; } }
+      a[y * w + x] = s / n;
+    }
+  }
+  // Dentro de la zona siempre 1 (sólo se suaviza hacia fuera).
+  for (let i = 0; i < a.length; i++) if (m[i] >= 1) a[i] = 1;
+  return a;
 }

@@ -8,11 +8,12 @@ export type Item = string | '-' | { label: string; soon: true } | { sub: string;
 /** Estructura de menús de Photoshop; lo que aún no existe aparece desactivado. */
 export const MENUS: { label: string; items: Item[] }[] = [
   { label: 'Archivo', items: ['file.new', 'file.open', 'file.place', '-', 'file.close', '-', 'file.save', 'file.saveAs', 'file.saveCopy', 'file.savePsb', '-',
-    { sub: 'Exportar', items: ['file.quickPng', 'file.export', 'file.saveForWeb'] }] },
+    { sub: 'Exportar', items: ['file.quickPng', 'file.export', 'file.saveForWeb'] },
+    { sub: 'Automatizar', items: ['file.photomerge', 'file.hdr'] }] },
   { label: 'Edición', items: ['edit.undo', 'edit.redo', 'edit.toggleLast', '-', 'edit.cut', 'edit.copy', 'edit.copyMerged', 'edit.paste', 'edit.pasteInPlace', 'edit.clear', '-',
     'edit.fill', 'edit.stroke', 'edit.fillFg', 'edit.fillBg', '-', 'edit.puppet', 'edit.freeTransform',
     { sub: 'Transformar', items: ['edit.scale', 'edit.rotate', 'edit.skew', 'edit.distort', 'edit.perspective', 'edit.warp', '-', 'edit.rot180', 'edit.rot90', 'edit.rot-90', '-', 'edit.flipH', 'edit.flipV'] },
-    '-', 'edit.contentAware', 'ai.generative', '-', 'edit.shortcuts'] },
+    '-', 'edit.autoAlign', 'edit.autoBlend', 'edit.autoStack', '-', 'edit.contentAware', 'ai.generative', '-', 'edit.shortcuts'] },
   { label: 'Imagen', items: [
     { sub: 'Ajustes', items: ['image.brightness', 'image.levels', 'image.curves', 'image.exposure', '-', 'image.vibrance', 'image.hueSat', 'image.colorBalance', 'image.blackWhite', '-',
       'image.invert', 'image.posterize', 'image.threshold', 'image.gradientMap', 'image.selectiveColor', '-', 'image.photoFilter', 'image.channelMixer', 'image.colorLookup', '-', 'image.desaturate'] },
@@ -37,10 +38,11 @@ export const MENUS: { label: string; items: Item[] }[] = [
   { label: 'Texto', items: ['type.tool', 'type.warp', '-', 'type.loadLocalFonts', { label: 'Convertir en forma', soon: true }] },
   { label: 'Selección', items: ['select.all', 'select.none', 'select.reselect', 'select.invert', 'layer.selectAll', '-', 'select.quickMask', 'select.save', 'select.luminosity', '-', 'select.colorRange', 'select.subject', { label: 'Cielo', soon: true }, 'select.refine', '-',
     { sub: 'Modificar', items: ['select.feather', 'select.expand', 'select.contract'] }, 'select.fromLayer'] },
-  { label: 'Filtro', items: ['filter.last', '-', 'filter.smart', '-', 'filter.liquify', '-',
+  { label: 'Filtro', items: ['filter.last', '-', 'filter.smart', '-', 'filter.develop', 'filter.lensCorrection', 'filter.liquify', '-',
+    { sub: 'Galería de desenfoques', items: ['filter.fieldBlur', 'filter.irisBlur', 'filter.tiltShift'] },
     { sub: 'Desenfocar', items: ['filter.gaussianBlur', 'filter.boxBlur', 'filter.motionBlur'] },
     { sub: 'Enfocar', items: ['filter.sharpen', 'filter.unsharpMask'] },
-    { sub: 'Ruido', items: ['filter.addNoise', 'filter.median'] },
+    { sub: 'Ruido', items: ['filter.addNoise', 'filter.dustScratches', 'filter.median', 'filter.reduceNoise'] },
     { sub: 'Pixelizar', items: ['filter.mosaic'] },
     { sub: 'Interpretar', items: ['filter.clouds'] },
     { sub: 'Estilizar', items: ['filter.findEdges', 'filter.emboss'] },

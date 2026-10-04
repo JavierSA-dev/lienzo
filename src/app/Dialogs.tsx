@@ -14,6 +14,9 @@ import { WarpTextDialog } from './TextPanels';
 import { NewArtboardDialog, ExportAsDialog } from './Artboards';
 import { GenerativeDialog } from './Generative';
 import { ColorRangeDialog, RefineDialog } from './SelectDialogs';
+import { DevelopDialog } from './Develop';
+import { BlurGalleryDialog } from './BlurGallery';
+import { AutomateDialog } from './Automate';
 
 export function Modal({ title, children, onOk, okLabel = 'OK', onClose, wide }: { title: string; children: ReactNode; onOk: () => void; okLabel?: string; onClose: () => void; wide?: boolean }) {
   const cb = useRef({ onOk, onClose });
@@ -74,13 +77,28 @@ function ImageSizeDialog({ close }: { close: () => void }) {
   const [w, setW] = useState(doc.width);
   const [h, setH] = useState(doc.height);
   const [keep, setKeep] = useState(true);
+  const [method, setMethod] = useState('auto');
+  const [noise, setNoise] = useState(0);
   const ratio = doc.width / doc.height;
+  const details = method === 'details';
   return (
-    <Modal title="Tamaño de imagen" onClose={close} onOk={() => { engine.call('resizeImage', w, h); close(); }}>
+    <Modal title="Tamaño de imagen" onClose={close} onOk={() => { engine.call('resizeImage', w, h, method, details ? noise : 0); close(); }}>
       <label className="field">Anchura (px)<input type="number" min={1} value={w} autoFocus onChange={(e) => { const v = num(e.target.value, 1); setW(v); if (keep) setH(Math.max(1, Math.round(v / ratio))); }} /></label>
       <label className="field">Altura (px)<input type="number" min={1} value={h} onChange={(e) => { const v = num(e.target.value, 1); setH(v); if (keep) setW(Math.max(1, Math.round(v * ratio))); }} /></label>
       <label className="field">Proporciones<span><input type="checkbox" checked={keep} onChange={(e) => setKeep(e.target.checked)} /> Restringir</span></label>
-      <span className="hint">{Math.round((w / doc.width) * 100)} % · se calcula en paralelo en todos los núcleos; la interfaz no se bloquea.</span>
+      <label className="field">Remuestrear
+        <select value={method} aria-label="Remuestrear" onChange={(e) => setMethod(e.target.value)}>
+          <option value="auto">Automático</option>
+          <option value="details">Conservar detalles (ampliación)</option>
+          <option value="smoother">Bicúbica más suavizada (ampliación)</option>
+          <option value="sharper">Bicúbica más nítida (reducción)</option>
+          <option value="bicubic">Bicúbica (degradados suaves)</option>
+          <option value="nearest">Por aproximación (bordes duros)</option>
+          <option value="bilinear">Bilineal</option>
+        </select>
+      </label>
+      {details && <label className="field">Reducir ruido<span className="range-num"><input type="range" min={0} max={100} value={noise} aria-label="Reducir ruido" onChange={(e) => setNoise(Number(e.target.value))} /><input type="number" min={0} max={100} value={noise} onChange={(e) => setNoise(num(e.target.value, 0))} /></span></label>}
+      <span className="hint">{Math.round((w / doc.width) * 100)} %{details ? ' · Conservar detalles enfoca los bordes al ampliar' : ''} · se calcula en paralelo en todos los núcleos; la interfaz no se bloquea.</span>
     </Modal>
   );
 }
@@ -136,6 +154,12 @@ export const FILTER_FIELDS: Record<FilterName, { title: string; fields: [keyof F
   findEdges: { title: 'Hallar bordes', fields: [] },
   emboss: { title: 'Relieve', fields: [['angle', 'Ángulo (°)', -180, 180, 135], ['height', 'Altura (px)', 1, 10, 3], ['amount', 'Cantidad (%)', 1, 500, 100]] },
   clouds: { title: 'Nubes', fields: [] },
+  cameraRaw: { title: 'Revelado', fields: [] },
+  lensCorrection: { title: 'Corrección de lente', fields: [['distortion', 'Quitar distorsión', -100, 100, 0], ['caRed', 'Franja rojo/cian', -100, 100, 0], ['caBlue', 'Franja azul/amarillo', -100, 100, 0], ['vignette', 'Viñeta: cantidad', -100, 100, 0], ['vigMid', 'Viñeta: punto medio', 0, 100, 50], ['vertical', 'Perspectiva vertical', -100, 100, 0], ['horizontal', 'Perspectiva horizontal', -100, 100, 0], ['angle', 'Ángulo (°)', -45, 45, 0, 0.1], ['scale', 'Escala (%)', 50, 150, 100]] },
+  reduceNoise: { title: 'Reducir ruido', fields: [['strength', 'Intensidad', 0, 10, 6], ['preserve', 'Conservar detalles (%)', 0, 100, 60], ['colorNoise', 'Reducir ruido de color (%)', 0, 100, 45], ['sharpenDetails', 'Enfocar detalles (%)', 0, 100, 25]] },
+  blurGallery: { title: 'Galería de desenfoques', fields: [] },
+  detailSharpen: { title: 'Conservar detalles', fields: [['amount', 'Cantidad (%)', 0, 100, 60]] },
+  dustScratches: { title: 'Polvo y rascaduras', fields: [['radius', 'Radio (px)', 1, 16, 1], ['threshold', 'Umbral (niveles)', 0, 255, 0]] },
 };
 
 function FilterDialog({ name, close }: { name: FilterName; close: () => void }) {
@@ -273,6 +297,9 @@ export function Dialogs() {
     case 'newArtboard': return <NewArtboardDialog close={close} />;
     case 'colorRange': return <ColorRangeDialog close={close} />;
     case 'refine': return <RefineDialog close={close} />;
+    case 'automate': return <AutomateDialog mode={dialog.mode} close={close} />;
+    case 'blurGallery': return <BlurGalleryDialog close={close} kind={dialog.mode} />;
+    case 'develop': return <DevelopDialog close={close} edit={dialog.edit} />;
     case 'colorPicker': return <ColorPickerDialog which={dialog.which} close={close} />;
     case 'confirmClose': return <ConfirmCloseDialog docId={dialog.docId} close={close} />;
     case 'shortcuts': return <ShortcutsDialog close={close} />;

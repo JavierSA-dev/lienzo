@@ -224,6 +224,28 @@ try {
   }
   await call('deselect');
 
+  // Fase 11 en el móvil: Revelado y Galería de desenfoques caben en la pantalla.
+  await page.getByTestId('m-menu').click(); await wait();
+  await sheet().getByRole('button', { name: 'Filtro' }).click(); await wait();
+  await sheet().getByRole('button', { name: 'Revelado…' }).click(); await wait(800);
+  {
+    const mb = await page.locator('.modal').boundingBox();
+    ok('Revelado en el móvil: cabe y muestra la vista previa', (await S()).dialog?.kind === 'develop' && mb.x >= 0 && mb.x + mb.width <= 391 && (await page.getByTestId('develop-preview').boundingBox()).height > 100, JSON.stringify(mb));
+    await page.getByLabel('Exposición (valor)').fill('0.5'); await wait(300);
+    await page.getByRole('button', { name: 'OK' }).click();
+    await page.waitForFunction(() => { const s = window.__lienzoStore.getState(); return s.doc.history[s.doc.historyIndex]?.label === 'Revelado'; }, null, { timeout: 30000 }).catch(() => {});
+    ok('Aplicar el revelado desde el móvil', (await S()).doc.history[(await S()).doc.historyIndex]?.label === 'Revelado');
+  }
+  await page.getByTestId('m-menu').click(); await wait();
+  await sheet().getByRole('button', { name: 'Filtro' }).click(); await wait();
+  await sheet().getByRole('button', { name: 'Galería de desenfoques' }).click(); await wait();
+  await sheet().getByRole('button', { name: 'Desenfoque de iris…' }).click(); await wait(800);
+  {
+    const mb = await page.locator('.modal').boundingBox();
+    ok('Galería de desenfoques en el móvil', (await S()).dialog?.kind === 'blurGallery' && mb.x >= 0 && mb.x + mb.width <= 391);
+    await page.getByRole('button', { name: 'Cancelar' }).click(); await wait(300);
+  }
+
   // Deformación de posición libre con el dedo: tocar pone chinchetas y arrastrar deforma.
   await page.getByTestId('m-menu').click(); await wait();
   await sheet().getByRole('button', { name: 'Edición' }).click(); await wait();

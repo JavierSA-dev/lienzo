@@ -13,6 +13,8 @@ export default defineConfig({
   server: { headers: isolation },
   preview: { headers: isolation },
   worker: { format: 'es' },
+  // LibRaw trae su propio worker y su .wasm: se sirve tal cual (sin preempaquetar).
+  optimizeDeps: { exclude: ['libraw-wasm'] },
   base: process.env.BASE_PATH ?? '/',
   build: { target: 'es2022', sourcemap: true },
 });

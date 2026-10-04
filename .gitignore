@@ -5,3 +5,5 @@ tests/fixtures/*
 tests/out-*.png
 bench/resultados.md
 *.log
+!tests/fixtures/pano*.jpg
+!tests/fixtures/hdr*.jpg

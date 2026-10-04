@@ -14,11 +14,12 @@ npm run dev          # http://localhost:5173
 | `npm run dev` | Servidor de desarrollo con recarga en caliente |
 | `npm run build` | Comprueba tipos y genera `dist/` para producción |
 | `npm test` | Tests unitarios del motor (Vitest) |
-| `npm run e2e` | Todas las baterías en Chromium: fase 1, escritorio, fase 10 y móvil |
+| `npm run e2e` | Todas las baterías en Chromium: fase 1, escritorio, fases 10 y 11, y móvil |
 | `node tests/e2e.mjs` | Fase 1 (pincel, historial, capas, PSD de 50 capas, rendimiento) |
 | `node tests/e2e-full.mjs` | Fases 2–9: 242 comprobaciones con ratón y teclado reales |
 | `node tests/e2e-select.mjs` | Fase 10: selección avanzada, transformaciones, recortes y máscaras vectoriales (53 comprobaciones) |
-| `npm run e2e:mobile` | Móvil vertical/horizontal y tableta: 59 comprobaciones con toques de varios dedos |
+| `node tests/e2e-photo.mjs` | Fase 11: revelado, RAW, lente, ruido, desenfoques, Quitar, escalado, panorámica, HDR y alinear (34 comprobaciones; la de RAW usa `tests/fixtures/sample.arw` si existe) |
+| `npm run e2e:mobile` | Móvil vertical/horizontal y tableta: 62 comprobaciones con toques de varios dedos |
 | `node tests/shots.mjs` | Capturas de la interfaz para revisión visual |
 | `npm run bench` | Compara Lienzo con Photopea en **tu** Chrome y **tu** GPU (`bench/resultados.md`) |
 
@@ -57,6 +58,8 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 **Imagen y edición**: tamaño de imagen y de lienzo, recortar, rotar/voltear y rotación arbitraria, transformación libre (Ctrl+T con escala, rotación y numérico; Ctrl/Ctrl+Mayús/Ctrl+Alt+Mayús para distorsionar, sesgar y perspectiva), Sesgar, Distorsionar, Perspectiva, Deformar (malla de Bézier editable y los 15 estilos predefinidos) y Deformación de posición libre (chinchetas, modos rígido/normal/distorsionar), sin pérdida en objetos inteligentes, copiar/pegar con el portapapeles del sistema, rellenar (incluido gris al 50 % y según el contenido), Contornear, Nueva capa con relleno neutro para esquivar y quemar, Aplicar imagen (separación de frecuencias), ajustes destructivos con vista previa.
 
+**Fotografía**: Revelado (Ctrl+Mayús+A: balance de blancos, exposición, contraste, iluminaciones, sombras, blancos, negros, textura, claridad, neblina, intensidad, saturación, curva paramétrica, mezclador HSL, gradación de color, enfoque, reducción de ruido, viñeta y grano; antes/después, histograma y Auto; editable como filtro inteligente), archivos RAW de cámara (CR2, CR3, NEF, ARW, DNG, RAF, ORF, RW2…, con LibRaw en WebAssembly), Corrección de lente (distorsión, aberración cromática, viñeta, perspectiva), Reducir ruido, Polvo y rascaduras, Galería de desenfoques (campo, iris y cambio de inclinación con bokeh), herramienta Quitar (basta con rodear el objeto), Tamaño de imagen con métodos de remuestreo y Conservar detalles, Panorámica (Archivo > Automatizar: capas alineadas con máscaras de costura), Combinar para HDR (alineación y fusión de exposiciones), Alinear y Fusionar capas automáticamente (panorámica o apilado de enfoque).
+
 **Retoque**: pincel corrector puntual y relleno según contenido (síntesis de textura con PatchMatch y fusión de Poisson, en local), pincel corrector con Alt+clic de origen.
 
 **Espacio de trabajo**: varios documentos en pestañas (Ctrl+Tab/Ctrl+F6, cerrar con confirmación, arrastrar una capa a otra pestaña), reglas (Ctrl+R), guías (arrastrar desde la regla, Vista > Nueva guía, bloquear, borrar) y ajuste magnético a guías y bordes (Ctrl+Mayús+;), Selector de color con HSB/RGB/hex, recientes y panel Muestras, panel Canales, instantáneas en el Historial.
@@ -89,7 +92,7 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 ## Resultados verificados (entorno de pruebas, GPU emulada por CPU)
 
-- 26/26 tests unitarios, 24/24 de la fase 1, 242/242 de las fases 2–9, 53/53 de la fase 10 y 59/59 de móvil y tableta (toques de varios dedos simulados) en Chromium.
+- 26/26 tests unitarios, 24/24 de la fase 1, 243/243 de las fases 2–9, 53/53 de la fase 10, 34/34 de la fase 11 y 62/62 de móvil y tableta (toques de varios dedos simulados) en Chromium.
 - Composición GPU igual que la referencia en CPU (diferencia máxima 1/255, PSD de 50 capas).
 - Desenfoque gaussiano de 20 px en 24 MP: la interfaz no se bloquea (tarea larga máxima 0 ms).
 - Quitar fondo con IA local: ~2,5 s en CPU emulada. Relleno según contenido de un hueco de 150 px: ~1–3 s en un hilo.
@@ -98,4 +101,13 @@ Los tiempos absolutos no son representativos en ese entorno; ejecuta `npm run be
 
 ## Pendiente
 
-Ver el plan completo por fases en el documento del proyecto: IA (Quitar, escalado), Camera Raw, RAW, CMYK y 16 bits, colaboración en tiempo real y app de escritorio (Tauri).
+Ver el plan completo por fases en el documento del proyecto: 16 bits por canal, CMYK, colaboración en tiempo real y app de escritorio (Tauri).
+
+## Componentes de terceros
+
+| Componente | Uso | Licencia |
+|---|---|---|
+| ag-psd | Leer y escribir PSD/PSB | MIT |
+| onnxruntime-web + u2netp | IA local (sujeto, quitar fondo, selección de objeto) | MIT / Apache-2.0 |
+| libraw-wasm (LibRaw) | Revelar archivos RAW de cámara | ISC (enlace) / LibRaw: LGPL-2.1 o CDDL-1.0 (se usa sin modificar) |
+| React, zustand, lucide-react, Vite | Interfaz y compilación | MIT / ISC |

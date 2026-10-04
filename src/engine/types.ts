@@ -47,7 +47,7 @@ export type ToolId =
   | 'move' | 'marquee' | 'marqueeEllipse' | 'lasso' | 'polylasso' | 'wand' | 'crop' | 'eyedropper'
   | 'brush' | 'pencil' | 'clone' | 'eraser' | 'gradient' | 'bucket' | 'dodge' | 'burn'
   | 'text' | 'shape' | 'hand' | 'zoom'
-  | 'spotHeal' | 'heal' | 'patch' | 'pen' | 'pathSelect' | 'blur' | 'sharpen' | 'smudge' | 'historyBrush' | 'rotateView' | 'redEye' | 'objectSelect' | 'quickSelect' | 'perspectiveCrop';
+  | 'spotHeal' | 'heal' | 'patch' | 'pen' | 'pathSelect' | 'blur' | 'sharpen' | 'smudge' | 'historyBrush' | 'rotateView' | 'redEye' | 'objectSelect' | 'quickSelect' | 'perspectiveCrop' | 'remove';
 
 export type LayerKind = 'pixel' | 'adjustment' | 'text' | 'shape' | 'group' | 'smart';
 

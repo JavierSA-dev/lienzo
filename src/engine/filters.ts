@@ -1,3 +1,6 @@
+import { cameraRawBand, cameraRawApron, CAMERA_RAW_DEFAULTS, type CameraRaw } from './camraw';
+import { lensCorrection } from './lens';
+import { blurGalleryBand, blurGalleryApron, type BlurGallery } from './blurgal';
 /**
  * Núcleos de cálculo en CPU que se ejecutan en el pool de workers:
  * filtros, transformación afín y deformación (licuar). Funciones puras sobre RGBA
@@ -9,7 +12,7 @@ import { inpaint, heal } from './inpaint';
 
 export type FilterName =
   | 'gaussianBlur' | 'boxBlur' | 'motionBlur' | 'unsharpMask' | 'sharpen' | 'addNoise' | 'mosaic'
-  | 'highPass' | 'findEdges' | 'emboss' | 'clouds' | 'median';
+  | 'highPass' | 'findEdges' | 'emboss' | 'clouds' | 'median' | 'cameraRaw' | 'lensCorrection' | 'reduceNoise' | 'dustScratches' | 'blurGallery' | 'detailSharpen';
 
 export interface FilterParams {
   radius?: number;
@@ -24,6 +27,15 @@ export interface FilterParams {
   seed?: number;
   fg?: [number, number, number, number];
   bg?: [number, number, number, number];
+  /** Filtro de Camera Raw. */
+  cr?: CameraRaw;
+  /** Corrección de lente: distorsión, aberración cromática (rojo/cian, azul/amarillo), viñeta, perspectiva, escala (%). */
+  distortion?: number; caRed?: number; caBlue?: number; vignette?: number; vigMid?: number;
+  vertical?: number; horizontal?: number; scale?: number;
+  /** Reducir ruido: intensidad (0..10), conservar detalles, reducir ruido de color y enfocar detalles (%). */
+  strength?: number; preserve?: number; colorNoise?: number; sharpenDetails?: number;
+  /** Galería de desenfoques. */
+  gal?: BlurGallery;
 }
 
 /** Filas de margen que necesita cada filtro por encima y por debajo de la banda. */
@@ -31,16 +43,26 @@ export function filterApron(name: FilterName, p: FilterParams): number {
   switch (name) {
     case 'gaussianBlur': case 'unsharpMask': case 'highPass': return Math.ceil((p.radius ?? 1) * 3) + 2;
     case 'boxBlur': return Math.ceil(p.radius ?? 1) + 1;
-    case 'median': return Math.ceil(p.radius ?? 1) + 1;
+    case 'median': case 'dustScratches': return Math.ceil(p.radius ?? 1) + 1;
+    case 'reduceNoise': return cameraRawApron({ ...CAMERA_RAW_DEFAULTS, ...reduceNoiseCR(p) });
     case 'motionBlur': return Math.ceil(p.distance ?? 10) + 1;
     case 'sharpen': case 'findEdges': return 2;
     case 'emboss': return Math.ceil(p.height ?? 3) + 1;
+    case 'cameraRaw': return p.cr ? cameraRawApron(p.cr) : 0;
+    case 'blurGallery': return p.gal ? blurGalleryApron(p.gal) : 0;
+    case 'detailSharpen': return 3;
     default: return 0;
   }
 }
 
 /** Filtros que no se pueden trocear por bandas (se calculan de una vez). */
-export const WHOLE_FILTERS = new Set<FilterName>(['mosaic']);
+export const WHOLE_FILTERS = new Set<FilterName>(['mosaic', 'lensCorrection']);
+
+/** Reducir ruido = la reducción de ruido del revelado con los controles del filtro clásico. */
+function reduceNoiseCR(p: FilterParams): Partial<CameraRaw> {
+  const k = (p.strength ?? 6) / 10, keep = (p.preserve ?? 60) / 100;
+  return { noise: Math.round(100 * k * (1 - keep * 0.6)), colorNoise: p.colorNoise ?? 45, sharpen: Math.round((p.sharpenDetails ?? 25) * 0.6), sharpenRadius: 0.8, sharpenMasking: 30, frame: { x: 0, y: 0, w: 1000, h: 1000 } };
+}
 
 export interface FilterJob {
   op: 'filter';
@@ -206,6 +228,7 @@ function runFilter(j: FilterJob): Uint8ClampedArray {
   const at = (x: number, y: number) => ((top + y) * w + x) * 4; // índice en src de la fila de salida y
 
   switch (name) {
+    case 'cameraRaw': return cameraRawBand(src, w, rows, top, outRows, ox, oy, { ...CAMERA_RAW_DEFAULTS, ...p.cr! });
     case 'gaussianBlur':
     case 'boxBlur': {
       const f = premultiply(src);
@@ -296,8 +319,36 @@ function runFilter(j: FilterJob): Uint8ClampedArray {
       }
       return out;
     }
-    case 'median': {
+    case 'reduceNoise': return cameraRawBand(src, w, rows, top, outRows, ox, oy, { ...CAMERA_RAW_DEFAULTS, ...reduceNoiseCR(p) });
+    case 'lensCorrection': return lensCorrection(src, w, rows, p);
+    case 'detailSharpen': {
+      // Conservar detalles: máscara de enfoque ligera (binomial 5×5) que no realza el ruido plano.
+      const amt = (p.amount ?? 60) / 100, n = w * rows;
+      const tmp = new Float32Array(n * 3), bl = new Float32Array(n * 3);
+      const K = [1, 4, 6, 4, 1];
+      for (let y = 0; y < rows; y++) for (let x = 0; x < w; x++) for (let c = 0; c < 3; c++) {
+        let a = 0; for (let k = -2; k <= 2; k++) a += K[k + 2] * src[(y * w + Math.min(w - 1, Math.max(0, x + k))) * 4 + c];
+        tmp[(y * w + x) * 3 + c] = a / 16;
+      }
+      for (let y = 0; y < outRows; y++) for (let x = 0; x < w; x++) for (let c = 0; c < 3; c++) {
+        let a = 0; for (let k = -2; k <= 2; k++) a += K[k + 2] * tmp[(Math.min(rows - 1, Math.max(0, top + y + k)) * w + x) * 3 + c];
+        bl[(y * w + x) * 3 + c] = a / 16;
+      }
+      for (let y = 0; y < outRows; y++) for (let x = 0; x < w; x++) {
+        const i = at(x, y), o = (y * w + x) * 4;
+        for (let c = 0; c < 3; c++) {
+          const d = src[i + c] - bl[(y * w + x) * 3 + c];
+          const m = Math.min(1, Math.abs(d) / 6); // casi nada en zonas planas (ruido)
+          out[o + c] = src[i + c] + d * amt * m;
+        }
+        out[o + 3] = src[i + 3];
+      }
+      return out;
+    }
+    case 'blurGallery': return blurGalleryBand(src, w, rows, top, outRows, ox, oy, p.gal!);
+    case 'median': case 'dustScratches': {
       const r = Math.max(1, Math.round(p.radius ?? 1));
+      const thr = name === 'dustScratches' ? (p.threshold ?? 0) : -1;
       const buf: number[][] = [[], [], []];
       for (let y = 0; y < outRows; y++) {
         for (let x = 0; x < w; x++) {
@@ -313,7 +364,11 @@ function runFilter(j: FilterJob): Uint8ClampedArray {
             }
           }
           const o = (y * w + x) * 4, i = at(x, y);
-          for (let c = 0; c < 3; c++) { const b = buf[c].sort((m, n) => m - n); out[o + c] = b[b.length >> 1]; }
+          for (let c = 0; c < 3; c++) {
+            const b = buf[c].sort((m, n) => m - n), v = b[b.length >> 1];
+            // Polvo y rascaduras: sólo cambia lo que se aparta de la mediana más que el umbral.
+            out[o + c] = thr >= 0 && Math.abs(src[i + c] - v) <= thr ? src[i + c] : v;
+          }
           out[o + 3] = src[i + 3];
         }
       }

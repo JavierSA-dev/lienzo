@@ -1,5 +1,6 @@
 import { engine } from '../engine/client';
 import { identityPatch } from '../engine/meshwarp';
+import { RAW_EXT, RAW_ACCEPT, decodeRaw } from './raw';
 import { useStore, toRgba, savePrefs, type DialogId, type TMode } from './store';
 import { askLocalFonts } from './localFonts';
 import type { AdjustmentType, BlendMode, ShapeKind, ToolId } from '../engine/types';
@@ -30,13 +31,25 @@ const dlg = (d: DialogId) => () => S().setDialog(d);
 
 // ------------------------------------------------------------------ archivos
 
-const OPEN_TYPES = '.psd,.psb,.png,.jpg,.jpeg,.webp,.gif,.bmp,.avif';
+const OPEN_TYPES = `.psd,.psb,.png,.jpg,.jpeg,.webp,.gif,.bmp,.avif,${RAW_ACCEPT}`;
 
 export async function openFile(file?: File) {
   const f = file ?? (await pickFile());
   if (!f) return;
   try {
     const buf = await f.arrayBuffer();
+    if (RAW_EXT.test(f.name)) {
+      // RAW: se revela con LibRaw y se abre en Revelado (como Camera Raw al abrir un RAW).
+      useStore.setState({ busy: { label: `Revelando ${f.name}…` } });
+      const t0 = performance.now();
+      try {
+        const img = await decodeRaw(buf);
+        await engine.call('openPixels', f.name.replace(/\.[^.]+$/, '.psd'), img.w, img.h, img.rgba);
+        S().toast(`${f.name}: RAW ${img.w} × ${img.h} revelado en ${Math.round(performance.now() - t0)} ms`);
+      } finally { useStore.setState({ busy: null }); }
+      S().setDialog({ kind: 'develop' });
+      return;
+    }
     const r = await engine.call<{ layers: number; ms: number }>('open', f.name, buf, f.type);
     S().toast(`${f.name}: ${r.layers} capa${r.layers === 1 ? '' : 's'} en ${Math.round(r.ms)} ms`);
   } catch (e) {
@@ -140,7 +153,7 @@ export const TOOL_GROUPS: { key: string; tools: ToolId[] }[] = [
   { key: 'W', tools: ['objectSelect', 'quickSelect', 'wand'] },
   { key: 'C', tools: ['crop', 'perspectiveCrop'] },
   { key: 'I', tools: ['eyedropper'] },
-  { key: 'J', tools: ['spotHeal', 'heal', 'patch', 'redEye'] },
+  { key: 'J', tools: ['spotHeal', 'remove', 'heal', 'patch', 'redEye'] },
   { key: 'B', tools: ['brush', 'pencil'] },
   { key: 'S', tools: ['clone'] },
   { key: 'Y', tools: ['historyBrush'] },
@@ -161,7 +174,7 @@ export const TOOL_NAMES: Record<ToolId, string> = {
   wand: 'Varita mágica', crop: 'Recortar', perspectiveCrop: 'Recortar con perspectiva', eyedropper: 'Cuentagotas', brush: 'Pincel', pencil: 'Lápiz', clone: 'Tampón de clonar',
   eraser: 'Borrador', gradient: 'Degradado', bucket: 'Bote de pintura', dodge: 'Sobreexponer', burn: 'Subexponer',
   text: 'Texto horizontal', shape: 'Forma', hand: 'Mano', zoom: 'Zoom',
-  spotHeal: 'Pincel corrector puntual', heal: 'Pincel corrector', patch: 'Parche', pen: 'Pluma', pathSelect: 'Selección de trazado',
+  spotHeal: 'Pincel corrector puntual', remove: 'Quitar', heal: 'Pincel corrector', patch: 'Parche', pen: 'Pluma', pathSelect: 'Selección de trazado',
   blur: 'Desenfocar', sharpen: 'Enfocar', smudge: 'Dedo', historyBrush: 'Pincel de historia', rotateView: 'Rotar vista', redEye: 'Pupilas rojas', objectSelect: 'Selección de objeto', quickSelect: 'Selección rápida',
 };
 
@@ -189,7 +202,7 @@ function toolKey(key: string, cycle: boolean) {
   selectTool(next);
 }
 
-const PAINT_TOOLS = new Set<ToolId>(['quickSelect', 'brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'spotHeal', 'heal', 'blur', 'sharpen', 'smudge', 'historyBrush']);
+const PAINT_TOOLS = new Set<ToolId>(['quickSelect', 'brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'spotHeal', 'remove', 'heal', 'blur', 'sharpen', 'smudge', 'historyBrush']);
 export const isPaintTool = (t: ToolId) => PAINT_TOOLS.has(t);
 
 // ------------------------------------------------------------------ capas
@@ -406,6 +419,18 @@ export const COMMANDS: Command[] = [
   { id: 'select.fromLayer', label: 'Cargar transparencia de la capa', needsDoc: true, rec: true, run: () => { const L = active(); if (L) engine.call('loadSelectionFromLayer', L.id, false); } },
 
   // Filtro
+  { id: 'filter.develop', label: 'Revelado…', keys: ['Ctrl+Shift+A', 'Ctrl+Alt+Shift+A'], needsDoc: true, run: dlg({ kind: 'develop' }) },
+  { id: 'filter.lensCorrection', label: 'Corrección de lente…', keys: ['Ctrl+Shift+R', 'Ctrl+Alt+Shift+R'], needsDoc: true, run: dlg({ kind: 'filter', name: 'lensCorrection' }) },
+  { id: 'filter.reduceNoise', label: 'Reducir ruido…', needsDoc: true, run: dlg({ kind: 'filter', name: 'reduceNoise' }) },
+  { id: 'filter.dustScratches', label: 'Polvo y rascaduras…', needsDoc: true, run: dlg({ kind: 'filter', name: 'dustScratches' }) },
+  { id: 'filter.fieldBlur', label: 'Desenfoque de campo…', needsDoc: true, run: dlg({ kind: 'blurGallery', mode: 'field' }) },
+  { id: 'filter.irisBlur', label: 'Desenfoque de iris…', needsDoc: true, run: dlg({ kind: 'blurGallery', mode: 'iris' }) },
+  { id: 'filter.tiltShift', label: 'Cambio de inclinación…', needsDoc: true, run: dlg({ kind: 'blurGallery', mode: 'tilt' }) },
+  { id: 'file.photomerge', label: 'Panorámica…', run: dlg({ kind: 'automate', mode: 'photomerge' }) },
+  { id: 'file.hdr', label: 'Combinar para HDR…', run: dlg({ kind: 'automate', mode: 'hdr' }) },
+  { id: 'edit.autoAlign', label: 'Alinear capas automáticamente', needsDoc: true, run: call('autoAlignLayers') },
+  { id: 'edit.autoBlend', label: 'Fusionar capas automáticamente (panorámica)', needsDoc: true, run: call('autoBlendLayers', 'panorama') },
+  { id: 'edit.autoStack', label: 'Fusionar capas automáticamente (apilar enfoque)', needsDoc: true, run: call('autoBlendLayers', 'stack') },
   { id: 'filter.last', label: 'Último filtro', keys: ['Ctrl+Alt+F'], needsDoc: true, run: call('repeatFilter') },
   { id: 'filter.gaussianBlur', label: 'Desenfoque gaussiano…', needsDoc: true, run: dlg({ kind: 'filter', name: 'gaussianBlur' }) },
   { id: 'filter.boxBlur', label: 'Desenfoque de cuadro…', needsDoc: true, run: dlg({ kind: 'filter', name: 'boxBlur' }) },
@@ -593,7 +618,7 @@ export function commandForEvent(e: KeyboardEvent): Command | undefined {
  * Combinaciones que Chrome/Edge se reservan en una pestaña normal: sólo llegan a la
  * página en pantalla completa (API Keyboard Lock). Se muestran con su alternativa.
  */
-export const BROWSER_RESERVED = new Set(['Ctrl+Tab', 'Ctrl+Shift+Tab', 'Ctrl+N', 'Ctrl+W', 'Ctrl+T', 'Ctrl+Shift+N', 'Ctrl+Shift+T', 'Ctrl+Shift+W', 'Ctrl+1', 'Ctrl+2', 'Ctrl+Shift+I', 'Ctrl+Shift+J', 'Ctrl+Shift+C']);
+export const BROWSER_RESERVED = new Set(['Ctrl+Tab', 'Ctrl+Shift+Tab', 'Ctrl+N', 'Ctrl+W', 'Ctrl+T', 'Ctrl+Shift+N', 'Ctrl+Shift+T', 'Ctrl+Shift+W', 'Ctrl+1', 'Ctrl+2', 'Ctrl+Shift+I', 'Ctrl+Shift+J', 'Ctrl+Shift+C', 'Ctrl+Shift+A', 'Ctrl+Shift+R']);
 
 // ------------------------------------------------------------------ opacidad con números
 
