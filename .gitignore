@@ -1,6 +1,7 @@
 node_modules/
 dist/
-tests/fixtures/
+tests/fixtures/*
+!tests/fixtures/test-font.ttf
 tests/out-*.png
 bench/resultados.md
 *.log
