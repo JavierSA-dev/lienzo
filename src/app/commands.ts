@@ -136,7 +136,7 @@ export const TOOL_GROUPS: { key: string; tools: ToolId[] }[] = [
   { key: 'V', tools: ['move'] },
   { key: 'M', tools: ['marquee', 'marqueeEllipse'] },
   { key: 'L', tools: ['lasso', 'polylasso'] },
-  { key: 'W', tools: ['wand'] },
+  { key: 'W', tools: ['objectSelect', 'quickSelect', 'wand'] },
   { key: 'C', tools: ['crop'] },
   { key: 'I', tools: ['eyedropper'] },
   { key: 'J', tools: ['spotHeal', 'heal', 'patch', 'redEye'] },
@@ -161,7 +161,7 @@ export const TOOL_NAMES: Record<ToolId, string> = {
   eraser: 'Borrador', gradient: 'Degradado', bucket: 'Bote de pintura', dodge: 'Sobreexponer', burn: 'Subexponer',
   text: 'Texto horizontal', shape: 'Forma', hand: 'Mano', zoom: 'Zoom',
   spotHeal: 'Pincel corrector puntual', heal: 'Pincel corrector', patch: 'Parche', pen: 'Pluma', pathSelect: 'Selección de trazado',
-  blur: 'Desenfocar', sharpen: 'Enfocar', smudge: 'Dedo', historyBrush: 'Pincel de historia', rotateView: 'Rotar vista', redEye: 'Pupilas rojas',
+  blur: 'Desenfocar', sharpen: 'Enfocar', smudge: 'Dedo', historyBrush: 'Pincel de historia', rotateView: 'Rotar vista', redEye: 'Pupilas rojas', objectSelect: 'Selección de objeto', quickSelect: 'Selección rápida',
 };
 
 export const groupOf = (t: ToolId) => TOOL_GROUPS.find((g) => g.tools.includes(t))!;
@@ -188,7 +188,7 @@ function toolKey(key: string, cycle: boolean) {
   selectTool(next);
 }
 
-const PAINT_TOOLS = new Set<ToolId>(['brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'spotHeal', 'heal', 'blur', 'sharpen', 'smudge', 'historyBrush']);
+const PAINT_TOOLS = new Set<ToolId>(['quickSelect', 'brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'spotHeal', 'heal', 'blur', 'sharpen', 'smudge', 'historyBrush']);
 export const isPaintTool = (t: ToolId) => PAINT_TOOLS.has(t);
 
 // ------------------------------------------------------------------ capas
@@ -379,6 +379,8 @@ export const COMMANDS: Command[] = [
   { id: 'select.none', label: 'Deseleccionar', keys: ['Ctrl+D'], needsDoc: true, rec: true, run: call('deselect') },
   { id: 'select.reselect', label: 'Volver a seleccionar', keys: ['Ctrl+Shift+D'], needsDoc: true, rec: true, run: call('reselect') },
   { id: 'select.invert', label: 'Invertir', keys: ['Ctrl+Shift+I', 'Shift+F7'], needsDoc: true, rec: true, run: call('invertSelection') },
+  { id: 'select.colorRange', label: 'Gama de colores…', needsDoc: true, run: dlg({ kind: 'colorRange' }) },
+  { id: 'select.refine', label: 'Seleccionar y aplicar máscara…', keys: ['Ctrl+Alt+R'], needsDoc: true, run: dlg({ kind: 'refine' }) },
   { id: 'select.subject', label: 'Sujeto (IA local)', needsDoc: true, run: call('selectSubject') },
   { id: 'select.quickMask', label: 'Editar en modo Máscara rápida', keys: ['Q'], needsDoc: true, checked: () => S().doc.quickMask, run: call('toggleQuickMask') },
   { id: 'select.save', label: 'Guardar selección', needsDoc: true, rec: true, run: call('saveSelection') },

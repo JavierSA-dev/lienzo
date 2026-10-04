@@ -15,7 +15,7 @@ import { ArtboardLabels } from './Artboards';
 const CURSORS: Partial<Record<ToolId, string>> = {
   move: 'move', marquee: 'crosshair', marqueeEllipse: 'crosshair', lasso: 'crosshair', polylasso: 'crosshair',
   wand: 'crosshair', crop: 'crosshair', eyedropper: 'crosshair', gradient: 'crosshair', bucket: 'crosshair',
-  text: 'text', shape: 'crosshair', hand: 'grab', zoom: 'zoom-in', pen: 'crosshair', pathSelect: 'default', patch: 'crosshair', rotateView: 'grab', redEye: 'crosshair',
+  text: 'text', shape: 'crosshair', hand: 'grab', zoom: 'zoom-in', pen: 'crosshair', pathSelect: 'default', patch: 'crosshair', rotateView: 'grab', redEye: 'crosshair', objectSelect: 'crosshair',
 };
 
 type Pt = [number, number];
@@ -34,7 +34,9 @@ type UIDrag =
   | { kind: 'guide'; id: number; dir: 'h' | 'v'; pos: number }
   | { kind: 'rotate'; a0: number; rot0: number }
   | { kind: 'redEye'; start: Pt; cur: Pt }
-  | { kind: 'textBox'; start: Pt; cur: Pt };
+  | { kind: 'textBox'; start: Pt; cur: Pt }
+  | { kind: 'quickSel'; pts: Pt[]; mode: CombineMode }
+  | { kind: 'objectSel'; start: Pt; cur: Pt; mode: CombineMode };
 
 /** Parámetros de la transformación libre (en coordenadas de documento). */
 interface TParams { tx: number; ty: number; sx: number; sy: number; rot: number }
@@ -325,6 +327,12 @@ export function CanvasArea() {
         case 'redEye':
           setUi({ kind: 'redEye', start: p, cur: p });
           return;
+        case 'quickSelect':
+          setUi({ kind: 'quickSel', pts: [p], mode: e.altKey ? 'subtract' : 'add' });
+          return;
+        case 'objectSelect':
+          setUi({ kind: 'objectSel', start: p, cur: p, mode: modeFrom(e) });
+          return;
         case 'bucket':
           engine.call('bucketFill', p[0], p[1], s.opts.wandTolerance, s.opts.contiguous, s.opts.sampleAll);
           return;
@@ -421,7 +429,12 @@ export function CanvasArea() {
       }
       case 'transform': moveTransform(g, p, e); return;
       case 'pen': penMove(g.g, p, e, useStore.getState().view.zoom); return;
-      case 'patchDrag': case 'redEye': case 'textBox': setUi({ ...g, cur: p }); return;
+      case 'patchDrag': case 'redEye': case 'textBox': case 'objectSel': setUi({ ...g, cur: p }); return;
+      case 'quickSel': {
+        const last = g.pts[g.pts.length - 1];
+        if (Math.hypot(p[0] - last[0], p[1] - last[1]) * useStore.getState().view.zoom > 3) setUi({ ...g, pts: [...g.pts, p] });
+        return;
+      }
       case 'guide': setUi({ ...g, pos: Math.round(g.dir === 'h' ? p[1] : p[0]) }); return;
       case 'rotate': {
         const r = rectRef.current!, sp = sample(e), a = Math.atan2(sp.y - r.height / 2, sp.x - r.width / 2);
@@ -533,6 +546,22 @@ export function CanvasArea() {
         }
         case 'pen': penUp(g.g); return;
         case 'guide': engine.call('moveGuide', g.id, g.pos); return;
+        case 'quickSel': {
+          // Puntos intermedios para que el trazo no deje huecos.
+          const r = s.brush.size / 2, pts: Pt[] = [g.pts[0]];
+          for (let i = 1; i < g.pts.length; i++) {
+            const [ax, ay] = g.pts[i - 1], [bx, by] = g.pts[i], n = Math.ceil(Math.hypot(bx - ax, by - ay) / Math.max(1, r * 0.5));
+            for (let k = 1; k <= n; k++) pts.push([ax + ((bx - ax) * k) / n, ay + ((by - ay) * k) / n]);
+          }
+          engine.call('quickSelect', pts, r, g.mode, s.opts.sampleAll, s.opts.autoEnhance);
+          return;
+        }
+        case 'objectSel': {
+          const r = normRect(g.start, g.cur);
+          if (r.w * s.view.zoom < 6 || r.h * s.view.zoom < 6) { engine.call('selectSubject'); return; }
+          engine.call('objectSelect', r, g.mode, s.opts.sampleAll);
+          return;
+        }
         case 'textBox': {
           const o = s.opts, r = normRect(g.start, g.cur), z = s.view.zoom;
           const box = r.w * z >= 10 && r.h * z >= 10 ? { w: Math.round(r.w), h: Math.round(r.h) } : null;
@@ -590,6 +619,11 @@ export function CanvasArea() {
     preview = ui.ellipse
       ? <ellipse className="ants" cx={X(rr.x + rr.w / 2)} cy={Y(rr.y + rr.h / 2)} rx={(rr.w / 2) * Z} ry={(rr.h / 2) * Z} />
       : <rect className="ants" x={X(rr.x)} y={Y(rr.y)} width={rr.w * Z} height={rr.h * Z} />;
+  } else if (ui?.kind === 'quickSel') {
+    preview = <polyline className="quicksel-trail" points={ui.pts.map(([x, y]) => `${X(x)},${Y(y)}`).join(' ')} strokeWidth={Math.max(2, brushSize * Z)} />;
+  } else if (ui?.kind === 'objectSel') {
+    const rr = normRect(ui.start, ui.cur);
+    preview = <rect className="ants" x={X(rr.x)} y={Y(rr.y)} width={rr.w * Z} height={rr.h * Z} />;
   } else if (ui?.kind === 'textBox') {
     const rr = normRect(ui.start, ui.cur);
     preview = <rect className="redeye-box" x={X(rr.x)} y={Y(rr.y)} width={rr.w * Z} height={rr.h * Z} />;

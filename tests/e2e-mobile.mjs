@@ -193,6 +193,37 @@ try {
   ok('Exportar como (con tamaños) desde el móvil', await page.getByRole('button', { name: '2x' }).isVisible());
   await page.getByRole('button', { name: 'Cancelar' }).click(); await wait();
 
+  // Fase 10: selección rápida con el dedo, gama de colores y seleccionar y aplicar máscara.
+  await call('deselect');
+  await call('selectShape', { x: 100, y: 100, w: 400, h: 400 }, 'ellipse', 'replace', 0);
+  await call('fill', [30, 120, 220, 255]); await call('deselect');
+  await page.evaluate(() => window.__lienzoStore.getState().setTool('quickSelect')); await wait();
+  await call('fit', false); await wait(300);
+  await drag(await scr(260, 300), await scr(340, 300), 6);
+  await page.waitForFunction(() => !!window.__lienzoStore.getState().doc.selection, null, { timeout: 15000 }).catch(() => {});
+  ok('Selección rápida con el dedo', (await call('debugSelection', 300, 300)) === 255 && (await call('debugSelection', 700, 700)) === 0);
+  await page.getByTestId('m-context').getByRole('button', { name: 'Refinar' }).click(); await wait(400);
+  await page.waitForFunction(() => { const c = document.querySelector('[data-testid=refine-preview]'); return c && c.width > 10; }, null, { timeout: 10000 }).catch(() => {});
+  {
+    const mb = await page.locator('.modal').boundingBox();
+    const cv = await page.getByTestId('refine-preview').boundingBox();
+    ok('Seleccionar y aplicar máscara cabe en el móvil y muestra la vista previa', mb.x >= 0 && mb.x + mb.width <= 391 && cv && cv.width > 100, JSON.stringify(mb));
+  }
+  await page.getByRole('button', { name: 'Cancelar' }).click(); await wait();
+  await call('deselect'); await wait();
+  await page.getByTestId('m-context').getByRole('button', { name: 'Gama de colores' }).click(); await wait(400);
+  {
+    const mb = await page.locator('.modal').boundingBox();
+    ok('Gama de colores desde la barra contextual cabe en el móvil', (await S()).dialog?.kind === 'colorRange' && mb.x >= 0 && mb.x + mb.width <= 391);
+    await page.waitForFunction(() => { const c = document.querySelector('[data-testid=cr-preview]'); return c && c.width > 10; });
+    const cb = await page.getByTestId('cr-preview').boundingBox();
+    // Tocar el azul del círculo en la vista previa (300/1080 del ancho).
+    await page.touchscreen.tap(cb.x + cb.width * 300 / 1080, cb.y + cb.height * 300 / 1080); await wait(500);
+    await page.getByRole('button', { name: 'OK' }).click(); await wait(500);
+    ok('Gama de colores tocando la vista previa', (await call('debugSelection', 300, 300)) === 255 && (await call('debugSelection', 900, 900)) === 0);
+  }
+  await call('deselect');
+
   // Lápiz: los dedos ya no pintan (rechazo de la palma) y desplazan.
   await page.evaluate(() => window.__lienzoStore.getState().setTool('brush'));
   await page.evaluate(() => {

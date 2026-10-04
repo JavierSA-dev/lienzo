@@ -34,7 +34,7 @@ export const MENUS: { label: string; items: Item[] }[] = [
     { sub: 'Distribuir', items: ['layer.dist.vcenter', 'layer.dist.hcenter'] },
     'layer.lockAlpha', '-', 'layer.mergeDown', 'layer.mergeVisible', 'layer.stamp', 'layer.flatten'] },
   { label: 'Texto', items: ['type.tool', 'type.warp', '-', 'type.loadLocalFonts', { label: 'Convertir en forma', soon: true }] },
-  { label: 'Selección', items: ['select.all', 'select.none', 'select.reselect', 'select.invert', 'layer.selectAll', '-', 'select.quickMask', 'select.save', 'select.luminosity', '-', 'select.subject', { label: 'Cielo', soon: true }, '-',
+  { label: 'Selección', items: ['select.all', 'select.none', 'select.reselect', 'select.invert', 'layer.selectAll', '-', 'select.quickMask', 'select.save', 'select.luminosity', '-', 'select.colorRange', 'select.subject', { label: 'Cielo', soon: true }, 'select.refine', '-',
     { sub: 'Modificar', items: ['select.feather', 'select.expand', 'select.contract'] }, 'select.fromLayer'] },
   { label: 'Filtro', items: ['filter.last', '-', 'filter.smart', '-', 'filter.liquify', '-',
     { sub: 'Desenfocar', items: ['filter.gaussianBlur', 'filter.boxBlur', 'filter.motionBlur'] },

@@ -9,7 +9,7 @@ export type DialogId =
   | { kind: 'new' } | { kind: 'imageSize' } | { kind: 'canvasSize' } | { kind: 'export' }
   | { kind: 'adjust'; type: AdjustmentType } | { kind: 'filter'; name: FilterName }
   | { kind: 'feather' } | { kind: 'grow'; dir: 1 | -1 } | { kind: 'fill' } | { kind: 'layerStyle' }
-  | { kind: 'shortcuts' } | { kind: 'liquify' } | { kind: 'generative' } | { kind: 'about' } | { kind: 'confirmClose'; docId: number } | { kind: 'newGuide' } | { kind: 'colorPicker'; which: 'fg' | 'bg' } | { kind: 'applyImage' } | { kind: 'stroke' } | { kind: 'newLayer' } | { kind: 'warpText' } | { kind: 'newArtboard' }
+  | { kind: 'shortcuts' } | { kind: 'liquify' } | { kind: 'generative' } | { kind: 'about' } | { kind: 'confirmClose'; docId: number } | { kind: 'newGuide' } | { kind: 'colorPicker'; which: 'fg' | 'bg' } | { kind: 'applyImage' } | { kind: 'stroke' } | { kind: 'newLayer' } | { kind: 'warpText' } | { kind: 'newArtboard' } | { kind: 'refine' } | { kind: 'colorRange' }
   | null;
 
 export type MobileSheet = 'menu' | 'layers' | 'adjust' | 'props' | 'history' | 'color' | 'export' | 'tools' | 'select';
@@ -44,6 +44,8 @@ export interface ToolOptions {
   italic: boolean;
   align: 'left' | 'center' | 'right';
   autoSelect: boolean;
+  /** Selección rápida: ajustar el borde al terminar. */
+  autoEnhance: boolean;
   /** Pupilas rojas: tamaño de pupila y cantidad de oscurecimiento (%). */
   pupilSize: number;
   darkenAmount: number;
@@ -143,7 +145,7 @@ const DEFAULT_OPTS: ToolOptions = {
   wandTolerance: 32, contiguous: true, sampleAll: false, antiAlias: true, feather: 0,
   gradientType: 'linear', gradientReverse: false, gradientTransparent: false,
   shapeKind: 'rect', shapeFill: true, shapeStroke: false, strokeWidth: 3, cornerRadius: 0, sides: 6,
-  font: 'Arial', fontSize: 48, bold: false, italic: false, align: 'left', autoSelect: false,
+  font: 'Arial', fontSize: 48, bold: false, italic: false, align: 'left', autoSelect: false, autoEnhance: true,
   pupilSize: 50, darkenAmount: 50,
 };
 
@@ -165,8 +167,9 @@ const TOOL_DEFAULTS: Partial<Record<ToolId, Partial<BrushSettings>>> = {
   blur: { opacity: 0.5, hardness: 0 }, sharpen: { opacity: 0.5, hardness: 0 }, smudge: { opacity: 0.5, hardness: 0 },
   spotHeal: { hardness: 1, size: 20 }, heal: { hardness: 1, size: 20 }, pencil: { hardness: 1, size: 1, pressureSize: false },
   eraser: { hardness: 1 },
+  quickSelect: { size: 30, hardness: 1 },
 };
-const BRUSH_TOOLS = new Set<ToolId>(['brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'spotHeal', 'heal', 'blur', 'sharpen', 'smudge', 'historyBrush']);
+const BRUSH_TOOLS = new Set<ToolId>(['quickSelect', 'brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'spotHeal', 'heal', 'blur', 'sharpen', 'smudge', 'historyBrush']);
 
 function brushDefaults(t: ToolId, saved: Record<string, BrushSettings>): BrushSettings {
   return saved[t] ?? { ...BASE_BRUSH, ...TOOL_DEFAULTS[t] };

@@ -624,3 +624,23 @@ button.lstyle-item { font-weight: 600; padding: 6px 8px; }
 
 .m-actions { display: flex; gap: 8px; padding: 4px 12px 8px; flex: none; }
 .m-actions .chip { padding: 8px 12px; border-radius: 16px; }
+.quicksel-trail { fill: none; stroke: #2f8cf0; stroke-opacity: .35; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Gama de colores / Seleccionar y aplicar máscara */
+.modal.wide:has(.refine-layout) { width: 860px; }
+.row-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0; font-size: 12px; }
+.row-tools .push { margin-left: auto; }
+.cr-swatches { display: inline-flex; gap: 3px; }
+.cr-swatches i { width: 16px; height: 16px; border: 1px solid #0008; border-radius: 3px; }
+.sel-preview { display: flex; justify-content: center; align-items: center; background: #1e1e1e; border: 1px solid var(--border-soft); border-radius: 4px; padding: 6px; min-height: 160px; }
+.cr-canvas { max-width: 100%; max-height: 52vh; image-rendering: auto; touch-action: none; }
+.refine-layout { display: grid; grid-template-columns: 1fr 260px; gap: 12px; }
+.refine-controls h4 { margin: 10px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-faint); }
+.check-row { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 4px 0; }
+@media (max-width: 760px) { .refine-layout { grid-template-columns: 1fr; } .cr-canvas { max-height: 34vh; } }
+.field.sfield { grid-template-columns: 1fr auto; row-gap: 2px; margin: 4px 0; }
+.field.sfield b { font-weight: 500; color: var(--text-dim, #bbb); font-variant-numeric: tabular-nums; }
+.field.sfield input[type='range'] { grid-column: 1 / -1; width: 100%; }
+.refine-controls .field { grid-template-columns: 80px minmax(0, 1fr); }
+.refine-controls .field.sfield { grid-template-columns: 1fr auto; }
+.refine-controls select { min-width: 0; width: 100%; }

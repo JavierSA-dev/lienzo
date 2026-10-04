@@ -119,12 +119,12 @@ export function MobileContextBar() {
   else if (tool === 'polylasso') items = [['Cerrar selección', () => press('Enter'), 'primary']];
   else if (penDrawing != null) items = [['Terminar trazado', () => press('Enter'), 'primary']];
   else if (doc.selection) items = [
-    ['Deseleccionar', () => run('select.none')], ['Invertir', () => run('select.invert')],
+    ['Deseleccionar', () => run('select.none')], ['Invertir', () => run('select.invert')], ['Refinar', () => run('select.refine')],
     ['Rellenar según contenido', () => run('edit.contentAware')], ['Capa vía copiar', () => run('layer.viaCopy')],
     ['Máscara', () => engine.call('addMask', 'selection')], ['Transformar', () => run('edit.freeTransform')],
   ];
-  else if (['marquee', 'marqueeEllipse', 'lasso', 'wand'].includes(tool)) items = [
-    ['Seleccionar sujeto', () => run('select.subject')], ['Todo', () => run('select.all')], ['Quitar fondo', () => run('ai.removeBg')],
+  else if (['marquee', 'marqueeEllipse', 'lasso', 'wand', 'objectSelect', 'quickSelect'].includes(tool)) items = [
+    ['Seleccionar sujeto', () => run('select.subject')], ['Gama de colores', () => run('select.colorRange')], ['Todo', () => run('select.all')], ['Quitar fondo', () => run('ai.removeBg')],
   ];
   if (!items.length) return null;
   return (

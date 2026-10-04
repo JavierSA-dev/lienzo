@@ -19,6 +19,7 @@ import { defaultAdjustment, ADJUSTMENT_LABELS } from './adjust';
 import { fixRedEye, strokeCoverage, type StrokeLocation } from './retouch';
 import { rasterizeText, rasterizeShape, rasterLimit, mul, invert as invertM, textBox, transformRect } from './vector';
 import { buildEffects, hasEffects } from './effects';
+import { downscale, quickRegion, upscaleMask, snapEdges, component, colorRange, refineMask, decontaminate, type ColorRangeParams, type RefineParams } from './smartsel';
 import { fontReady, loadGoogleFont } from './fonts';
 import { resetTextCache } from './text';
 
@@ -2635,6 +2636,201 @@ export class Engine {
     } finally {
       this.post({ type: 'busy', label: null });
     }
+  }
+
+  /** Píxeles para las selecciones inteligentes: la capa activa o todo el documento. */
+  private selectionSource(sampleAll: boolean): Uint8ClampedArray {
+    const d = this.doc!;
+    const L = d.active();
+    if (sampleAll || !L || L.kind === 'adjustment' || L.kind === 'group') return this.r.flatten(d, d.layers, this.docRect());
+    return L.readRegion(-L.x, -L.y, d.width, d.height);
+  }
+
+  /**
+   * Herramienta Selección rápida (W): con los puntos del trazo (documento) crece la selección por
+   * las zonas parecidas y se para en los bordes. Sin selección crea una; con ella, añade (Alt: resta).
+   */
+  quickSelect(points: [number, number][], radius: number, mode: CombineMode = 'add', sampleAll = true, autoEnhance = true) {
+    const d = this.doc;
+    if (!d || !points.length) return;
+    const t0 = performance.now();
+    const px = this.selectionSource(sampleAll);
+    const { img, W, H, s } = downscale(px, d.width, d.height, 640);
+    const seeds = new Set<number>();
+    const r = Math.max(1, radius * s);
+    for (const [x, y] of points) {
+      const cx = x * s, cy = y * s;
+      for (let yy = Math.floor(cy - r); yy <= Math.ceil(cy + r); yy++) for (let xx = Math.floor(cx - r); xx <= Math.ceil(cx + r); xx++) {
+        if (xx < 0 || yy < 0 || xx >= W || yy >= H || (xx - cx) ** 2 + (yy - cy) ** 2 > r * r) continue;
+        seeds.add(yy * W + xx);
+      }
+    }
+    if (!seeds.size) return;
+    const small = quickRegion(img, W, H, [...seeds]);
+    let m = upscaleMask(small, W, H, d.width, d.height);
+    if (autoEnhance) m = snapEdges(px, m, d.width, d.height, Math.max(2, 1.5 / s));
+    const sel = Selection.fromMask(m, d.width, d.height);
+    const cur = d.selection;
+    const next = !cur ? (mode === 'subtract' ? null : sel) : cur.combine(sel, mode === 'replace' ? 'add' : mode);
+    this.setSelection(next, 'Selección rápida');
+    this.post({ type: 'perf', label: 'Selección rápida', ms: performance.now() - t0 });
+  }
+
+  /** Herramienta Selección de objeto: rectángulo alrededor del objeto → IA local en esa zona. */
+  async objectSelect(rect: Rect, mode: CombineMode = 'replace', sampleAll = true) {
+    const d = this.doc;
+    if (!d) return;
+    const r0 = intersect({ x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.w), h: Math.round(rect.h) }, this.docRect());
+    if (!r0 || r0.w < 4 || r0.h < 4) return;
+    this.post({ type: 'busy', label: 'Buscando el objeto…' });
+    try {
+      // Un poco de margen alrededor ayuda a la red a ver el objeto entero.
+      const m0 = Math.round(Math.max(r0.w, r0.h) * 0.08);
+      const r = intersect({ x: r0.x - m0, y: r0.y - m0, w: r0.w + m0 * 2, h: r0.h + m0 * 2 }, this.docRect())!;
+      const all = this.selectionSource(sampleAll);
+      const px = new Uint8ClampedArray(r.w * r.h * 4);
+      for (let y = 0; y < r.h; y++) px.set(all.subarray(((r.y + y) * d.width + r.x) * 4, ((r.y + y) * d.width + r.x + r.w) * 4), y * r.w * 4);
+      const { subjectMask } = await import('./ai');
+      const raw = await subjectMask(px, r.w, r.h, this.base);
+      // Solo dentro del rectángulo y la mancha principal (la que toca el centro).
+      const bin = new Uint8Array(r.w * r.h);
+      for (let y = 0; y < r.h; y++) for (let x = 0; x < r.w; x++) {
+        const inR = x + r.x >= r0.x && x + r.x < r0.x + r0.w && y + r.y >= r0.y && y + r.y < r0.y + r0.h;
+        bin[y * r.w + x] = inR && raw[y * r.w + x] >= 128 ? 1 : 0;
+      }
+      const cx = Math.round(r0.x + r0.w / 2 - r.x), cy = Math.round(r0.y + r0.h / 2 - r.y);
+      const comp = component(bin, r.w, r.h, bin[cy * r.w + cx] ? cy * r.w + cx : undefined);
+      const soft = new Uint8Array(r.w * r.h);
+      for (let i = 0; i < soft.length; i++) soft[i] = comp[i] ? Math.max(raw[i], 128) : Math.min(raw[i], comp[i] ? 255 : 0);
+      const refined = snapEdges(px, soft, r.w, r.h, 3);
+      for (let y = 0; y < r.h; y++) for (let x = 0; x < r.w; x++) {
+        const inR = x + r.x >= r0.x && x + r.x < r0.x + r0.w && y + r.y >= r0.y && y + r.y < r0.y + r0.h;
+        if (!inR) refined[y * r.w + x] = 0;
+      }
+      const sel = Selection.fromMask(refined, r.w, r.h, r.x, r.y);
+      if (sel.isEmpty()) { this.toast('No se ha encontrado ningún objeto en ese rectángulo.', 'warn'); return; }
+      this.setSelection(this.combine(sel, mode), 'Selección de objeto');
+    } finally {
+      this.post({ type: 'busy', label: null });
+    }
+  }
+
+  /** Selección > Gama de colores (con vista previa: devuelve la máscara reducida sin aplicar). */
+  colorRangeMask(p: ColorRangeParams, sampleAll = true, preview = 0): { w: number; h: number; data: Uint8Array } | null {
+    const d = this.doc;
+    if (!d) return null;
+    const px = this.selectionSource(sampleAll);
+    const m = colorRange(px, d.width * d.height, p);
+    if (!preview) {
+      this.setSelection(Selection.fromMask(m, d.width, d.height), 'Gama de colores');
+      return null;
+    }
+    // Miniatura en escala de grises para el diálogo.
+    const k = Math.min(1, preview / Math.max(d.width, d.height));
+    const w = Math.max(1, Math.round(d.width * k)), h = Math.max(1, Math.round(d.height * k));
+    const out = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) out[y * w + x] = m[Math.min(d.height - 1, Math.floor(y / k)) * d.width + Math.min(d.width - 1, Math.floor(x / k))];
+    return { w, h, data: out };
+  }
+
+  /** Imagen compuesta reducida (vistas previas de los diálogos de selección). */
+  docPreview(size = 480, sampleAll = true): { w: number; h: number; image: Uint8ClampedArray } | null {
+    const d = this.doc;
+    if (!d) return null;
+    const px = this.selectionSource(sampleAll);
+    const k = Math.min(1, size / Math.max(d.width, d.height));
+    const w = Math.max(1, Math.round(d.width * k)), h = Math.max(1, Math.round(d.height * k));
+    const img = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const si = Math.min(d.height - 1, Math.floor((y + 0.5) / k)) * d.width + Math.min(d.width - 1, Math.floor((x + 0.5) / k));
+      img.set(px.subarray(si * 4, si * 4 + 4), (y * w + x) * 4);
+    }
+    return { w, h, image: img };
+  }
+
+  /** Color del documento en un punto (cuentagotas de Gama de colores). */
+  sampleColor(x: number, y: number, sampleAll = true): [number, number, number] | null {
+    const d = this.doc;
+    if (!d || x < 0 || y < 0 || x >= d.width || y >= d.height) return null;
+    if (sampleAll) { const c = this.pickColor(x, y); return c ? [c[0], c[1], c[2]] : null; }
+    const L = d.active();
+    const c = L?.pixel(Math.floor(x), Math.floor(y));
+    return c ? [c[0], c[1], c[2]] : null;
+  }
+
+  /** Seleccionar y aplicar máscara: vista previa (máscara refinada) o aplicar con una salida. */
+  async refineSelection(p: RefineParams & { decontaminate?: number; output: 'preview' | 'selection' | 'mask' | 'newLayerMask'; previewSize?: number }): Promise<{ w: number; h: number; image: Uint8ClampedArray; mask: Uint8Array } | null> {
+    const d = this.doc;
+    if (!d) return null;
+    const L = d.active();
+    const base = d.selection ?? (L?.mask && L.kind !== 'group' ? this.selFromLayerMask(L) : null);
+    if (!base) { this.toast('Haz primero una selección (o usa una capa con máscara).', 'warn'); return null; }
+    const px = this.selectionSource(true);
+    const mask = base.region(this.docRect());
+    if (p.output === 'preview') {
+      // Vista previa rápida a tamaño reducido (los radios se escalan igual).
+      const k = Math.min(1, (p.previewSize ?? 640) / Math.max(d.width, d.height));
+      const w = Math.max(1, Math.round(d.width * k)), h = Math.max(1, Math.round(d.height * k));
+      const img = new Uint8ClampedArray(w * h * 4), mm = new Uint8Array(w * h);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const X = Math.min(d.width - 1, Math.floor((x + 0.5) / k)), Y = Math.min(d.height - 1, Math.floor((y + 0.5) / k));
+        const si = Y * d.width + X, di = y * w + x;
+        img.set(px.subarray(si * 4, si * 4 + 4), di * 4);
+        mm[di] = mask[si];
+      }
+      const pr = { ...p, radius: p.radius * k, feather: p.feather * k };
+      return { w, h, image: img, mask: refineMask(img, mm, w, h, pr) };
+    }
+    const m = refineMask(px, mask, d.width, d.height, p);
+    const sel = Selection.fromMask(m, d.width, d.height);
+    if (p.output === 'selection') { this.setSelection(sel.isEmpty() ? null : sel, 'Seleccionar y aplicar máscara'); return null; }
+    if (!L || L.kind === 'adjustment' || L.kind === 'group') { this.toast('Elige una capa de píxeles para la máscara.', 'warn'); return null; }
+    this.batched('Seleccionar y aplicar máscara', () => {
+      let target = L;
+      if (p.output === 'newLayerMask') {
+        // Capa nueva con máscara (y, si se pide, colores descontaminados), como Photoshop.
+        const b = L.bounds() ?? this.docRect();
+        let src = L.readRegion(b.x - L.x, b.y - L.y, b.w, b.h);
+        if (p.decontaminate) {
+          const mm = new Uint8Array(b.w * b.h);
+          for (let y = 0; y < b.h; y++) for (let x = 0; x < b.w; x++) {
+            const X = b.x + x, Y = b.y + y;
+            mm[y * b.w + x] = X >= 0 && Y >= 0 && X < d.width && Y < d.height ? m[Y * d.width + X] : 0;
+          }
+          src = decontaminate(src, mm, b.w, b.h, p.decontaminate / 100);
+        }
+        target = layerFromPixels(`${L.name} (refinada)`, src, b.w, b.h, b.x, b.y);
+        L.visible = false;
+        const lid = L.id;
+        this.commit(new FnEntry('', (doc) => { const l = doc.layer(lid); if (l) l.visible = true; }, (doc) => { const l = doc.layer(lid); if (l) l.visible = false; }));
+        this.insertLayer(target, this.above(target), 'Capa nueva con máscara');
+      }
+      const oldMask = target.mask, oldEn = target.maskEnabled;
+      const mk = new MaskChannel(0);
+      const T = target;
+      forTiles({ x: -T.x, y: -T.y, w: d.width, h: d.height }, (tx, ty, x0, y0, x1, y1) => {
+        const k = tileKey(tx, ty);
+        const t = mk.ensureTile(k);
+        for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+          const X = tx * TILE + x + T.x, Y = ty * TILE + y + T.y;
+          t[y * TILE + x] = X >= 0 && Y >= 0 && X < d.width && Y < d.height ? m[Y * d.width + X] : 0;
+        }
+        mk.touch(k);
+      });
+      T.mask = mk; T.maskEnabled = true;
+      const id = T.id;
+      this.commit(new FnEntry('', (doc) => { const l = doc.layer(id); if (l) { l.mask = oldMask; l.maskEnabled = oldEn; } }, (doc) => { const l = doc.layer(id); if (l) { l.mask = mk; l.maskEnabled = true; } }));
+      if (d.selection) this.setSelection(null, 'Deseleccionar');
+    });
+    this.invalidate(null);
+    return null;
+  }
+
+  private selFromLayerMask(L: PixelLayer): Selection {
+    const d = this.doc!;
+    const m = new Uint8Array(d.width * d.height);
+    for (let y = 0; y < d.height; y++) for (let x = 0; x < d.width; x++) m[y * d.width + x] = L.mask!.get(x - L.x, y - L.y);
+    return Selection.fromMask(m, d.width, d.height);
   }
 
   /** Selección > Sujeto: la misma IA, pero como selección. */

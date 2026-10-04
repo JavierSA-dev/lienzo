@@ -111,6 +111,24 @@ export function OptionsBar() {
           {tool === 'polylasso' && <span className="hint">Doble clic o Intro cierra · Retroceso quita el último punto</span>}
         </>
       )}
+      {tool === 'quickSelect' && (
+        <>
+          <Slider label="Tamaño" value={brush.size} min={1} max={500} unit="px" onChange={(v) => setBrush({ size: v })} />
+          <Toggle on={opts.sampleAll} label="Muestrear todas las capas" onClick={() => setOpts({ sampleAll: !opts.sampleAll })} />
+          <Toggle on={opts.autoEnhance} label="Mejora automática" title="Ajusta el borde de la selección a la imagen" onClick={() => setOpts({ autoEnhance: !opts.autoEnhance })} />
+          <button className="chip" disabled={!doc.open} onClick={() => engine.call('selectSubject')}>Seleccionar sujeto</button>
+          <button className="chip" disabled={!doc.selection} onClick={() => useStore.getState().setDialog({ kind: 'refine' })}>Seleccionar y aplicar máscara…</button>
+          <span className="hint">Pinta sobre lo que quieres: la selección crece hasta los bordes · Alt: restar</span>
+        </>
+      )}
+      {tool === 'objectSelect' && (
+        <>
+          <Toggle on={opts.sampleAll} label="Muestrear todas las capas" onClick={() => setOpts({ sampleAll: !opts.sampleAll })} />
+          <button className="chip" disabled={!doc.open} onClick={() => engine.call('selectSubject')}>Seleccionar sujeto</button>
+          <button className="chip" disabled={!doc.selection} onClick={() => useStore.getState().setDialog({ kind: 'refine' })}>Seleccionar y aplicar máscara…</button>
+          <span className="hint">Dibuja un rectángulo alrededor del objeto (IA local) · Mayús: añadir · Alt: restar</span>
+        </>
+      )}
       {(tool === 'wand' || tool === 'bucket') && (
         <>
           <Slider label="Tolerancia" value={opts.wandTolerance} min={0} max={255} width={90} onChange={(v) => setOpts({ wandTolerance: v })} />

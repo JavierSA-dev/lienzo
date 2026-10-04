@@ -52,7 +52,7 @@ function useShortcuts() {
         const dx = e.key === 'ArrowLeft' ? -n : e.key === 'ArrowRight' ? n : 0, dy = e.key === 'ArrowUp' ? -n : e.key === 'ArrowDown' ? n : 0;
         e.preventDefault();
         if (s.tool === 'move') engine.call('moveLayerBy', dx, dy);
-        else if (s.doc.selection && ['marquee', 'marqueeEllipse', 'lasso', 'polylasso', 'wand'].includes(s.tool)) engine.call('moveSelectionBy', dx, dy);
+        else if (s.doc.selection && ['marquee', 'marqueeEllipse', 'lasso', 'polylasso', 'wand', 'objectSelect', 'quickSelect'].includes(s.tool)) engine.call('moveSelectionBy', dx, dy);
         return;
       }
 

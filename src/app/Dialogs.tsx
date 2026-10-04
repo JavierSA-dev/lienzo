@@ -13,6 +13,7 @@ import { LayerStyleDialog } from './LayerStyle';
 import { WarpTextDialog } from './TextPanels';
 import { NewArtboardDialog, ExportAsDialog } from './Artboards';
 import { GenerativeDialog } from './Generative';
+import { ColorRangeDialog, RefineDialog } from './SelectDialogs';
 
 export function Modal({ title, children, onOk, okLabel = 'OK', onClose, wide }: { title: string; children: ReactNode; onOk: () => void; okLabel?: string; onClose: () => void; wide?: boolean }) {
   const cb = useRef({ onOk, onClose });
@@ -269,6 +270,8 @@ export function Dialogs() {
     case 'newLayer': return <NewLayerDialog close={close} />;
     case 'warpText': return <WarpTextDialog close={close} />;
     case 'newArtboard': return <NewArtboardDialog close={close} />;
+    case 'colorRange': return <ColorRangeDialog close={close} />;
+    case 'refine': return <RefineDialog close={close} />;
     case 'colorPicker': return <ColorPickerDialog which={dialog.which} close={close} />;
     case 'confirmClose': return <ConfirmCloseDialog docId={dialog.docId} close={close} />;
     case 'shortcuts': return <ShortcutsDialog close={close} />;

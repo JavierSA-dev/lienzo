@@ -68,7 +68,7 @@ try {
   await page.keyboard.press('v'); await page.keyboard.press('m'); ok('M recuerda la última del grupo (elíptico)', (await S()).tool === 'marqueeEllipse');
   await page.keyboard.press('l'); ok('L → Lazo', (await S()).tool === 'lasso');
   await page.keyboard.press('Shift+l'); ok('Mayús+L → Lazo poligonal', (await S()).tool === 'polylasso');
-  await page.keyboard.press('w'); ok('W → Varita mágica', (await S()).tool === 'wand');
+  await page.keyboard.press('w'); ok('W → Selección de objeto (grupo de la varita)', (await S()).tool === 'objectSelect');
   await page.keyboard.press('c'); ok('C → Recortar', (await S()).tool === 'crop');
   await page.keyboard.press('i'); ok('I → Cuentagotas', (await S()).tool === 'eyedropper');
   await page.keyboard.press('b'); ok('B → Pincel', (await S()).tool === 'brush');
