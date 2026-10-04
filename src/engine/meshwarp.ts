@@ -14,7 +14,9 @@ export type WarpSpec =
   /** Rectángulo `src` → cuadrilátero `quad` (sup-izq, sup-der, inf-der, inf-izq). */
   | { kind: 'quad'; src: Rect; quad: number[] }
   /** Rejilla uniforme sobre `src` ((cols+1)×(rows+1) vértices) → posiciones `pts` (x,y). */
-  | { kind: 'mesh'; src: Rect; cols: number; rows: number; pts: number[] };
+  | { kind: 'mesh'; src: Rect; cols: number; rows: number; pts: number[] }
+  /** Homografía general (origen → destino) recortada a `dst` (Recortar con perspectiva). */
+  | { kind: 'proj'; h: number[]; dst: Rect };
 
 // ------------------------------------------------------------------ homografía
 
@@ -173,7 +175,10 @@ export type PuppetMode = 'rigid' | 'normal' | 'distort';
  * Mínimos cuadrados móviles (Schaefer et al. 2006): rígido (sin escala), normal (semejanza)
  * o distorsionar (afín). `p` = chinchetas originales, `q` = chinchetas movidas.
  */
-export function mlsDeform(p: Pt[], q: Pt[], v: Pt, mode: PuppetMode = 'rigid'): Pt {
+export function mlsDeform(p: Pt[], q: Pt[], v: Pt, puppet: PuppetMode = 'rigid'): Pt {
+  // Modos de Photoshop: Rígido y Normal no escalan (MLS rígido, más o menos local); Distorsionar admite escala.
+  const alpha = puppet === 'rigid' ? 1.4 : 1;
+  const mode = (puppet === 'distort' ? 'normal' : 'rigid') as 'rigid' | 'normal' | 'distort';
   const n = p.length;
   if (!n) return v;
   if (n === 1) return [v[0] + q[0][0] - p[0][0], v[1] + q[0][1] - p[0][1]];
@@ -182,7 +187,7 @@ export function mlsDeform(p: Pt[], q: Pt[], v: Pt, mode: PuppetMode = 'rigid'): 
   for (let i = 0; i < n; i++) {
     const d2 = (p[i][0] - v[0]) ** 2 + (p[i][1] - v[1]) ** 2;
     if (d2 < 1e-8) return [q[i][0], q[i][1]];
-    w[i] = 1 / d2; sw += w[i];
+    w[i] = 1 / Math.pow(d2, alpha); sw += w[i];
     px += w[i] * p[i][0]; py += w[i] * p[i][1]; qx += w[i] * q[i][0]; qy += w[i] * q[i][1];
   }
   px /= sw; py /= sw; qx /= sw; qy /= sw;
@@ -218,6 +223,7 @@ export function mlsDeform(p: Pt[], q: Pt[], v: Pt, mode: PuppetMode = 'rigid'): 
 /** Malla (para la vista previa en GPU y para aplicar) de cualquier especificación. */
 export function specToMesh(spec: WarpSpec, n = 16): { src: Rect; cols: number; rows: number; pts: Float32Array } {
   if (spec.kind === 'mesh') return { src: spec.src, cols: spec.cols, rows: spec.rows, pts: Float32Array.from(spec.pts) };
+  if (spec.kind === 'proj') throw new Error('proj sin vista previa');
   const src = spec.kind === 'quad' ? spec.src : { x: 0, y: 0, w: 1, h: 1 };
   const map: (x: number, y: number) => Pt = spec.kind === 'quad'
     ? (() => { const h = homography(rectCorners(spec.src), toPts(spec.quad)); return (x: number, y: number) => applyH(h, x, y); })()
@@ -237,6 +243,7 @@ export const toPts = (a: number[]): Pt[] => [[a[0], a[1]], [a[2], a[3]], [a[4], 
 export function specBounds(spec: WarpSpec, src: Rect): Rect {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   const add = (x: number, y: number) => { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
+  if (spec.kind === 'proj') return spec.dst;
   if (spec.kind === 'affine') for (const [x, y] of rectCorners(src)) add(spec.m[0] * x + spec.m[2] * y + spec.m[4], spec.m[1] * x + spec.m[3] * y + spec.m[5]);
   else if (spec.kind === 'quad') for (let i = 0; i < 8; i += 2) add(spec.quad[i], spec.quad[i + 1]);
   else for (let i = 0; i < spec.pts.length; i += 2) add(spec.pts[i], spec.pts[i + 1]);
@@ -258,6 +265,9 @@ export function backMap(spec: WarpSpec, x0: number, y0: number, w: number, rows:
       const m = spec.m, det = m[0] * m[3] - m[1] * m[2];
       const ia = m[3] / det, ib = -m[1] / det, ic = -m[2] / det, id = m[0] / det;
       f = (x, y) => { const dx = x - m[4], dy = y - m[5]; return [ia * dx + ic * dy, ib * dx + id * dy]; };
+    } else if (spec.kind === 'proj') {
+      const hi = invertH(spec.h);
+      f = (x, y) => applyH(hi, x, y);
     } else {
       const hi = invertH(homography(rectCorners(spec.src), toPts(spec.quad)));
       f = (x, y) => applyH(hi, x, y);
@@ -312,4 +322,21 @@ export function specMinScale(spec: WarpSpec, src: Rect): number {
   if (spec.kind === 'affine') return Math.sqrt(Math.abs(spec.m[0] * spec.m[3] - spec.m[1] * spec.m[2]));
   const b = specBounds(spec, src);
   return Math.sqrt(Math.max(1, b.w * b.h) / Math.max(1, src.w * src.h));
+}
+
+/** Transformación directa de un punto (para llevar con la capa trazados como la máscara vectorial). */
+export function specForward(spec: WarpSpec): (x: number, y: number) => Pt {
+  if (spec.kind === 'affine') { const m = spec.m; return (x, y) => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]]; }
+  if (spec.kind === 'proj') return (x, y) => applyH(spec.h, x, y);
+  if (spec.kind === 'quad') { const h = homography(rectCorners(spec.src), toPts(spec.quad)); return (x, y) => applyH(h, x, y); }
+  const { src, cols, rows, pts } = spec, C1 = cols + 1;
+  return (x, y) => {
+    const gx = Math.min(cols - 1e-6, Math.max(0, ((x - src.x) / src.w) * cols)), gy = Math.min(rows - 1e-6, Math.max(0, ((y - src.y) / src.h) * rows));
+    const i = Math.floor(gx), j = Math.floor(gy), u = gx - i, v = gy - j;
+    const at = (a: number, b: number, c: number) => pts[((b * C1) + a) * 2 + c];
+    const lerp = (c: number) => (at(i, j, c) * (1 - u) + at(i + 1, j, c) * u) * (1 - v) + (at(i, j + 1, c) * (1 - u) + at(i + 1, j + 1, c) * u) * v;
+    // Fuera de la rejilla se extrapola con el desplazamiento del borde.
+    const ex = x - (src.x + (gx / cols) * src.w), ey = y - (src.y + (gy / rows) * src.h);
+    return [lerp(0) + ex, lerp(1) + ey];
+  };
 }

@@ -1,3 +1,6 @@
+import type { WarpSpec } from './meshwarp';
+import type { VectorMask } from './vmask';
+import { toSvg } from './path';
 import type { VectorPath } from './path';
 import {
   TILE, type BlendMode, type LayerInfo, type Rect, type RGBA, type LayerKind, type AdjustmentParams,
@@ -17,6 +20,8 @@ export interface SmartObject {
   matrix: Matrix;
   filters: SmartFilter[];
   source?: string;
+  /** Deformaciones no afines (perspectiva, deformar, posición libre) aplicadas tras `matrix`. */
+  warps?: WarpSpec[];
 }
 
 /** Clave numérica de un tile; admite índices negativos (capas desplazadas). */
@@ -111,6 +116,11 @@ export class PixelLayer {
   kind: LayerKind = 'pixel';
   mask: MaskChannel | null = null;
   maskEnabled = true;
+  /** Máscara vectorial (trazado). */
+  vmask: VectorMask | null = null;
+  /** Caché de la máscara efectiva (píxeles × vectorial) y la última que se entregó al compositor. */
+  private cm: { key: string; ch: MaskChannel } | null = null;
+  private lastComp: MaskChannel | null = null;
   /** Bloquear píxeles transparentes: pintar sólo donde ya hay contenido. */
   lockAlpha = false;
   adjustment?: AdjustmentParams;
@@ -135,13 +145,42 @@ export class PixelLayer {
     this.name = name;
   }
 
+  /**
+   * Máscara con la que se compone la capa: la de píxeles (si está activa) multiplicada por la
+   * vectorial (si la hay). Al cambiar de objeto se marcan las teselas para la GPU.
+   */
+  compMask(): MaskChannel | null {
+    const pm = this.mask && this.maskEnabled ? this.mask : null;
+    const vm = this.vmask?.enabled ? this.vmask : null;
+    let out: MaskChannel | null = pm;
+    if (vm) {
+      const key = `${vm.rev}|${pm ? pm.version : -1}|${pm?.fill ?? ''}`;
+      if (this.cm?.key !== key) {
+        const vecKey = `${vm.rev}`;
+        const vec = VMASK_RASTER.get(this) && VMASK_RASTER.get(this)!.key === vecKey ? VMASK_RASTER.get(this)!.ch : rasterVM(vm);
+        VMASK_RASTER.set(this, { key: vecKey, ch: vec });
+        this.cm = { key, ch: COMBINE(vec, pm) };
+      }
+      out = this.cm.ch;
+    } else this.cm = null;
+    if (out !== this.lastComp) {
+      if (out) {
+        for (const k of out.tiles.keys()) out.gpuDirty.add(k);
+        if (this.lastComp) for (const k of this.lastComp.tiles.keys()) if (!out.tiles.has(k)) out.gpuRemoved.add(k);
+      }
+      this.lastComp = out;
+    }
+    return out;
+  }
+
   /** Capas auxiliares de los estilos. */
   fxLayers(): PixelLayer[] { return this.fxStyled ? [...this.fxUnder, this.fxStyled] : this.fxUnder; }
 
   info(): LayerInfo {
     return {
       id: this.id, name: this.name, kind: this.kind, visible: this.visible, opacity: this.opacity, blend: this.blend,
-      x: this.x, y: this.y, hasMask: !!this.mask, maskEnabled: this.maskEnabled, lockAlpha: this.lockAlpha,
+      x: this.x, y: this.y, hasMask: !!this.mask, maskEnabled: this.maskEnabled,
+      vmask: this.vmask ? { enabled: this.vmask.enabled, invert: this.vmask.invert, density: this.vmask.density, feather: this.vmask.feather, empty: !this.vmask.path.length, svg: toSvg(this.vmask.path, (x, y) => [x + this.x, y + this.y]) } : null, lockAlpha: this.lockAlpha,
       adjustment: this.adjustment, text: this.text, shape: this.shape, effects: this.effects,
       smart: this.smart && { w: this.smart.w, h: this.smart.h, matrix: this.smart.matrix, filters: this.smart.filters, source: this.smart.source, hasContents: !!this.smart.contents },
       artboard: this.artboard, parent: this.parent, clipped: this.clipped, collapsed: this.kind === 'group' ? this.collapsed : undefined,
@@ -218,6 +257,7 @@ export class PixelLayer {
     l.lockAlpha = this.lockAlpha;
     l.maskEnabled = this.maskEnabled;
     l.mask = this.mask?.clone() ?? null;
+    l.vmask = this.vmask && { ...this.vmask, path: this.vmask.path.map((sp) => ({ closed: sp.closed, points: sp.points.map((q) => ({ ...q })) })) };
     l.adjustment = this.adjustment && structuredClone(this.adjustment);
     l.text = this.text && structuredClone(this.text);
     l.shape = this.shape && structuredClone(this.shape);
@@ -442,3 +482,9 @@ export class EditorDocument {
     }
   }
 }
+
+// Rasterizado de la máscara vectorial (inyectado desde vmask.ts para evitar una dependencia circular).
+const VMASK_RASTER = new WeakMap<PixelLayer, { key: string; ch: MaskChannel }>();
+let rasterVM: (vm: VectorMask) => MaskChannel = () => new MaskChannel(255);
+let COMBINE: (vec: MaskChannel, pix: MaskChannel | null) => MaskChannel = (v) => v;
+export function setVectorMaskRaster(r: typeof rasterVM, c: typeof COMBINE) { rasterVM = r; COMBINE = c; }

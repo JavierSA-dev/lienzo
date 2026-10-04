@@ -11,7 +11,7 @@ import { Pool, shareable } from './pool';
 import { importRaster, encodeRaster } from './io';
 import {
   resampleLayer, applyLut, invertLut, brightnessContrastLut, desaturate, layerThumb, layerFromPixels, pruneEmpty,
-  applyRegion, gradientPixels, rotateRGBA, flipRGBA, type GradientType,
+  applyRegion, gradientPixels, type GradientType,
 } from './ops';
 import { Selection, floodMask, clampRect, forTiles, type CombineMode } from './selection';
 import { filterApron, WHOLE_FILTERS, type FilterName, type FilterParams } from './filters';
@@ -22,11 +22,13 @@ import { buildEffects, hasEffects } from './effects';
 import { downscale, quickRegion, upscaleMask, snapEdges, component, colorRange, refineMask, decontaminate, type ColorRangeParams, type RefineParams } from './smartsel';
 import { fontReady, loadGoogleFont } from './fonts';
 import { resetTextCache } from './text';
+import { newVectorMask, nextRev, rasterVectorMask, combineMasks, type VectorMask } from './vmask';
+import { specToMesh, specBounds, specMinScale, backMap, specForward, homography as homographyOf, toPts as toQuad, type WarpSpec } from './meshwarp';
 
 /** Clave de caché de los estilos: contenido, máscara, posición y parámetros. */
 function fxKey(L: PixelLayer): string {
   if (!hasEffects(L.effects)) return '';
-  return `${L.version}|${L.mask ? `${L.mask.version}:${L.maskEnabled}` : '-'}|${L.x},${L.y}|${JSON.stringify(L.effects)}`;
+  return `${L.version}|${L.mask ? `${L.mask.version}:${L.maskEnabled}` : '-'}|${L.vmask ? `${L.vmask.rev}:${L.vmask.enabled}` : '-'}|${L.x},${L.y}|${JSON.stringify(L.effects)}`;
 }
 function fxBounds(L: PixelLayer): Rect | null {
   let r: Rect | null = null;
@@ -130,7 +132,7 @@ export class Engine {
   private cloneOffset: { dx: number; dy: number } | null = null;
   private lastSelection: Selection | null = null;
   private lastFilter: { name: FilterName; params: FilterParams } | null = null;
-  private transform: { layers: PixelLayer[]; src: Rect; matrix: Matrix } | null = null;
+  private transform: { layers: PixelLayer[]; src: Rect; matrix: Matrix; spec?: WarpSpec | null } | null = null;
   private autoSelect = false;
   private busy = false;
   private clipboard: { data: Uint8ClampedArray; rect: Rect } | null = null;
@@ -1306,6 +1308,70 @@ export class Engine {
     this.invalidate(L.kind === 'adjustment' ? null : L.bounds());
   }
 
+  // ================================================================ máscaras vectoriales
+
+  /** Capa > Máscara vectorial > Mostrar todo / Ocultar todo / Trazado actual. */
+  addVectorMask(mode: 'reveal' | 'hide' | 'path', path?: VectorPath) {
+    const d = this.doc;
+    const L = d?.active();
+    if (!d || !L) return;
+    if (mode === 'path' && (!path || isEmptyPath(path))) { this.toast('Dibuja primero un trazado con la pluma o una forma.', 'warn'); return; }
+    // El trazado se guarda en coordenadas de la capa (así se mueve con ella).
+    const local = mode === 'path' ? clonePath(path!).map((sp) => ({ closed: true, points: sp.points.map((q) => ({ x: q.x - L.x, y: q.y - L.y, ix: q.ix - L.x, iy: q.iy - L.y, ox: q.ox - L.x, oy: q.oy - L.y })) })) : [];
+    const before = L.vmask;
+    const vm = before && mode === 'path' ? { ...before, path: local, rev: nextRev() } : newVectorMask(local, mode === 'reveal');
+    L.vmask = vm;
+    this.commit(new FnEntry(before ? 'Editar máscara vectorial' : 'Añadir máscara vectorial',
+      (doc) => { const l = doc.layer(L.id); if (l) l.vmask = before; }, (doc) => { const l = doc.layer(L.id); if (l) l.vmask = vm; }));
+    this.vmaskChanged(L);
+  }
+
+  /** Propiedades de la máscara vectorial: activar, invertir, densidad y calado. */
+  setVectorMask(patch: Partial<Pick<VectorMask, 'enabled' | 'invert' | 'density' | 'feather'>>, id?: number) {
+    const d = this.doc;
+    const L = id ? d?.layer(id) : d?.active();
+    if (!d || !L?.vmask) return;
+    const before = L.vmask, vm = { ...before, ...patch, rev: nextRev() };
+    L.vmask = vm;
+    const label = patch.enabled !== undefined ? (patch.enabled ? 'Activar máscara vectorial' : 'Desactivar máscara vectorial') : 'Propiedades de máscara vectorial';
+    this.commit(new FnEntry(label, (doc) => { const l = doc.layer(L.id); if (l) l.vmask = before; }, (doc) => { const l = doc.layer(L.id); if (l) l.vmask = vm; }));
+    this.vmaskChanged(L);
+  }
+
+  /** Eliminar o rasterizar (pasar a la máscara de píxeles) la máscara vectorial. */
+  deleteVectorMask(rasterize = false) {
+    const d = this.doc;
+    const L = d?.active();
+    if (!d || !L?.vmask) return;
+    const before = L.vmask, oldMask = L.mask, oldEn = L.maskEnabled;
+    let newMask = oldMask;
+    if (rasterize) {
+      const vec = rasterVectorMask(before);
+      newMask = combineMasks(vec, oldMask && oldEn ? oldMask : null);
+      if (newMask === vec) { const c = new MaskChannel(vec.fill); for (const [k, t] of vec.tiles) c.setTile(k, t.slice()); newMask = c; }
+      else for (const k of newMask.tiles.keys()) newMask.touch(k);
+    }
+    L.vmask = null; L.mask = newMask; if (rasterize) L.maskEnabled = true;
+    this.commit(new FnEntry(rasterize ? 'Rasterizar máscara vectorial' : 'Eliminar máscara vectorial',
+      (doc) => { const l = doc.layer(L.id); if (l) { l.vmask = before; l.mask = oldMask; l.maskEnabled = oldEn; } },
+      (doc) => { const l = doc.layer(L.id); if (l) { l.vmask = null; l.mask = newMask; if (rasterize) l.maskEnabled = true; } }));
+    this.vmaskChanged(L);
+  }
+
+  /** El trazado de la máscara vectorial (en coordenadas de documento) para editarlo con la pluma. */
+  vectorMaskPath(id?: number): VectorPath | null {
+    const L = id ? this.doc?.layer(id) : this.doc?.active();
+    if (!L?.vmask) return null;
+    return L.vmask.path.map((sp) => ({ closed: sp.closed, points: sp.points.map((q) => ({ x: q.x + L.x, y: q.y + L.y, ix: q.ix + L.x, iy: q.iy + L.y, ox: q.ox + L.x, oy: q.oy + L.y })) }));
+  }
+
+  private vmaskChanged(L: PixelLayer) {
+    L.version++;
+    this.scheduleEffects();
+    this.invalidate(null);
+    this.pushState(true);
+  }
+
   setEditMask(on: boolean) {
     const d = this.doc;
     if (!d) return;
@@ -1554,12 +1620,25 @@ export class Engine {
         nl = await resampleLayer(L, sx, sy, this.pool);
       }
       if (L.mask) nl.mask = transformMask(L, [sx, 0, 0, sy, 0, 0], w, h, { x: L.x, y: L.y }, nl);
+      nl.vmask = L.vmask && mapVM(L.vmask, (x, y) => [(x + L.x) * sx - nl.x, (y + L.y) * sy - nl.y]);
       nl.maskEnabled = L.maskEnabled; nl.effects = L.effects && structuredClone(L.effects); nl.lockAlpha = L.lockAlpha;
       this.post({ type: 'busy', label: 'Tamaño de imagen', progress: ++done / oldLayers.length });
       return nl;
     }));
     this.post({ type: 'busy', label: null });
     if (this.doc !== d) return;
+    // Conserva la estructura (grupos, recortes, objetos inteligentes, mesas de trabajo) con los ids nuevos.
+    const ids = new Map(oldLayers.map((L, i) => [L.id, newLayers[i].id]));
+    oldLayers.forEach((L, i) => {
+      const nl = newLayers[i];
+      nl.kind = L.kind; nl.parent = L.parent == null ? null : ids.get(L.parent) ?? null;
+      nl.clipped = L.clipped; nl.collapsed = L.collapsed; nl.visible = L.visible; nl.opacity = L.opacity; nl.blend = L.blend;
+      if (L.artboard) nl.artboard = { ...L.artboard, x: Math.round(L.artboard.x * sx), y: Math.round(L.artboard.y * sy), w: Math.max(1, Math.round(L.artboard.w * sx)), h: Math.max(1, Math.round(L.artboard.h * sy)) };
+      if (L.kind === 'smart' && L.smart) {
+        const S: Matrix = [sx, 0, 0, sy, 0, 0];
+        nl.smart = L.smart.warps?.length ? { ...L.smart, warps: [...L.smart.warps, { kind: 'affine', m: S }] } : { ...L.smart, matrix: mul(S, L.smart.matrix) };
+      }
+    });
     const newActive = newLayers[Math.max(0, activeIdx)].id;
     const oldSel = d.selection;
     const set = (layers: PixelLayer[], W: number, H: number, active: number, sel: Selection | null) => (doc: EditorDocument) => {
@@ -1584,12 +1663,91 @@ export class Engine {
     this.shiftDocument(w, h, dx, dy, 'Tamaño de lienzo');
   }
 
-  /** Recortar (no destructivo: el contenido fuera del lienzo se conserva). */
-  crop(rect: Rect) {
+  /**
+   * Recortar (no destructivo: el contenido fuera del lienzo se conserva). Con `angle` (Enderezar o
+   * girar el cuadro) el rectángulo está girado `angle` rad alrededor de `pivot` y se endereza la imagen.
+   */
+  async crop(rect: Rect & { angle?: number; pivot?: [number, number] }) {
     const d = this.doc;
     if (!d) return;
     const r = { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.max(1, Math.round(rect.w)), h: Math.max(1, Math.round(rect.h)) };
-    this.shiftDocument(r.w, r.h, -r.x, -r.y, 'Recortar');
+    const a = rect.angle ?? 0;
+    if (Math.abs(a) < 1e-6) { this.shiftDocument(r.w, r.h, -r.x, -r.y, 'Recortar'); return; }
+    const [px, py] = rect.pivot ?? [d.width / 2, d.height / 2];
+    const c = Math.cos(a), s = Math.sin(a);
+    const m: Matrix = [c, -s, s, c, 0, 0];
+    m[4] = px - rect.x - (m[0] * px + m[2] * py);
+    m[5] = py - rect.y - (m[1] * px + m[3] * py);
+    await this.warpDocument({ kind: 'affine', m }, r.w, r.h, 'Recortar');
+  }
+
+  /** Imagen > Rotación de imagen > Arbitraria… (grados, positivo = horario; el lienzo crece para que quepa). */
+  async rotateArbitrary(deg: number) {
+    const d = this.doc;
+    if (!d || !deg) return;
+    const a = (deg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+    const W = d.width, H = d.height;
+    const nW = Math.max(1, Math.round(Math.abs(W * c) + Math.abs(H * s))), nH = Math.max(1, Math.round(Math.abs(W * s) + Math.abs(H * c)));
+    const m: Matrix = [c, s, -s, c, 0, 0];
+    m[4] = nW / 2 - (c * W / 2 - s * H / 2);
+    m[5] = nH / 2 - (s * W / 2 + c * H / 2);
+    await this.warpDocument({ kind: 'affine', m }, nW, nH, `Rotación de imagen ${deg}°`);
+  }
+
+  /** Herramienta Recortar con perspectiva: el cuadrilátero (sup-izq, sup-der, inf-der, inf-izq) pasa a rectángulo. */
+  async perspectiveCrop(quad: number[], size?: { w: number; h: number }) {
+    const d = this.doc;
+    if (!d || quad.length !== 8) return;
+    const q = toQuad(quad);
+    const len = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+    const w = Math.max(1, Math.round(size?.w ?? (len(q[0], q[1]) + len(q[3], q[2])) / 2));
+    const h = Math.max(1, Math.round(size?.h ?? (len(q[0], q[3]) + len(q[1], q[2])) / 2));
+    const hm = homographyOf(q, [[0, 0], [w, 0], [w, h], [0, h]]);
+    await this.warpDocument({ kind: 'proj', h: hm, dst: { x: 0, y: 0, w, h } }, w, h, 'Recortar con perspectiva');
+  }
+
+  /** Aplica una transformación a todo el documento (todas las capas y máscaras) y cambia su tamaño. */
+  private async warpDocument(spec: WarpSpec, w: number, h: number, label: string) {
+    const d = this.doc!;
+    const oldW = d.width, oldH = d.height, oldSel = d.selection;
+    this.post({ type: 'busy', label: `${label}…` });
+    const t0 = performance.now();
+    const entries: HistoryEntry[] = [];
+    try {
+      d.width = w; d.height = h; d.selection = null;
+      entries.push(new FnEntry('', (doc) => { doc.width = oldW; doc.height = oldH; doc.selection = oldSel; }, (doc) => { doc.width = w; doc.height = h; doc.selection = null; }));
+      for (const L of d.layers) {
+        if (L.artboard) {
+          const ab = L.artboard, r = specBounds(spec, { x: ab.x, y: ab.y, w: ab.w, h: ab.h });
+          const nab = { ...ab, x: r.x, y: r.y, w: Math.max(1, r.w), h: Math.max(1, r.h) };
+          L.artboard = nab;
+          entries.push(new FnEntry('', (doc) => { const l = doc.layer(L.id); if (l) l.artboard = ab; }, (doc) => { const l = doc.layer(L.id); if (l) l.artboard = nab; }));
+        }
+        if (L.kind === 'group' || L.kind === 'adjustment') {
+          if (!L.mask) continue;
+          const oldMask = L.mask, newMask = warpMask(oldMask, { x: L.x, y: L.y }, spec, w, h), ox = L.x, oy = L.y;
+          L.mask = newMask; L.x = 0; L.y = 0;
+          entries.push(new FnEntry('', (doc) => { const l = doc.layer(L.id); if (l) { l.mask = oldMask; l.x = ox; l.y = oy; } }, (doc) => { const l = doc.layer(L.id); if (l) { l.mask = newMask; l.x = 0; l.y = 0; } }));
+          continue;
+        }
+        if ((L.kind === 'text' || L.kind === 'shape') && spec.kind !== 'affine') {
+          // Texto/formas con perspectiva: se rasterizan (Photoshop hace lo mismo al recortar con perspectiva).
+          const before = { kind: L.kind, text: L.text, shape: L.shape };
+          L.kind = 'pixel'; L.text = undefined; L.shape = undefined;
+          entries.push(new FnEntry('', (doc) => { const l = doc.layer(L.id); if (l) Object.assign(l, before); },
+            (doc) => { const l = doc.layer(L.id); if (l) { l.kind = 'pixel'; l.text = undefined; l.shape = undefined; } }));
+        }
+        const e = spec.kind === 'affine' ? await this.transformOne(L, spec.m, label) : await this.warpOne(L, spec, label);
+        if (e) entries.push(e);
+      }
+    } finally {
+      this.post({ type: 'busy', label: null });
+    }
+    this.commit(new GroupEntry(label, entries));
+    this.post({ type: 'perf', label, ms: performance.now() - t0 });
+    this.fit(true);
+    this.invalidate(null);
+    this.selectionChanged();
   }
 
   cropToSelection() {
@@ -1617,50 +1775,18 @@ export class Engine {
   }
 
   /** Rotación de imagen (90°, -90°, 180°) y voltear lienzo. */
-  rotateCanvas(deg: 90 | -90 | 180) { this.transformCanvas(deg, null); }
-  flipCanvas(horizontal: boolean) { this.transformCanvas(null, horizontal); }
+  rotateCanvas(deg: 90 | -90 | 180) { return this.transformCanvas(deg, null); }
+  flipCanvas(horizontal: boolean) { return this.transformCanvas(null, horizontal); }
 
-  private transformCanvas(deg: 90 | -90 | 180 | null, flipH: boolean | null) {
+  private async transformCanvas(deg: 90 | -90 | 180 | null, flipH: boolean | null) {
     const d = this.doc;
     if (!d) return;
     const W = d.width, H = d.height;
     const nW = deg && deg !== 180 ? H : W, nH = deg && deg !== 180 ? W : H;
     const m: Matrix = deg === 90 ? [0, 1, -1, 0, H, 0] : deg === -90 ? [0, -1, 1, 0, 0, W] : deg === 180 ? [-1, 0, 0, -1, W, H]
       : flipH ? [-1, 0, 0, 1, W, 0] : [1, 0, 0, -1, 0, H];
-    const oldLayers = d.layers, oldActive = d.activeLayerId, oldSel = d.selection;
-    const idx = d.indexOf(oldActive);
-    const newLayers = oldLayers.map((L) => {
-      let nl: PixelLayer;
-      if (L.kind === 'text' || L.kind === 'shape') {
-        nl = L.clone(L.name);
-        if (nl.text) nl.text = { ...nl.text, matrix: mul(m, nl.text.matrix) };
-        if (nl.shape) nl.shape = { ...nl.shape, matrix: mul(m, nl.shape.matrix) };
-        this.rasterizeInto(nl, nW, nH);
-      } else if (L.kind === 'adjustment') {
-        nl = L.clone(L.name);
-      } else {
-        nl = new PixelLayer(L.name);
-        Object.assign(nl, { visible: L.visible, opacity: L.opacity, blend: L.blend, lockAlpha: L.lockAlpha, effects: L.effects });
-        const b = L.bounds();
-        if (b) {
-          const px = L.readRegion(b.x - L.x, b.y - L.y, b.w, b.h);
-          const t = deg ? rotateRGBA(px, b.w, b.h, deg) : { data: flipRGBA(px, b.w, b.h, !!flipH), w: b.w, h: b.h };
-          const r = transformRect(m, b);
-          nl.writeRegion(t.data, t.w, t.h, r.x, r.y);
-        }
-      }
-      if (L.mask) nl.mask = transformMask(L, m, nW, nH, { x: L.x, y: L.y }, nl);
-      nl.maskEnabled = L.maskEnabled;
-      return nl;
-    });
-    const newActive = newLayers[Math.max(0, idx)].id;
-    const set = (layers: PixelLayer[], w: number, h: number, a: number, s: Selection | null) => (doc: EditorDocument) => { doc.layers = layers; doc.width = w; doc.height = h; doc.activeLayerId = a; doc.selection = s; };
-    set(newLayers, nW, nH, newActive, null)(d);
-    this.commit(new FnEntry(deg ? `Rotación de imagen ${deg}°` : flipH ? 'Voltear lienzo horizontal' : 'Voltear lienzo vertical',
-      set(oldLayers, W, H, oldActive, oldSel), set(newLayers, nW, nH, newActive, null)));
-    this.fit(true);
-    this.invalidate(null);
-    this.selectionChanged();
+    // En el sitio (conserva grupos, objetos inteligentes, máscaras vectoriales y mesas de trabajo).
+    await this.warpDocument({ kind: 'affine', m }, nW, nH, deg ? `Rotación de imagen ${deg}°` : flipH ? 'Voltear lienzo horizontal' : 'Voltear lienzo vertical');
   }
 
   /** Ajustes destructivos (Ctrl+L, Ctrl+M, Ctrl+U…): se calculan en GPU con una capa temporal. */
@@ -2088,6 +2214,14 @@ export class Engine {
         }
         await Promise.all(jobs);
       }
+      // Deformaciones (perspectiva, deformar, posición libre) guardadas en el objeto inteligente.
+      for (const w of sm.warps ?? []) {
+        const b = nl.bounds();
+        if (!b) break;
+        const next = new PixelLayer('smart');
+        await this.warpPixels(nl.readRegion(b.x, b.y, b.w, b.h), b, w, next);
+        nl = next;
+      }
       // Filtros inteligentes en orden (de abajo arriba, como en el panel de Photoshop).
       for (const f of sm.filters) {
         if (!f.enabled) continue;
@@ -2131,12 +2265,16 @@ export class Engine {
   }
 
   /** Cambia los datos del objeto inteligente, lo repinta y devuelve el paso de historial. */
-  private async smartUpdate(L: PixelLayer, next: SmartObject, label: string): Promise<HistoryEntry> {
+  private async smartUpdate(L: PixelLayer, next: SmartObject, label: string, keepVMask = false): Promise<HistoryEntry> {
     const before = L.smart, bx = L.x, by = L.y;
     L.smart = next;
     const patch = await this.renderSmart(L, label);
-    const props = new FnEntry('', (doc) => { const l = doc.layer(L.id); if (l) { l.smart = before; l.x = bx; l.y = by; l.version++; } },
-      (doc) => { const l = doc.layer(L.id); if (l) { l.smart = next; l.x = 0; l.y = 0; l.version++; } });
+    // La capa vuelve a (0,0): la máscara vectorial (en coordenadas de capa) se desplaza para no moverse.
+    const vmB = L.vmask;
+    const vmA = vmB && !keepVMask && (bx || by) ? shiftVM(vmB, bx, by) : vmB;
+    L.vmask = vmA;
+    const props = new FnEntry('', (doc) => { const l = doc.layer(L.id); if (l) { l.smart = before; l.x = bx; l.y = by; l.vmask = vmB; l.version++; } },
+      (doc) => { const l = doc.layer(L.id); if (l) { l.smart = next; l.x = 0; l.y = 0; l.vmask = vmA; l.version++; } });
     return new GroupEntry(label, [patch, props]);
   }
 
@@ -2155,6 +2293,14 @@ export class Engine {
     const set = this.topSelected().filter((l) => l.kind !== 'adjustment' || this.topSelected().length > 1);
     if (!set.length) { this.toast('Selecciona las capas que quieres convertir.', 'warn'); return; }
     if (set.length === 1 && set[0].kind === 'smart') { this.toast('Ya es un objeto inteligente.'); return; }
+    await this.smartFromSet(set);
+  }
+
+  /** Una capa de texto o forma pasa a objeto inteligente (para perspectiva, deformar…). */
+  private smartFromLayer(L: PixelLayer) { return this.smartFromSet([L]); }
+
+  private async smartFromSet(set: PixelLayer[]): Promise<PixelLayer | null> {
+    const d = this.doc!;
     const all: PixelLayer[] = [];
     for (const l of set) { if (l.kind === 'group') all.push(...d.descendants(l.id)); all.push(l); }
     all.sort((a, b) => d.indexOf(a.id) - d.indexOf(b.id));
@@ -2165,7 +2311,7 @@ export class Engine {
       for (const f of l.fxLayers()) bb = union(bb, exactBounds(f));
     }
     bb = bb ? intersect(bb, rasterLimit(d.width, d.height)) : null;
-    if (!bb) { this.toast('Las capas están vacías.', 'warn'); return; }
+    if (!bb) { this.toast('Las capas están vacías.', 'warn'); return null; }
     // Contenido: un documento propio con copias de las capas, con el origen en la esquina de la caja.
     const child = new EditorDocument(`${set[set.length - 1].name}.psb`, bb.w, bb.h);
     const { copies } = cloneLayers(all);
@@ -2188,6 +2334,7 @@ export class Engine {
     d.selectedIds = new Set([L.id]);
     this.commitStruct('Convertir en objeto inteligente', before);
     this.invalidate(null);
+    return L;
   }
 
   /** Coloca una imagen como objeto inteligente (Archivo > Colocar incrustado, como Photoshop). */
@@ -2447,7 +2594,18 @@ export class Engine {
   updateTransform(m: Matrix) {
     if (!this.transform) return;
     this.transform.matrix = m;
+    this.transform.spec = null;
     this.r.setPreviewMatrix(m);
+    this.requestFrame();
+  }
+
+  /** Perspectiva, distorsionar, deformar y posición libre: vista previa con malla. */
+  updateTransformSpec(spec: WarpSpec) {
+    const t = this.transform;
+    if (!t) return;
+    if (spec.kind === 'affine') { this.updateTransform(spec.m); return; }
+    t.spec = spec;
+    this.r.setPreviewMesh(specToMesh(spec, 24));
     this.requestFrame();
   }
 
@@ -2461,14 +2619,21 @@ export class Engine {
     const t = this.transform;
     const d = this.doc;
     if (!t || !d) return;
-    const m = t.matrix;
-    if (m.every((v, i) => Math.abs(v - IDENTITY[i]) < 1e-9)) { this.cancelTransform(); return; }
+    const m = t.matrix, spec = t.spec;
+    if (!spec && m.every((v, i) => Math.abs(v - IDENTITY[i]) < 1e-9)) { this.cancelTransform(); return; }
     this.post({ type: 'busy', label: 'Transformando…' });
     const t0 = performance.now();
     try {
       const entries: HistoryEntry[] = [];
-      for (const L of t.layers) {
-        const e = await this.transformOne(L, m, label);
+      let layers = t.layers;
+      if (spec && layers.some((l) => l.kind === 'text' || l.kind === 'shape')) {
+        // Como Photoshop: el texto y las formas sólo admiten deformaciones no afines como objeto inteligente.
+        const next: PixelLayer[] = [];
+        for (const l of layers) next.push(l.kind === 'text' || l.kind === 'shape' ? (await this.smartFromLayer(l)) ?? l : l);
+        layers = next;
+      }
+      for (const L of layers) {
+        const e = spec ? await this.warpOne(L, spec, label) : await this.transformOne(L, m, label);
         if (e) entries.push(e);
       }
       if (entries.length) this.commit(entries.length === 1 ? entries[0] : new GroupEntry(label, entries));
@@ -2480,12 +2645,88 @@ export class Engine {
     }
   }
 
+  /** Lleva la máscara vectorial con la capa al transformarla (`f` en coordenadas de documento). */
+  private transformVMask(L: PixelLayer, f: (x: number, y: number) => [number, number], oldX: number, oldY: number): HistoryEntry | null {
+    const before = L.vmask;
+    if (!before) return null;
+    const nx = L.x, ny = L.y;
+    const mp = (x: number, y: number) => { const [a, b] = f(x + oldX, y + oldY); return [a - nx, b - ny] as [number, number]; };
+    const path = before.path.map((sp) => ({ closed: sp.closed, points: sp.points.map((q) => {
+      const [x, y] = mp(q.x, q.y), [ix, iy] = mp(q.ix, q.iy), [ox, oy] = mp(q.ox, q.oy);
+      return { x, y, ix, iy, ox, oy };
+    }) }));
+    const vm = { ...before, path, rev: nextRev() };
+    L.vmask = vm;
+    return new FnEntry('', (doc) => { const l = doc.layer(L.id); if (l) l.vmask = before; }, (doc) => { const l = doc.layer(L.id); if (l) l.vmask = vm; });
+  }
+
+  /** Rasteriza `src` (región del documento) con una deformación, repartido en bandas por los hilos. */
+  private async warpPixels(data: Uint8ClampedArray, src: Rect, spec: WarpSpec, into: PixelLayer) {
+    const d = this.doc!;
+    const dst = intersect(specBounds(spec, src), rasterLimit(d.width, d.height));
+    if (!dst) return;
+    const sc = specMinScale(spec, src);
+    const ss = sc < 0.7 ? Math.min(4, Math.ceil(2 / sc)) : 2;
+    const shared = shareable(data);
+    const bands = Math.max(1, Math.min(dst.h, this.pool.size * 3)), rows = Math.ceil(dst.h / bands);
+    const jobs: Promise<void>[] = [];
+    for (let y0 = 0; y0 < dst.h; y0 += rows) {
+      const r = Math.min(rows, dst.h - y0);
+      jobs.push(this.pool.run({ op: 'mapwarp', src: shared, sw: src.w, sh: src.h, sx: src.x, sy: src.y, spec, x: dst.x, y: dst.y + y0, w: dst.w, rows: r, ss })
+        .then((band) => into.writeRegion(band, dst.w, r, dst.x, dst.y + y0)));
+    }
+    await Promise.all(jobs);
+  }
+
+  /** Perspectiva / distorsionar / deformar / posición libre sobre una capa (paso de historial sin registrar). */
+  private async warpOne(L: PixelLayer, spec: WarpSpec, label: string): Promise<HistoryEntry | null> {
+    const d = this.doc!;
+    if (L.kind === 'smart' && L.smart) {
+      // Sin pérdida: la deformación se guarda en el objeto inteligente.
+      const sx0 = L.x, sy0 = L.y;
+      const e0 = await this.smartUpdate(L, { ...L.smart, warps: [...(L.smart.warps ?? []), spec] }, label, true);
+      const vmE = this.transformVMask(L, specForward(spec), sx0, sy0);
+      const e = vmE ? new GroupEntry(label, [e0, vmE]) : e0;
+      if (!L.mask) return e;
+      const oldMask = L.mask, newMask = warpMask(oldMask, { x: 0, y: 0 }, spec, d.width, d.height);
+      L.mask = newMask;
+      return new GroupEntry(label, [e, new FnEntry('', (doc) => { const l = doc.layer(L.id); if (l) l.mask = oldMask; }, (doc) => { const l = doc.layer(L.id); if (l) l.mask = newMask; })]);
+    }
+    const src = exactBounds(L);
+    if (!src) return null;
+    const nl = new PixelLayer(L.name);
+    await this.warpPixels(L.readRegion(src.x - L.x, src.y - L.y, src.w, src.h), src, spec, nl);
+    const oldX = L.x, oldY = L.y, oldMask = L.mask;
+    const patch = new TilePatch(label, L);
+    for (const k of new Set([...L.tiles.keys(), ...nl.tiles.keys()])) patch.capture(L, k);
+    for (const k of [...L.tiles.keys()]) L.setTile(k, null);
+    for (const [k, tile] of nl.tiles) L.setTile(k, tile);
+    L.x = 0; L.y = 0;
+    const newMask = oldMask ? warpMask(oldMask, { x: oldX, y: oldY }, spec, d.width, d.height) : null;
+    L.mask = newMask;
+    const pos = new FnEntry('',
+      (doc) => { const l = doc.layer(L.id); if (l) { l.x = oldX; l.y = oldY; l.mask = oldMask; } },
+      (doc) => { const l = doc.layer(L.id); if (l) { l.x = 0; l.y = 0; l.mask = newMask; } });
+    const vmE = this.transformVMask(L, specForward(spec), oldX, oldY);
+    return new GroupEntry(label, vmE ? [patch, pos, vmE] : [patch, pos]);
+  }
+
   /** Aplica la matriz a una capa y devuelve su paso de historial (sin registrarlo). */
   private async transformOne(L: PixelLayer, m: Matrix, label: string): Promise<HistoryEntry | null> {
+    const ox = L.x, oy = L.y;
+    const e = await this.transformOneInner(L, m, label);
+    const vmE = this.transformVMask(L, (x, y) => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]], ox, oy);
+    if (!vmE) return e;
+    return e ? new GroupEntry(label, [e, vmE]) : vmE;
+  }
+
+  private async transformOneInner(L: PixelLayer, m: Matrix, label: string): Promise<HistoryEntry | null> {
     const d = this.doc!;
     if (L.kind === 'smart' && L.smart) {
       // Sin pérdida: se transforma desde el contenido original.
-      const e = await this.smartUpdate(L, { ...L.smart, matrix: mul(m, L.smart.matrix) }, label);
+      // Con deformaciones previas, la nueva transformación va después de ellas.
+      const next = L.smart.warps?.length ? { ...L.smart, warps: [...L.smart.warps, { kind: 'affine' as const, m }] } : { ...L.smart, matrix: mul(m, L.smart.matrix) };
+      const e = await this.smartUpdate(L, next, label, true);
       if (L.mask) {
         const oldMask = L.mask;
         const newMask = transformMask(L, m, d.width, d.height, { x: 0, y: 0 }, L, oldMask);
@@ -3753,6 +3994,41 @@ function shiftMask(m: MaskChannel, dx: number, dy: number): MaskChannel {
  * Transforma la máscara de `L` con una matriz de documento (vecino más cercano).
  * `origin` es la posición de la capa original; `target` la capa destino (su x/y define las coordenadas locales).
  */
+/** Máscara vectorial con el trazado desplazado / transformado (coordenadas de capa). */
+function mapVM(vm: VectorMask, f: (x: number, y: number) => [number, number]): VectorMask {
+  return { ...vm, rev: nextRev(), path: vm.path.map((sp) => ({ closed: sp.closed, points: sp.points.map((q) => {
+    const [x, y] = f(q.x, q.y), [ix, iy] = f(q.ix, q.iy), [ox, oy] = f(q.ox, q.oy);
+    return { x, y, ix, iy, ox, oy };
+  }) })) };
+}
+const shiftVM = (vm: VectorMask, dx: number, dy: number) => mapVM(vm, (x, y) => [x + dx, y + dy]);
+
+/** Deforma una máscara (vecino más próximo; fuera queda el valor por defecto de la máscara). */
+function warpMask(src: MaskChannel, origin: { x: number; y: number }, spec: WarpSpec, docW: number, docH: number): MaskChannel {
+  const out = new MaskChannel(src.fill);
+  if (!src.tiles.size) return out;
+  let r: Rect | null = null;
+  for (const k of src.tiles.keys()) r = union(r, { x: keyTx(k) * TILE + origin.x, y: keyTy(k) * TILE + origin.y, w: TILE, h: TILE });
+  // La deformación está definida sobre su rectángulo de origen: se aplica a todo el documento.
+  const dst = intersect(specBounds(spec, 'src' in spec ? spec.src : r!), rasterLimit(docW, docH));
+  if (!dst) return out;
+  const BAND = 64;
+  for (let y0 = dst.y; y0 < dst.y + dst.h; y0 += BAND) {
+    const rows = Math.min(BAND, dst.y + dst.h - y0);
+    const map = backMap(spec, dst.x, y0, dst.w, rows, 1);
+    for (let j = 0; j < rows; j++) for (let i = 0; i < dst.w; i++) {
+      const k = (j * dst.w + i) * 2, sx = map[k];
+      if (sx !== sx) continue;
+      const v = src.get(Math.floor(sx) - origin.x, Math.floor(map[k + 1]) - origin.y);
+      if (v === out.fill) continue;
+      const x = dst.x + i, y = y0 + j, tx = Math.floor(x / TILE), ty = Math.floor(y / TILE);
+      out.ensureTile(tileKey(tx, ty))[(y - ty * TILE) * TILE + (x - tx * TILE)] = v;
+    }
+  }
+  for (const k of out.tiles.keys()) out.touch(k);
+  return out;
+}
+
 function transformMask(L: PixelLayer, m: Matrix, docW: number, docH: number, origin: { x: number; y: number }, target: PixelLayer, src: MaskChannel = L.mask!): MaskChannel {
   const out = new MaskChannel(src.fill);
   if (!src.tiles.size) return out;

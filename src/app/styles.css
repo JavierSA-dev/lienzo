@@ -644,3 +644,16 @@ button.lstyle-item { font-weight: 600; padding: 6px 8px; }
 .refine-controls .field { grid-template-columns: 80px minmax(0, 1fr); }
 .refine-controls .field.sfield { grid-template-columns: 1fr auto; }
 .refine-controls select { min-width: 0; width: 100%; }
+
+/* Deformar y deformación de posición libre */
+.warp-grid { fill: none; stroke: #fff; stroke-opacity: .55; stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: none; filter: drop-shadow(0 0 1px #000); }
+.warp-edge { fill: none; stroke: #2d8ceb; stroke-width: 1.5; pointer-events: none; }
+.warp-tangent { stroke: #2d8ceb; stroke-width: 1; pointer-events: none; }
+.handle.warp-pt { fill: #fff; stroke: #2d8ceb; }
+.puppet-mesh polyline { fill: none; stroke: #000; stroke-opacity: .45; stroke-width: 1; pointer-events: none; }
+.puppet-pin { fill: #ffd400; stroke: #000; stroke-width: 1.5; pointer-events: none; }
+.puppet-pin.on { fill: #000; stroke: #ffd400; }
+.optionsbar .seg { display: inline-flex; gap: 2px; }
+.straighten-line { stroke: #fff; stroke-width: 1.5; stroke-dasharray: 5 4; filter: drop-shadow(0 0 1px #000); pointer-events: none; }
+.thumb.vmask { background: #8a8a8a; overflow: hidden; }
+.thumb.vmask.disabled { opacity: .45; }

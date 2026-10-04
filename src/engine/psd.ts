@@ -1,3 +1,4 @@
+import { newVectorMask } from './vmask';
 import { readPsd, writePsdUint8Array, initializeCanvas, type Layer as PsdLayer, type Psd, type AdjustmentLayer, type LayerEffectsInfo, type Color as PsdColor, type UnitsValue } from 'ag-psd';
 import { EditorDocument, PixelLayer, MaskChannel } from './document';
 import { BLEND_MODES, SELECTIVE_RANGES, IDENTITY, type AdjustmentParams, type BlendMode, type RGBA, type LayerEffects, type BevelStyle, type TextParams, type Matrix, type WarpStyle } from './types';
@@ -335,6 +336,14 @@ export function importPsd(name: string, buffer: ArrayBuffer): ImportResult {
         }
       }
       readMask(l, L);
+      if (l.vectorMask?.paths?.length || l.vectorMask?.invert) {
+        // Máscara vectorial: los nudos de Photoshop son (entrada, ancla, salida) en píxeles del documento.
+        const path = (l.vectorMask.paths ?? []).filter((p) => p.knots.length).map((p) => ({
+          closed: !p.open,
+          points: p.knots.map((k) => ({ ix: k.points[0] - L.x, iy: k.points[1] - L.y, x: k.points[2] - L.x, y: k.points[3] - L.y, ox: k.points[4] - L.x, oy: k.points[5] - L.y })),
+        }));
+        L.vmask = { ...newVectorMask(path, !!l.vectorMask.invert), enabled: !l.vectorMask.disable };
+      }
       if (!l.children && !l.adjustment) {
         const fx: LayerEffects = l.effects && !l.effects.disabled ? effectsFromPsd(l.effects) : {};
         if (l.fillOpacity !== undefined && l.fillOpacity < 1) fx.fill = l.fillOpacity;
@@ -418,6 +427,17 @@ export function exportPsd(doc: EditorDocument, composite: Uint8ClampedArray, psb
       } else {
         base.mask = { defaultColor: L.mask.fill, disabled: !L.maskEnabled };
       }
+    }
+    if (L.vmask) {
+      const vm = L.vmask;
+      base.vectorMask = {
+        invert: vm.invert, disable: !vm.enabled,
+        paths: vm.path.filter((sp) => sp.points.length).map((sp) => ({
+          open: !sp.closed, operation: 'combine' as const, fillRule: 'even-odd' as const,
+          knots: sp.points.map((q) => ({ linked: Math.abs((q.ix - q.x) * (q.oy - q.y) - (q.iy - q.y) * (q.ox - q.x)) < 1e-3, points: [q.ix + L.x, q.iy + L.y, q.x + L.x, q.y + L.y, q.ox + L.x, q.oy + L.y] })),
+        })),
+      };
+      if (base.mask) { base.mask.vectorMaskDensity = Math.round((vm.density / 100) * 255); base.mask.vectorMaskFeather = vm.feather; }
     }
     return base;
   };

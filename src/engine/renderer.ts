@@ -1,6 +1,6 @@
 import { TILE, type Matrix, type Rect, type ViewState, type BlendIf } from './types';
 import { tileKey, keyTx, keyTy, type EditorDocument, type PixelLayer, type MaskChannel } from './document';
-import { RECT_VS, QUAD_VS, BLEND_FS, NORMAL_FS, ADJ_FS, VIEW_FS, CHECKER_FS, SOLID_FS, MIX_FS, MASKVIEW_FS, BLEND_INDEX } from './shaders';
+import { RECT_VS, QUAD_VS, MESH_VS, BLEND_FS, NORMAL_FS, ADJ_FS, VIEW_FS, CHECKER_FS, SOLID_FS, MIX_FS, MASKVIEW_FS, BLEND_INDEX } from './shaders';
 import { adjustmentUniforms } from './adjust';
 import { apply } from './vector';
 import { cpuFlatten } from './ops';
@@ -24,7 +24,7 @@ type Node =
 type Target = { tex: WebGLTexture; fb: WebGLFramebuffer };
 type Frame = [Target, Target];
 
-interface Preview { layerIds: Set<number>; tex: WebGLTexture; src: Rect; matrix: Matrix }
+interface Preview { layerIds: Set<number>; tex: WebGLTexture; src: Rect; matrix: Matrix; mesh?: { src: Rect; cols: number; rows: number; pts: Float32Array } | null }
 
 const MIP_LEVELS = Math.log2(TILE) + 1;
 const UNIFORMS_BASE = ['uRect', 'uTarget', 'uFlipY'];
@@ -63,6 +63,9 @@ export class Renderer {
   private maskViewProg: Prog;
   private maskQuadProg: Prog;
   private checkerQuadProg: Prog;
+  private meshProg: Prog;
+  private meshVao: WebGLVertexArrayObject;
+  private meshBuf: WebGLBuffer;
   /** Superposición roja de una máscara (Máscara rápida). */
   private overlay: { mask: MaskChannel; tex: Map<number, WebGLTexture> } | null = null;
   /** Canal visible (panel Canales): 0 = RGB, 1 R, 2 G, 3 B. */
@@ -97,6 +100,14 @@ export class Renderer {
     this.maskViewProg = this.program(RECT_VS, MASKVIEW_FS, [...UNIFORMS_BASE, 'uTex', 'uUV', 'uFill', 'uHasTex']);
     this.maskQuadProg = this.program(QUAD_VS, MASKVIEW_FS, ['uP', 'uTarget', 'uTex', 'uUV', 'uFill', 'uHasTex']);
     this.checkerQuadProg = this.program(QUAD_VS, CHECKER_FS, ['uP', 'uTarget', 'uCell']);
+    this.meshProg = this.program(MESH_VS, VIEW_FS, ['uTarget', 'uTex', 'uUV', 'uAlpha', 'uChannel']);
+    this.meshVao = gl.createVertexArray()!;
+    this.meshBuf = gl.createBuffer()!;
+    gl.bindVertexArray(this.meshVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.meshBuf);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);
+    gl.bindVertexArray(null);
     this.checkerProg = this.program(RECT_VS, CHECKER_FS, [...UNIFORMS_BASE, 'uCell']);
     this.solidProg = this.program(RECT_VS, SOLID_FS, [...UNIFORMS_BASE, 'uColor']);
     this.vao = gl.createVertexArray()!;
@@ -224,7 +235,8 @@ export class Renderer {
       m = new Map();
       this.layerTex.set(L.id, m);
       for (const k of L.tiles.keys()) L.gpuDirty.add(k);
-      if (L.mask) for (const k of L.mask.tiles.keys()) L.mask.gpuDirty.add(k);
+      const cm0 = L.compMask();
+      if (cm0) for (const k of cm0.tiles.keys()) cm0.gpuDirty.add(k);
     }
     for (const k of L.gpuRemoved) {
       const e = m.get(k);
@@ -250,14 +262,15 @@ export class Renderer {
 
     // Máscara (R8).
     let mm = this.maskTex.get(L.id);
-    if (!L.mask) {
+    const LM = L.compMask();
+    if (!LM) {
       if (mm) { for (const t of mm.values()) gl.deleteTexture(t); this.maskTex.delete(L.id); }
     } else {
-      if (!mm) { mm = new Map(); this.maskTex.set(L.id, mm); for (const k of L.mask.tiles.keys()) L.mask.gpuDirty.add(k); }
-      for (const k of L.mask.gpuRemoved) { const t = mm.get(k); if (t) { gl.deleteTexture(t); mm.delete(k); } }
-      L.mask.gpuRemoved.clear();
-      for (const k of L.mask.gpuDirty) {
-        const data = L.mask.tiles.get(k);
+      if (!mm) { mm = new Map(); this.maskTex.set(L.id, mm); for (const k of LM.tiles.keys()) LM.gpuDirty.add(k); }
+      for (const k of LM.gpuRemoved) { const t = mm.get(k); if (t) { gl.deleteTexture(t); mm.delete(k); } }
+      LM.gpuRemoved.clear();
+      for (const k of LM.gpuDirty) {
+        const data = LM.tiles.get(k);
         if (!data) continue;
         let t = mm.get(k);
         if (!t) {
@@ -269,7 +282,7 @@ export class Renderer {
         } else gl.bindTexture(gl.TEXTURE_2D, t);
         gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, TILE, TILE, gl.RED, gl.UNSIGNED_BYTE, data);
       }
-      L.mask.gpuDirty.clear();
+      LM.gpuDirty.clear();
     }
 
     // LUT de la capa de ajuste.
@@ -347,7 +360,7 @@ export class Renderer {
       for (const f of L.fxUnder) items.push({ L: f, blend: f.blend, opacity: L.opacity, useMask: false, adjust: false });
       // Con estilos, se dibuja el contenido ya estilizado (máscara y relleno incluidos).
       if (L.fxStyled) items.push({ L: L.fxStyled, blend: L.blend, opacity: L.opacity, useMask: false, adjust: false, bif: L.effects?.blendIf });
-      else items.push({ L, blend: L.blend, opacity: L.opacity, useMask: !!L.mask && L.maskEnabled, adjust: L.kind === 'adjustment', bif: L.effects?.blendIf });
+      else items.push({ L, blend: L.blend, opacity: L.opacity, useMask: !!L.compMask(), adjust: L.kind === 'adjustment', bif: L.effects?.blendIf });
       return { t: 'layer', L, items };
     };
     const build = (pid: number | null): Node[] => {
@@ -387,7 +400,7 @@ export class Renderer {
     }
     const t = this.maskTex.get(it.L.id)?.get(key);
     gl.uniform1i(prog.u.uHasMask, t ? 1 : 0);
-    gl.uniform1f(prog.u.uMaskFill, it.L.mask!.fill / 255);
+    gl.uniform1f(prog.u.uMaskFill, it.L.compMask()!.fill / 255);
     if (t) { gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, t); }
   }
 
@@ -465,7 +478,7 @@ export class Renderer {
     if (n.t === 'group') {
       const G = n.L;
       const blend = ov?.blend ?? G.blend, opacity = ov?.opacity ?? G.opacity;
-      const gi: Item = { L: G, blend: blend === 'pass-through' ? 'normal' : blend, opacity, useMask: !!G.mask && G.maskEnabled, adjust: false };
+      const gi: Item = { L: G, blend: blend === 'pass-through' ? 'normal' : blend, opacity, useMask: !!G.compMask(), adjust: false };
       if (blend === 'pass-through' && !atop && !G.artboard) {
         if (opacity >= 1 && !gi.useMask) return this.composeNodes(n.children, lvl, tx, ty, false, any);
         // Con opacidad o máscara: se compone sobre una copia del fondo y se mezcla con él.
@@ -724,7 +737,10 @@ export class Renderer {
     this.allDirty = true;
   }
 
-  setPreviewMatrix(m: Matrix) { if (this.preview) this.preview.matrix = m; }
+  setPreviewMatrix(m: Matrix) { if (this.preview) { this.preview.matrix = m; this.preview.mesh = null; } }
+
+  /** Vista previa con malla (transformaciones no afines). */
+  setPreviewMesh(mesh: Preview['mesh']) { if (this.preview) this.preview.mesh = mesh; }
 
   clearPreview() {
     if (!this.preview) return;
@@ -851,7 +867,32 @@ export class Renderer {
     }
 
     // Vista previa de la transformación libre (encima de todo).
-    if (this.preview) {
+    if (this.preview?.mesh) {
+      const pv = this.preview, M = this.meshProg, { cols, rows, pts } = pv.mesh!, C1 = cols + 1;
+      // Triángulos con (posición en pantalla, UV) intercalados.
+      const v = new Float32Array(cols * rows * 6 * 4);
+      let o = 0;
+      const put = (i: number, j: number) => {
+        const k = (j * C1 + i) * 2, [sx, sy] = R(X(pts[k]), Y(pts[k + 1]));
+        v[o++] = sx; v[o++] = sy; v[o++] = i / cols; v[o++] = j / rows;
+      };
+      for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
+        put(i, j); put(i + 1, j); put(i + 1, j + 1);
+        put(i, j); put(i + 1, j + 1); put(i, j + 1);
+      }
+      gl.useProgram(M.p);
+      gl.uniform2f(M.u.uTarget, W, H);
+      gl.uniform1i(M.u.uTex, 0);
+      gl.uniform1i(M.u.uChannel, this.viewChannel);
+      gl.uniform4f(M.u.uUV, 0, 0, 1, 1);
+      gl.uniform1f(M.u.uAlpha, 1);
+      gl.bindTexture(gl.TEXTURE_2D, pv.tex);
+      gl.bindVertexArray(this.meshVao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.meshBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, v, gl.STREAM_DRAW);
+      gl.drawArrays(gl.TRIANGLES, 0, o / 4);
+      gl.bindVertexArray(this.vao);
+    } else if (this.preview) {
       const pv = this.preview, Q = this.quadProg, r = pv.src;
       const corners = [[r.x, r.y], [r.x + r.w, r.y], [r.x, r.y + r.h], [r.x + r.w, r.y + r.h]].map(([x, y]) => {
         const [px, py] = apply(pv.matrix, x, y);

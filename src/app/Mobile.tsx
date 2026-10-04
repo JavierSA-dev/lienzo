@@ -111,11 +111,16 @@ export function MobileContextBar() {
   const crop = useStore((s) => s.crop);
   const textEdit = useStore((s) => s.textEdit);
   const penDrawing = useStore((s) => s.penDrawing);
+  const puppet = useStore((s) => s.puppet);
+  const straighten = useStore((s) => s.straighten);
+  const pcrop = useStore((s) => s.pcrop);
   if (!doc.open) return null;
   let items: [string, () => void, string?][] = [];
   if (textEdit) items = [['OK', finishTextEdit, 'primary']];
-  else if (transform) items = [['Cancelar', () => press('Escape')], ['Aplicar', () => press('Enter'), 'primary']];
-  else if (crop && tool === 'crop') items = [['Restablecer', () => press('Escape')], ['Recortar', () => press('Enter'), 'primary']];
+  else if (puppet) items = [['Cancelar', () => press('Escape')], ['Aplicar', () => press('Enter'), 'primary']];
+  else if (transform) items = [['Cancelar', () => press('Escape')], ...(transform.mode === 'warp' ? [] : [['Deformar', () => run('edit.warp')] as [string, () => void]]), ['Aplicar', () => press('Enter'), 'primary']];
+  else if (crop && tool === 'crop') items = [['Restablecer', () => press('Escape')], ['Enderezar', () => useStore.setState({ straighten: !useStore.getState().straighten }), straighten ? 'on' : undefined], ['Recortar', () => press('Enter'), 'primary']];
+  else if (pcrop && tool === 'perspectiveCrop') items = [['Cancelar', () => press('Escape')], ['Recortar', () => press('Enter'), 'primary']];
   else if (tool === 'polylasso') items = [['Cerrar selección', () => press('Enter'), 'primary']];
   else if (penDrawing != null) items = [['Terminar trazado', () => press('Enter'), 'primary']];
   else if (doc.selection) items = [

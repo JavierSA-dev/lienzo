@@ -14,10 +14,11 @@ npm run dev          # http://localhost:5173
 | `npm run dev` | Servidor de desarrollo con recarga en caliente |
 | `npm run build` | Comprueba tipos y genera `dist/` para producción |
 | `npm test` | Tests unitarios del motor (Vitest) |
-| `npm run e2e` | Las tres baterías en Chromium: fase 1, escritorio y móvil |
+| `npm run e2e` | Todas las baterías en Chromium: fase 1, escritorio, fase 10 y móvil |
 | `node tests/e2e.mjs` | Fase 1 (pincel, historial, capas, PSD de 50 capas, rendimiento) |
 | `node tests/e2e-full.mjs` | Fases 2–9: 242 comprobaciones con ratón y teclado reales |
-| `npm run e2e:mobile` | Móvil vertical/horizontal y tableta: 51 comprobaciones con toques de varios dedos |
+| `node tests/e2e-select.mjs` | Fase 10: selección avanzada, transformaciones, recortes y máscaras vectoriales (53 comprobaciones) |
+| `npm run e2e:mobile` | Móvil vertical/horizontal y tableta: 59 comprobaciones con toques de varios dedos |
 | `node tests/shots.mjs` | Capturas de la interfaz para revisión visual |
 | `npm run bench` | Compara Lienzo con Photopea en **tu** Chrome y **tu** GPU (`bench/resultados.md`) |
 
@@ -48,13 +49,13 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 ## Qué incluye
 
-**Herramientas**: Mover (selección automática), Marco rectangular/elíptico, Lazo, Lazo poligonal, Varita mágica, Recortar, Cuentagotas, Pincel corrector puntual, Pincel corrector, Parche, Pupilas rojas, Pincel, Lápiz, Tampón de clonar, Borrador, Degradado (lineal, radial, angular, reflejado, rombo), Bote de pintura, Desenfocar/Enfocar/Dedo, Sobreexponer/Subexponer, Pincel de historia, Pluma y Selección directa, Texto, Formas (rectángulo, redondeado, elipse, línea, polígono), Mano, Rotar vista (R) y Zoom. Cada herramienta recuerda su tamaño, dureza y opacidad.
+**Herramientas**: Mover (selección automática), Marco rectangular/elíptico, Lazo, Lazo poligonal, Selección de objeto (IA local), Selección rápida, Varita mágica, Recortar (con Enderezar y giro del cuadro), Recortar con perspectiva, Cuentagotas, Pincel corrector puntual, Pincel corrector, Parche, Pupilas rojas, Pincel, Lápiz, Tampón de clonar, Borrador, Degradado (lineal, radial, angular, reflejado, rombo), Bote de pintura, Desenfocar/Enfocar/Dedo, Sobreexponer/Subexponer, Pincel de historia, Pluma y Selección directa, Texto, Formas (rectángulo, redondeado, elipse, línea, polígono), Mano, Rotar vista (R) y Zoom. Cada herramienta recuerda su tamaño, dureza y opacidad.
 
-**Selección**: añadir/restar/intersecar con Mayús/Alt, calar, expandir/contraer, invertir, volver a seleccionar, mover con flechas, cargar desde capa (Ctrl+clic en la miniatura), seleccionar sujeto con IA, Máscara rápida (Q), guardar/cargar selección como canal alfa, cargar la luminosidad (Ctrl+clic en RGB o Ctrl+Alt+2) y cada canal.
+**Selección**: añadir/restar/intersecar con Mayús/Alt, calar, expandir/contraer, invertir, volver a seleccionar, mover con flechas, cargar desde capa (Ctrl+clic en la miniatura), seleccionar sujeto con IA, Gama de colores (cuentagotas, rangos de color, tonos de piel, iluminaciones/sombras), Seleccionar y aplicar máscara (Ctrl+Alt+R: radio inteligente, suavizar, calar, contraste, desplazar borde, descontaminar colores, salida a selección, máscara o capa nueva), Máscara rápida (Q), guardar/cargar selección como canal alfa, cargar la luminosidad (Ctrl+clic en RGB o Ctrl+Alt+2) y cada canal.
 
-**Capas**: selección de varias capas (Ctrl+clic, Mayús+clic, Ctrl+Alt+A) para mover, transformar, agrupar, combinar, duplicar, eliminar, cambiar opacidad/modo, alinear y distribuir; grupos anidados (Pasar a través o aislados, con opacidad, modo y máscara; plegar, arrastrar dentro y fuera, mover y transformar el grupo entero), máscaras de recorte, máscaras (pintar, desactivar, aplicar, invertir), capas de ajuste no destructivas (Niveles, Curvas, Tono/Saturación, Equilibrio de color, Blanco y negro, Brillo/Contraste, Exposición, Intensidad, Invertir, Posterizar, Umbral, Mapa de degradado, Filtro de fotografía, Corrección selectiva, Mezclador de canales, Consulta de colores con LUT .cube y looks incluidos, Color sólido), los 10 estilos de capa de Photoshop (bisel y relieve, trazo dentro/centro/fuera, sombra interior, resplandor interior, satinado, superposición de colores, de degradado y de motivo, resplandor exterior y sombra paralela, cada uno con su modo de fusión), opacidad de relleno y "Fusionar si", objetos inteligentes (transformar sin perder calidad, filtros inteligentes editables, editar y reemplazar contenido, Colocar incrustado), mesas de trabajo, texto y formas editables, bloquear transparencia, combinar, estampar, acoplar.
+**Capas**: selección de varias capas (Ctrl+clic, Mayús+clic, Ctrl+Alt+A) para mover, transformar, agrupar, combinar, duplicar, eliminar, cambiar opacidad/modo, alinear y distribuir; grupos anidados (Pasar a través o aislados, con opacidad, modo y máscara; plegar, arrastrar dentro y fuera, mover y transformar el grupo entero), máscaras de recorte, máscaras (pintar, desactivar, aplicar, invertir), máscaras vectoriales (desde el trazado, editables con la pluma, densidad, calado, invertir, rasterizar; se guardan en el PSD), capas de ajuste no destructivas (Niveles, Curvas, Tono/Saturación, Equilibrio de color, Blanco y negro, Brillo/Contraste, Exposición, Intensidad, Invertir, Posterizar, Umbral, Mapa de degradado, Filtro de fotografía, Corrección selectiva, Mezclador de canales, Consulta de colores con LUT .cube y looks incluidos, Color sólido), los 10 estilos de capa de Photoshop (bisel y relieve, trazo dentro/centro/fuera, sombra interior, resplandor interior, satinado, superposición de colores, de degradado y de motivo, resplandor exterior y sombra paralela, cada uno con su modo de fusión), opacidad de relleno y "Fusionar si", objetos inteligentes (transformar sin perder calidad, filtros inteligentes editables, editar y reemplazar contenido, Colocar incrustado), mesas de trabajo, texto y formas editables, bloquear transparencia, combinar, estampar, acoplar.
 
-**Imagen y edición**: tamaño de imagen y de lienzo, recortar, rotar/voltear, transformación libre (Ctrl+T con escala, rotación y numérico), copiar/pegar con el portapapeles del sistema, rellenar (incluido gris al 50 % y según el contenido), Contornear, Nueva capa con relleno neutro para esquivar y quemar, Aplicar imagen (separación de frecuencias), ajustes destructivos con vista previa.
+**Imagen y edición**: tamaño de imagen y de lienzo, recortar, rotar/voltear y rotación arbitraria, transformación libre (Ctrl+T con escala, rotación y numérico; Ctrl/Ctrl+Mayús/Ctrl+Alt+Mayús para distorsionar, sesgar y perspectiva), Sesgar, Distorsionar, Perspectiva, Deformar (malla de Bézier editable y los 15 estilos predefinidos) y Deformación de posición libre (chinchetas, modos rígido/normal/distorsionar), sin pérdida en objetos inteligentes, copiar/pegar con el portapapeles del sistema, rellenar (incluido gris al 50 % y según el contenido), Contornear, Nueva capa con relleno neutro para esquivar y quemar, Aplicar imagen (separación de frecuencias), ajustes destructivos con vista previa.
 
 **Retoque**: pincel corrector puntual y relleno según contenido (síntesis de textura con PatchMatch y fusión de Poisson, en local), pincel corrector con Alt+clic de origen.
 
@@ -88,7 +89,7 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 ## Resultados verificados (entorno de pruebas, GPU emulada por CPU)
 
-- 26/26 tests unitarios, 24/24 de la fase 1, 242/242 de las fases 2–9 y 51/51 de móvil y tableta (toques de varios dedos simulados) en Chromium.
+- 26/26 tests unitarios, 24/24 de la fase 1, 242/242 de las fases 2–9, 53/53 de la fase 10 y 59/59 de móvil y tableta (toques de varios dedos simulados) en Chromium.
 - Composición GPU igual que la referencia en CPU (diferencia máxima 1/255, PSD de 50 capas).
 - Desenfoque gaussiano de 20 px en 24 MP: la interfaz no se bloquea (tarea larga máxima 0 ms).
 - Quitar fondo con IA local: ~2,5 s en CPU emulada. Relleno según contenido de un hueco de 150 px: ~1–3 s en un hilo.
@@ -97,4 +98,4 @@ Los tiempos absolutos no son representativos en ese entorno; ejecuta `npm run be
 
 ## Pendiente
 
-Ver el plan completo por fases en el documento del proyecto: objetos inteligentes, fuentes, IA (selección de objeto, Quitar, escalado), Camera Raw, RAW, CMYK y 16 bits, colaboración en tiempo real y app de escritorio (Tauri).
+Ver el plan completo por fases en el documento del proyecto: IA (Quitar, escalado), Camera Raw, RAW, CMYK y 16 bits, colaboración en tiempo real y app de escritorio (Tauri).

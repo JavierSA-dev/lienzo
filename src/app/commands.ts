@@ -1,5 +1,6 @@
 import { engine } from '../engine/client';
-import { useStore, toRgba, savePrefs, type DialogId } from './store';
+import { identityPatch } from '../engine/meshwarp';
+import { useStore, toRgba, savePrefs, type DialogId, type TMode } from './store';
 import { askLocalFonts } from './localFonts';
 import type { AdjustmentType, BlendMode, ShapeKind, ToolId } from '../engine/types';
 import { BLEND_MODES, BLEND_GROUPS } from '../engine/types';
@@ -137,7 +138,7 @@ export const TOOL_GROUPS: { key: string; tools: ToolId[] }[] = [
   { key: 'M', tools: ['marquee', 'marqueeEllipse'] },
   { key: 'L', tools: ['lasso', 'polylasso'] },
   { key: 'W', tools: ['objectSelect', 'quickSelect', 'wand'] },
-  { key: 'C', tools: ['crop'] },
+  { key: 'C', tools: ['crop', 'perspectiveCrop'] },
   { key: 'I', tools: ['eyedropper'] },
   { key: 'J', tools: ['spotHeal', 'heal', 'patch', 'redEye'] },
   { key: 'B', tools: ['brush', 'pencil'] },
@@ -157,7 +158,7 @@ export const TOOL_GROUPS: { key: string; tools: ToolId[] }[] = [
 
 export const TOOL_NAMES: Record<ToolId, string> = {
   move: 'Mover', marquee: 'Marco rectangular', marqueeEllipse: 'Marco elíptico', lasso: 'Lazo', polylasso: 'Lazo poligonal',
-  wand: 'Varita mágica', crop: 'Recortar', eyedropper: 'Cuentagotas', brush: 'Pincel', pencil: 'Lápiz', clone: 'Tampón de clonar',
+  wand: 'Varita mágica', crop: 'Recortar', perspectiveCrop: 'Recortar con perspectiva', eyedropper: 'Cuentagotas', brush: 'Pincel', pencil: 'Lápiz', clone: 'Tampón de clonar',
   eraser: 'Borrador', gradient: 'Degradado', bucket: 'Bote de pintura', dodge: 'Sobreexponer', burn: 'Subexponer',
   text: 'Texto horizontal', shape: 'Forma', hand: 'Mano', zoom: 'Zoom',
   spotHeal: 'Pincel corrector puntual', heal: 'Pincel corrector', patch: 'Parche', pen: 'Pluma', pathSelect: 'Selección de trazado',
@@ -263,6 +264,13 @@ export const COMMANDS: Command[] = [
   { id: 'edit.fillBgPreserve', label: 'Rellenar con fondo (conservar transparencia)', keys: ['Ctrl+Shift+Backspace'], needsDoc: true, rec: true, run: call('fill', 'bg', true) },
   { id: 'edit.clear', label: 'Borrar', keys: ['Delete', 'Backspace'], needsDoc: true, rec: true, run: () => (S().doc.selection ? engine.call('clear') : undefined) },
   { id: 'edit.freeTransform', label: 'Transformación libre', keys: ['Ctrl+T'], needsDoc: true, run: () => startTransform() },
+  { id: 'edit.scale', label: 'Escala', needsDoc: true, run: () => startTransformMode('free') },
+  { id: 'edit.rotate', label: 'Rotar', needsDoc: true, run: () => startTransformMode('free') },
+  { id: 'edit.skew', label: 'Sesgar', needsDoc: true, run: () => startTransformMode('skew') },
+  { id: 'edit.distort', label: 'Distorsionar', needsDoc: true, run: () => startTransformMode('distort') },
+  { id: 'edit.perspective', label: 'Perspectiva', needsDoc: true, run: () => startTransformMode('perspective') },
+  { id: 'edit.warp', label: 'Deformar', needsDoc: true, run: () => startTransformMode('warp') },
+  { id: 'edit.puppet', label: 'Deformación de posición libre', needsDoc: true, run: () => startPuppet() },
   { id: 'edit.flipH', label: 'Voltear horizontal', needsDoc: true, rec: true, run: call('transformLayer', 'flipH') },
   { id: 'edit.flipV', label: 'Voltear vertical', needsDoc: true, rec: true, run: call('transformLayer', 'flipV') },
   { id: 'edit.rot90', label: 'Rotar 90° en sentido horario', needsDoc: true, rec: true, run: call('transformLayer', 'rot90') },
@@ -295,6 +303,7 @@ export const COMMANDS: Command[] = [
   { id: 'image.canvasSize', label: 'Tamaño de lienzo…', keys: ['Ctrl+Alt+C'], needsDoc: true, run: dlg({ kind: 'canvasSize' }) },
   { id: 'image.rot180', label: 'Rotación de imagen 180°', needsDoc: true, rec: true, run: call('rotateCanvas', 180) },
   { id: 'image.rot90', label: 'Rotación de imagen 90° AC', needsDoc: true, rec: true, run: call('rotateCanvas', 90) },
+  { id: 'image.rotArbitrary', label: 'Arbitraria…', needsDoc: true, run: dlg({ kind: 'rotateArbitrary' }) },
   { id: 'image.rot-90', label: 'Rotación de imagen 90° ACD', needsDoc: true, rec: true, run: call('rotateCanvas', -90) },
   { id: 'image.flipH', label: 'Voltear lienzo horizontal', needsDoc: true, rec: true, run: call('flipCanvas', true) },
   { id: 'image.flipV', label: 'Voltear lienzo vertical', needsDoc: true, rec: true, run: call('flipCanvas', false) },
@@ -339,6 +348,12 @@ export const COMMANDS: Command[] = [
   { id: 'layer.mask.hide', label: 'Máscara: ocultar todo', needsDoc: true, rec: true, run: call('addMask', 'hide') },
   { id: 'layer.mask.selection', label: 'Máscara: mostrar selección', needsDoc: true, rec: true, run: call('addMask', 'selection') },
   { id: 'layer.mask.apply', label: 'Aplicar máscara', needsDoc: true, rec: true, run: call('deleteMask', true) },
+  { id: 'layer.vmask.reveal', label: 'Mostrar todo', needsDoc: true, rec: true, run: call('addVectorMask', 'reveal') },
+  { id: 'layer.vmask.hide', label: 'Ocultar todo', needsDoc: true, rec: true, run: call('addVectorMask', 'hide') },
+  { id: 'layer.vmask.path', label: 'Trazado actual', needsDoc: true, run: () => engine.call('addVectorMask', 'path', S().path) },
+  { id: 'layer.vmask.toggle', label: 'Desactivar / activar', needsDoc: true, run: () => { const L = active(); if (L?.vmask) engine.call('setVectorMask', { enabled: !L.vmask.enabled }); } },
+  { id: 'layer.vmask.rasterize', label: 'Rasterizar máscara vectorial', needsDoc: true, rec: true, run: call('deleteVectorMask', true) },
+  { id: 'layer.vmask.delete', label: 'Eliminar', needsDoc: true, rec: true, run: call('deleteVectorMask', false) },
   { id: 'layer.mask.delete', label: 'Eliminar máscara', needsDoc: true, rec: true, run: call('deleteMask', false) },
   { id: 'layer.rasterize', label: 'Rasterizar capa', needsDoc: true, rec: true, run: call('rasterizeLayer') },
   { id: 'layer.newArtboard', label: 'Mesa de trabajo…', needsDoc: true, run: dlg({ kind: 'newArtboard' }) },
@@ -472,6 +487,24 @@ for (const [k, mode] of BLEND_KEYS) {
 export const commandById = Object.fromEntries(COMMANDS.map((c) => [c.id, c])) as Record<string, Command>;
 
 // ------------------------------------------------------------------ transformación y pegado
+
+/** Edición > Transformar > Sesgar / Distorsionar / Perspectiva / Deformar (o Escala y Rotar = libre). */
+export async function startTransformMode(mode: TMode) {
+  if (S().puppet) return;
+  if (!S().transform) await startTransform();
+  const t = S().transform;
+  if (!t) return;
+  useStore.setState({ transform: { ...t, mode, warp: mode === 'warp' ? (t.warp ?? { ctrl: identityPatch(t.bounds), style: 'none', bend: 50 }) : t.warp } });
+}
+
+/** Edición > Deformación de posición libre. */
+export async function startPuppet() {
+  const s = S();
+  if (s.transform || s.puppet) return;
+  const r = await engine.call<{ bounds: { x: number; y: number; w: number; h: number } } | null>('beginTransform');
+  if (!r) { s.toast('No hay contenido que deformar en esta capa.', 'warn'); return; }
+  useStore.setState({ puppet: { bounds: r.bounds, pins: [], mode: 'normal', density: 1, showMesh: true, sel: null } });
+}
 
 export async function startTransform() {
   const s = S();

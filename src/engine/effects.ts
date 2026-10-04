@@ -40,10 +40,11 @@ export function buildEffects(L: PixelLayer): BuiltEffects {
   const px = L.readRegion(r.x - L.x, r.y - L.y, r.w, r.h);
   // Alfa de la forma (0..1) con la máscara de capa aplicada.
   const A = new Float32Array(n);
-  const useMask = !!L.mask && L.maskEnabled;
+  const CM = L.compMask();
+  const useMask = !!CM;
   for (let y = 0, i = 0; y < r.h; y++) for (let x = 0; x < r.w; x++, i++) {
     let a = px[i * 4 + 3] / 255;
-    if (useMask && a > 0) a *= L.mask!.get(r.x - L.x + x, r.y - L.y + y) / 255;
+    if (useMask && a > 0) a *= CM!.get(r.x - L.x + x, r.y - L.y + y) / 255;
     A[i] = a;
   }
   const inside = new Uint8Array(n), outsideM = new Uint8Array(n);

@@ -2,7 +2,10 @@ import {
   Check, X, Bold, Italic, AlignLeft, AlignCenter, AlignRight, AlignStartVertical, AlignCenterVertical, AlignEndVertical,
   AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalDistributeCenter, AlignVerticalDistributeCenter,
 } from 'lucide-react';
-import { useStore, toRgba } from './store';
+import { useStore, toRgba, type TMode } from './store';
+import { pushSpec, pushPuppet, presetPatch } from './transformGeom';
+import { identityPatch } from '../engine/meshwarp';
+import { WARP_STYLES } from '../engine/text';
 import { penFinish } from './Pen';
 import { isEmpty as isEmptyPath } from '../engine/path';
 import { engine } from '../engine/client';
@@ -37,21 +40,85 @@ export function OptionsBar() {
   const setOpts = useStore((s) => s.setOpts);
   const doc = useStore((s) => s.doc);
   const transform = useStore((s) => s.transform);
+  const puppet = useStore((s) => s.puppet);
   const crop = useStore((s) => s.crop);
+  const straighten = useStore((s) => s.straighten);
+  const pcrop = useStore((s) => s.pcrop);
+
+  if (puppet) {
+    const set = (patch: Partial<typeof puppet>) => { const np = { ...puppet, ...patch }; useStore.setState({ puppet: np }); pushPuppet(np); };
+    return (
+      <div className="optionsbar" data-testid="puppet-options">
+        <span className="opt-tool">Deformación de posición libre</span>
+        <label className="opt">Modo
+          <select value={puppet.mode} aria-label="Modo" onChange={(e) => set({ mode: e.target.value as typeof puppet.mode })}>
+            <option value="rigid">Rígido</option><option value="normal">Normal</option><option value="distort">Distorsionar</option>
+          </select>
+        </label>
+        <label className="opt">Densidad
+          <select value={puppet.density} aria-label="Densidad" onChange={(e) => set({ density: Number(e.target.value) as 0 | 1 | 2 })}>
+            <option value={0}>Menos puntos</option><option value={1}>Normal</option><option value={2}>Más puntos</option>
+          </select>
+        </label>
+        <Toggle on={puppet.showMesh} label="Mostrar malla" onClick={() => set({ showMesh: !puppet.showMesh })} />
+        <button className="chip" title="Quitar todas las chinchetas" onClick={() => set({ pins: [], sel: null })}>Quitar chinchetas</button>
+        <span className="hint">Clic: chincheta · arrastrar: deformar · Alt+clic o Supr: quitar</span>
+        <span className="grow" />
+        <button className="chip" title="Cancelar (Esc)" onClick={() => { engine.call('cancelTransform'); useStore.setState({ puppet: null }); }}><X size={14} /></button>
+        <button className="chip on" title="Aplicar (Intro)" onClick={() => { engine.call('commitTransform', 'Deformación de posición libre'); useStore.setState({ puppet: null }); }}><Check size={14} /></button>
+      </div>
+    );
+  }
 
   if (transform) {
     const m = transform.matrix;
     const sx = Math.hypot(m[0], m[1]) * 100, sy = Math.hypot(m[2], m[3]) * 100, rot = (Math.atan2(m[1], m[0]) * 180) / Math.PI;
+    const mode = transform.mode ?? 'free';
+    const warp = mode === 'warp';
+    const setMode = (md: TMode) => {
+      const t = useStore.getState().transform!;
+      const nt = { ...t, mode: md, warp: md === 'warp' ? (t.warp ?? { ctrl: identityPatch(t.bounds), style: 'none', bend: 50 }) : t.warp };
+      useStore.setState({ transform: nt }); pushSpec(nt);
+    };
+    const setWarp = (style: string, bend: number) => {
+      const t = useStore.getState().transform!;
+      const nt = { ...t, warp: { ctrl: presetPatch(t.bounds, style, bend), style, bend } };
+      useStore.setState({ transform: nt }); pushSpec(nt);
+    };
+    const MODE_LABEL: Record<TMode, string> = { free: 'Transformación libre', skew: 'Sesgar', distort: 'Distorsionar', perspective: 'Perspectiva', warp: 'Deformar' };
     return (
-      <div className="optionsbar">
-        <span className="opt-tool">Transformación libre</span>
-        <span className="opt">An: {sx.toFixed(1)} %</span>
-        <span className="opt">Al: {sy.toFixed(1)} %</span>
-        <span className="opt">Ángulo: {rot.toFixed(1)}°</span>
-        <span className="hint">Esquinas mantienen proporción (Mayús libera) · Alt: desde el centro · fuera de la caja: rotar (Mayús: 15°)</span>
+      <div className="optionsbar" data-testid="transform-options">
+        <span className="opt-tool">{MODE_LABEL[mode]}</span>
+        {warp ? (
+          <>
+            <label className="opt">Deformar
+              <select value={transform.warp?.style ?? 'none'} aria-label="Estilo de deformación" onChange={(e) => setWarp(e.target.value, transform.warp?.bend ?? 50)}>
+                <option value="custom">Personalizado</option>
+                {WARP_STYLES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+              </select>
+            </label>
+            {transform.warp && transform.warp.style !== 'custom' && transform.warp.style !== 'none' && (
+              <Slider label="Curvatura" value={transform.warp.bend} min={-100} max={100} unit="%" onChange={(v) => setWarp(transform.warp!.style, v)} />
+            )}
+            <span className="hint">Arrastra las esquinas, los tiradores o el interior de la malla</span>
+          </>
+        ) : (
+          <>
+            <span className="opt">An: {sx.toFixed(1)} %</span>
+            <span className="opt">Al: {sy.toFixed(1)} %</span>
+            <span className="opt">Ángulo: {rot.toFixed(1)}°</span>
+            <span className="hint">{mode === 'free' ? 'Ctrl: distorsionar · Ctrl+Mayús (lado): sesgar · Ctrl+Alt+Mayús (esquina): perspectiva · fuera: rotar' : 'Arrastra las asas'}</span>
+          </>
+        )}
         <span className="grow" />
+        <div className="seg" role="group" aria-label="Modo de transformación">
+          {(['free', 'skew', 'distort', 'perspective'] as TMode[]).map((md) => (
+            <Toggle key={md} on={mode === md} label={MODE_LABEL[md].replace('Transformación libre', 'Libre')} onClick={() => setMode(md)} />
+          ))}
+        </div>
+        <Toggle on={warp} title="Cambiar entre transformación libre y deformar" label="Deformar" onClick={() => setMode(warp ? 'free' : 'warp')} />
         <button className="chip" title="Cancelar (Esc)" onClick={() => { engine.call('cancelTransform'); useStore.setState({ transform: null }); }}><X size={14} /></button>
-        <button className="chip on" title="Aplicar (Intro)" onClick={() => { engine.call('commitTransform'); useStore.setState({ transform: null }); }}><Check size={14} /></button>
+        <button className="chip on" title="Aplicar (Intro)" onClick={() => { engine.call('commitTransform', MODE_LABEL[mode]); useStore.setState({ transform: null }); }}><Check size={14} /></button>
       </div>
     );
   }
@@ -151,9 +218,20 @@ export function OptionsBar() {
       {tool === 'crop' && crop && (
         <>
           <span className="opt">{crop.w} × {crop.h} px</span>
-          <span className="hint">Arrastra las asas · Intro aplica · Esc restablece (no destructivo: el contenido fuera se conserva)</span>
+          {!!crop.angle && <span className="opt">Ángulo: {((crop.angle * 180) / Math.PI).toFixed(1)}°</span>}
+          <Toggle on={straighten} title="Traza una línea sobre el horizonte o un borde (también Ctrl+arrastrar)" label="Enderezar" onClick={() => useStore.setState({ straighten: !straighten })} />
+          <span className="hint">{straighten ? 'Traza una línea que deba quedar recta' : 'Asas: tamaño · fuera del cuadro: girar · Intro aplica · Esc restablece'}</span>
           <span className="grow" />
-          <button className="chip on" onClick={() => { engine.call('crop', crop); useStore.setState({ crop: null }); }}><Check size={14} /> Recortar</button>
+          <button className="chip" title="Restablecer (Esc)" onClick={() => useStore.setState({ crop: { x: 0, y: 0, w: doc.width, h: doc.height } })}><X size={14} /></button>
+          <button className="chip on" onClick={() => { const c = crop; useStore.setState({ crop: null }); void engine.call('crop', c).then(() => { const d = useStore.getState().doc; if (useStore.getState().tool === 'crop') useStore.setState({ crop: { x: 0, y: 0, w: d.width, h: d.height } }); }); }}><Check size={14} /> Recortar</button>
+        </>
+      )}
+      {tool === 'perspectiveCrop' && (
+        <>
+          <span className="hint">{pcrop ? 'Ajusta las esquinas al plano de la foto · Intro aplica · Esc cancela' : 'Dibuja un cuadro y lleva sus esquinas a las del plano (un cartel, una fachada…)'}</span>
+          <span className="grow" />
+          {pcrop && <button className="chip" title="Cancelar (Esc)" onClick={() => useStore.setState({ pcrop: null })}><X size={14} /></button>}
+          {pcrop && <button className="chip on" onClick={() => { const q = pcrop; useStore.setState({ pcrop: null }); void engine.call('perspectiveCrop', q.flat()); }}><Check size={14} /> Recortar</button>}
         </>
       )}
       {tool === 'text' && (

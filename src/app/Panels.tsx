@@ -129,12 +129,27 @@ export function PropertiesPanel() {
       </div>
     </div>
   );
-  if (!body && !mask) return null;
+  const vm = L.vmask;
+  const vmask = vm && (
+    <div className="mask-props" data-testid="vmask-props">
+      <span className="hint">Máscara vectorial {vm.enabled ? 'activa' : 'desactivada'}{vm.empty ? (vm.invert ? ' · muestra todo' : ' · oculta todo') : ''}</span>
+      <label className="adj-row"><span>Densidad</span><input type="range" min={0} max={100} value={vm.density} aria-label="Densidad de la máscara vectorial" onChange={(e) => engine.call('setVectorMask', { density: Number(e.target.value) })} /><span className="num">{vm.density}%</span></label>
+      <label className="adj-row"><span>Calar</span><input type="range" min={0} max={250} step={0.5} value={vm.feather} aria-label="Calado de la máscara vectorial" onChange={(e) => engine.call('setVectorMask', { feather: Number(e.target.value) })} /><span className="num">{vm.feather} px</span></label>
+      <div className="row-btns">
+        <button className="chip" onClick={() => engine.call('setVectorMask', { enabled: !vm.enabled })}>{vm.enabled ? 'Desactivar' : 'Activar'}</button>
+        <button className="chip" onClick={() => engine.call('setVectorMask', { invert: !vm.invert })}>Invertir</button>
+        <button className="chip" title="Sustituir por el trazado actual" onClick={() => { const p = useStore.getState().path; engine.call('addVectorMask', 'path', p); }}>Usar trazado</button>
+        <button className="chip" onClick={() => engine.call('deleteVectorMask', true)}>Rasterizar</button>
+        <button className="chip" onClick={() => { engine.call('deleteVectorMask', false); useStore.setState({ vmaskEdit: null }); }}>Eliminar</button>
+      </div>
+    </div>
+  );
+  if (!body && !mask && !vmask) return null;
   const title = L.kind === 'adjustment' && L.adjustment ? ADJUSTMENT_LABELS[L.adjustment.type] : L.kind === 'text' ? 'Texto' : L.kind === 'shape' ? 'Forma' : L.kind === 'smart' ? 'Objeto inteligente' : L.artboard ? 'Mesa de trabajo' : 'Máscara';
   return (
     <section className="panel props">
       <div className="panel-tabs"><div className="panel-tab on" onClick={() => setOpen(!open)}>Propiedades · {title}</div></div>
-      {open && <div className="panel-body">{body}{mask}</div>}
+      {open && <div className="panel-body">{body}{mask}{vmask}</div>}
     </section>
   );
 }
@@ -296,6 +311,7 @@ function LayerRow({ layer, active, selected, editMask, depth, isBase }: { layer:
             </div>
           </>
         )}
+        {layer.vmask && <VectorMaskThumb layer={layer} active={active} />}
       </div>
       <div className="layer-text">
         <div className="name">
@@ -385,7 +401,10 @@ export function LayersPanel() {
           </div>
           <div className="panel-foot">
             <button className="icon-btn" title="Estilo de capa" onClick={() => useStore.getState().setDialog({ kind: 'layerStyle' })}><Sparkles size={15} /></button>
-            <button className="icon-btn" title="Añadir máscara de capa (con selección: mostrar selección)" onClick={() => engine.call('addMask', doc.selection ? 'selection' : 'reveal')}>
+            <button className="icon-btn" title="Añadir máscara de capa (con selección: mostrar selección) · Ctrl+clic: máscara vectorial" onClick={(e) => {
+              if (e.ctrlKey || e.metaKey) { const s = useStore.getState(); engine.call('addVectorMask', s.path.length ? 'path' : 'reveal', s.path.length ? s.path : undefined); return; }
+              engine.call('addMask', doc.selection ? 'selection' : 'reveal');
+            }}>
               <svg width="15" height="15" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1" fill="none" stroke="currentColor" /><circle cx="8" cy="8" r="3.2" fill="currentColor" /></svg>
             </button>
             <div className="menu-root">
@@ -530,5 +549,34 @@ export function ChannelsPanel({ onTab }: { onTab: (t: 'layers' | 'paths' | 'chan
         <button className="icon-btn" title="Eliminar canal" disabled={activeAlpha == null} onClick={() => { if (activeAlpha != null) { engine.call('deleteAlpha', activeAlpha); setActiveAlpha(null); } }}><Trash2 size={15} /></button>
       </div>
     </section>
+  );
+}
+
+/** Miniatura de la máscara vectorial: el trazado en blanco sobre gris (como Photoshop). */
+function VectorMaskThumb({ layer, active }: { layer: LayerInfo; active: boolean }) {
+  const doc = useStore((s) => s.doc);
+  const editing = useStore((s) => s.vmaskEdit === layer.id);
+  const vm = layer.vmask!;
+  const W = Math.max(1, doc.width), H = Math.max(1, doc.height);
+  const k = Math.min(34 / W, 26 / H);
+  return (
+    <div
+      className={`thumb vmask ${active && editing ? 'target' : ''} ${vm.enabled ? '' : 'disabled'}`}
+      data-testid="vmask-thumb"
+      title="Clic: editar el trazado de la máscara vectorial · Mayús+clic: activar/desactivar"
+      onClick={async (e) => {
+        e.stopPropagation();
+        if (e.shiftKey) { engine.call('setVectorMask', { enabled: !vm.enabled }, layer.id); return; }
+        await engine.call('selectLayer', layer.id);
+        const p = await engine.call<VectorPath | null>('vectorMaskPath', layer.id);
+        useStore.setState({ vmaskEdit: layer.id });
+        if (p) await engine.call('setPathData', null, p, 'Trazado de la máscara vectorial');
+      }}
+    >
+      <svg width="100%" height="100%" viewBox={`0 0 ${W * k} ${H * k}`} preserveAspectRatio="xMidYMid meet">
+        <rect width={W * k} height={H * k} fill={vm.invert ? '#fff' : '#8a8a8a'} />
+        <g transform={`scale(${k})`}><path d={vm.svg} fill={vm.invert ? '#8a8a8a' : '#fff'} fillRule="evenodd" /></g>
+      </svg>
+    </div>
   );
 }

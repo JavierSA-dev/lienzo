@@ -224,6 +224,24 @@ try {
   }
   await call('deselect');
 
+  // Deformación de posición libre con el dedo: tocar pone chinchetas y arrastrar deforma.
+  await page.getByTestId('m-menu').click(); await wait();
+  await sheet().getByRole('button', { name: 'Edición' }).click(); await wait();
+  await sheet().getByRole('button', { name: 'Deformación de posición libre' }).click(); await wait(500);
+  ok('Deformación de posición libre desde el menú del móvil', !!(await page.evaluate(() => window.__lienzoStore.getState().puppet)) && /Aplicar/.test(await page.getByTestId('m-context').innerText()));
+  for (const p of [[200, 200], [400, 400]]) { await touch('touchStart', [await scr(...p)]); await wait(60); await touch('touchEnd', []); await wait(250); }
+  ok('Tocar añade chinchetas', (await page.locator('.puppet-pin').count()) === 2);
+  await drag(await scr(400, 400), await scr(480, 470), 8);
+  await page.getByTestId('m-context').getByRole('button', { name: 'Aplicar' }).click(); await wait(800);
+  ok('Arrastrar una chincheta y aplicar deforma la capa', !(await page.evaluate(() => window.__lienzoStore.getState().puppet)) && (await call('debugSelection', 0, 0)) === 0 && (await S()).doc.history[(await S()).doc.historyIndex]?.label === 'Deformación de posición libre');
+  // Deformar desde la barra contextual de Transformar.
+  await call('selectShape', { x: 100, y: 100, w: 400, h: 400 }, 'rect', 'replace', 0);
+  await page.getByTestId('m-context').getByRole('button', { name: 'Transformar' }).click(); await wait(400);
+  await page.getByTestId('m-context').getByRole('button', { name: 'Deformar' }).click(); await wait(300);
+  ok('Transformar → Deformar en el móvil muestra la malla', (await page.evaluate(() => window.__lienzoStore.getState().transform?.mode)) === 'warp' && (await page.locator('.warp-grid').count()) >= 4);
+  await page.getByTestId('m-context').getByRole('button', { name: 'Cancelar' }).click(); await wait(300);
+  await call('deselect');
+
   // Lápiz: los dedos ya no pintan (rechazo de la palma) y desplazan.
   await page.evaluate(() => window.__lienzoStore.getState().setTool('brush'));
   await page.evaluate(() => {

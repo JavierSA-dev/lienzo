@@ -11,10 +11,13 @@ import { isEmpty as isEmptyPath } from '../engine/path';
 import { Rulers, GuideLines, hitGuide, snapPoint } from './Rulers';
 import { TouchGestures } from './touch';
 import { ArtboardLabels } from './Artboards';
+import { quadOf, localToDoc, docToLocal, dragQuad, pushSpec, patchGrid, CORNER_GROUP, CORNER_TANGENTS, PATCH_CORNERS, puppetMesh, pushPuppet, invertPuppet } from './transformGeom';
+import { identityPatch, patchParam, patchWeights } from '../engine/meshwarp';
+import type { TransformState } from './store';
 
 const CURSORS: Partial<Record<ToolId, string>> = {
   move: 'move', marquee: 'crosshair', marqueeEllipse: 'crosshair', lasso: 'crosshair', polylasso: 'crosshair',
-  wand: 'crosshair', crop: 'crosshair', eyedropper: 'crosshair', gradient: 'crosshair', bucket: 'crosshair',
+  wand: 'crosshair', crop: 'crosshair', perspectiveCrop: 'crosshair', eyedropper: 'crosshair', gradient: 'crosshair', bucket: 'crosshair',
   text: 'text', shape: 'crosshair', hand: 'grab', zoom: 'zoom-in', pen: 'crosshair', pathSelect: 'default', patch: 'crosshair', rotateView: 'grab', redEye: 'crosshair', objectSelect: 'crosshair',
 };
 
@@ -26,8 +29,11 @@ type UIDrag =
   | { kind: 'lasso'; pts: Pt[]; mode: CombineMode }
   | { kind: 'gradient'; start: Pt; cur: Pt }
   | { kind: 'shape'; start: Pt; cur: Pt }
-  | { kind: 'crop'; handle: string; start: Pt; orig: Rect }
-  | { kind: 'transform'; handle: string; start: Pt; orig: TParams }
+  | { kind: 'crop'; handle: string; start: Pt; orig: Rect & { angle?: number; pivot?: Pt } }
+  | { kind: 'straighten'; start: Pt; cur: Pt }
+  | { kind: 'pcrop'; handle: number; start: Pt; orig: Pt[] }
+  | { kind: 'transform'; handle: string; start: Pt; orig: TParams; origT: TransformState; uv?: { u: number; v: number } }
+  | { kind: 'puppet'; pin: number; start: Pt; orig: Pt }
   | { kind: 'brushResize'; x0: number; y0: number; size: number; hardness: number }
   | { kind: 'pen'; g: PenDrag }
   | { kind: 'patchDrag'; start: Pt; cur: Pt }
@@ -120,7 +126,8 @@ export function CanvasArea() {
   // Al elegir Recortar, el cuadro abarca todo el lienzo (como Photoshop).
   useEffect(() => {
     if (tool === 'crop' && doc.open && !crop) useStore.setState({ crop: { x: 0, y: 0, w: doc.width, h: doc.height } });
-    if (tool !== 'crop' && crop) useStore.setState({ crop: null });
+    if (tool !== 'crop' && crop) useStore.setState({ crop: null, straighten: false });
+    if (tool !== 'perspectiveCrop' && useStore.getState().pcrop) useStore.setState({ pcrop: null });
     if (tool !== 'polylasso' && poly) setPoly(null);
   }, [tool, doc.open]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -157,6 +164,16 @@ export function CanvasArea() {
         else if (e.key === 'Backspace' || e.key === 'Delete') { e.preventDefault(); e.stopImmediatePropagation(); setPoly((p) => (p && p.pts.length > 1 ? { ...p, pts: p.pts.slice(0, -1) } : null)); }
         return;
       }
+      if (s.puppet && e.type === 'keydown') {
+        if (e.key === 'Enter') { e.preventDefault(); e.stopImmediatePropagation(); commitPuppet(); }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); cancelPuppet(); }
+        else if ((e.key === 'Backspace' || e.key === 'Delete') && s.puppet.sel != null) {
+          e.preventDefault(); e.stopImmediatePropagation();
+          const np = { ...s.puppet, pins: s.puppet.pins.filter((_, i) => i !== s.puppet!.sel), sel: null };
+          useStore.setState({ puppet: np }); pushPuppet(np);
+        }
+        return;
+      }
       if (s.transform && e.type === 'keydown') {
         if (e.key === 'Enter') { e.preventDefault(); e.stopImmediatePropagation(); commitTransform(); }
         else if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); cancelTransform(); }
@@ -168,8 +185,13 @@ export function CanvasArea() {
         }
         return;
       }
+      if (s.pcrop && s.tool === 'perspectiveCrop' && e.type === 'keydown') {
+        if (e.key === 'Enter') { e.preventDefault(); e.stopImmediatePropagation(); applyPerspectiveCrop(); }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); useStore.setState({ pcrop: null }); }
+        return;
+      }
       if (s.crop && s.tool === 'crop' && e.type === 'keydown') {
-        if (e.key === 'Enter') { e.preventDefault(); e.stopImmediatePropagation(); engine.call('crop', s.crop); useStore.setState({ crop: null }); setTimeout(() => { if (useStore.getState().tool === 'crop') { const d = useStore.getState().doc; useStore.setState({ crop: { x: 0, y: 0, w: d.width, h: d.height } }); } }, 50); }
+        if (e.key === 'Enter') { e.preventDefault(); e.stopImmediatePropagation(); applyCrop(); }
         else if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); const d = s.doc; useStore.setState({ crop: { x: 0, y: 0, w: d.width, h: d.height } }); }
       }
     };
@@ -217,12 +239,43 @@ export function CanvasArea() {
     if (!t) return;
     setTparams(p);
     const m = tMatrix(t.bounds, p);
-    useStore.setState({ transform: { ...t, matrix: m } });
-    engine.call('updateTransform', m);
+    const nt = { ...t, matrix: m };
+    useStore.setState({ transform: nt });
+    pushSpec(nt);
+  }
+
+  function setT(nt: TransformState) {
+    useStore.setState({ transform: nt });
+    pushSpec(nt);
+  }
+
+  function applyCrop() {
+    const c = useStore.getState().crop;
+    if (!c) return;
+    useStore.setState({ crop: null });
+    void engine.call('crop', c).then(() => {
+      if (useStore.getState().tool === 'crop') { const d = useStore.getState().doc; useStore.setState({ crop: { x: 0, y: 0, w: d.width, h: d.height } }); }
+    });
+  }
+  function applyPerspectiveCrop() {
+    const q = useStore.getState().pcrop;
+    if (!q) return;
+    useStore.setState({ pcrop: null });
+    void engine.call('perspectiveCrop', q.flat());
+  }
+
+  function commitPuppet() {
+    engine.call('commitTransform', 'Deformación de posición libre');
+    useStore.setState({ puppet: null });
+  }
+  function cancelPuppet() {
+    engine.call('cancelTransform');
+    useStore.setState({ puppet: null });
   }
 
   function commitTransform() {
-    engine.call('commitTransform');
+    const md = useStore.getState().transform?.mode ?? 'free';
+    engine.call('commitTransform', { free: 'Transformación libre', skew: 'Sesgar', distort: 'Distorsionar', perspective: 'Perspectiva', warp: 'Deformar' }[md]);
     useStore.setState({ transform: null });
   }
   function cancelTransform() {
@@ -276,7 +329,32 @@ export function CanvasArea() {
     // Transformación libre activa: asas.
     if (s.transform && e.button === 0) {
       const h = (e.target as Element).getAttribute?.('data-handle') ?? hitTransform(p);
-      if (h) { setUi({ kind: 'transform', handle: h, start: p, orig: { ...tparams } }); return; }
+      if (h) {
+        let uv: { u: number; v: number } | undefined;
+        if (h === 'warpIn') { const l = docToLocal(s.transform)(p[0], p[1]); const r = patchParam(s.transform.warp?.ctrl ?? identityPatch(s.transform.bounds), l); uv = { u: r.u, v: r.v }; }
+        setUi({ kind: 'transform', handle: h, start: p, orig: { ...tparams }, origT: s.transform, uv });
+        return;
+      }
+      return;
+    }
+
+    // Deformación de posición libre: añadir, elegir, mover o quitar (Alt) chinchetas.
+    if (s.puppet && e.button === 0) {
+      const pu = s.puppet, z = s.view.zoom;
+      const hit = pu.pins.findIndex((pin) => Math.hypot((pin.q[0] - p[0]) * z, (pin.q[1] - p[1]) * z) < 9);
+      if (hit >= 0 && e.altKey) {
+        const np = { ...pu, pins: pu.pins.filter((_, i) => i !== hit), sel: null };
+        useStore.setState({ puppet: np }); pushPuppet(np); return;
+      }
+      if (hit >= 0) { useStore.setState({ puppet: { ...pu, sel: hit } }); setUi({ kind: 'puppet', pin: hit, start: p, orig: pu.pins[hit].q }); return; }
+      if (e.altKey) return;
+      // Una chincheta nueva se clava en el punto original bajo el cursor (la malla inversa).
+      const src = pu.pins.length ? invertPuppet(pu, p) : p;
+      const b = pu.bounds;
+      if (src[0] < b.x - 2 || src[1] < b.y - 2 || src[0] > b.x + b.w + 2 || src[1] > b.y + b.h + 2) return;
+      const np = { ...pu, pins: [...pu.pins, { p: src, q: p }], sel: pu.pins.length };
+      useStore.setState({ puppet: np });
+      setUi({ kind: 'puppet', pin: np.pins.length - 1, start: p, orig: p });
       return;
     }
 
@@ -344,8 +422,25 @@ export function CanvasArea() {
           return;
         case 'crop': {
           const c = s.crop ?? { x: 0, y: 0, w: doc.width, h: doc.height };
-          const h = (e.target as Element).getAttribute?.('data-handle') ?? (inside(p, c) ? 'move' : 'new');
+          // Enderezar: botón de la barra de opciones o Ctrl+arrastrar (como Photoshop).
+          if (s.straighten || e.ctrlKey || e.metaKey) { setUi({ kind: 'straighten', start: raw, cur: raw }); return; }
+          const lp = cropLocal(c, p);
+          let h = (e.target as Element).getAttribute?.('data-handle') ?? (inside(lp, c) ? 'move' : null);
+          if (!h) {
+            // Fuera del cuadro: cerca, gira (como Photoshop); lejos, dibuja un cuadro nuevo.
+            const dx = Math.max(c.x - lp[0], 0, lp[0] - c.x - c.w), dy = Math.max(c.y - lp[1], 0, lp[1] - c.y - c.h);
+            h = Math.hypot(dx, dy) * view.zoom < 60 ? 'rotate' : 'new';
+          }
           setUi({ kind: 'crop', handle: h, start: p, orig: h === 'new' ? { x: p[0], y: p[1], w: 0, h: 0 } : c });
+          return;
+        }
+        case 'perspectiveCrop': {
+          const h = (e.target as Element).getAttribute?.('data-handle');
+          const pc = s.pcrop;
+          if (pc && h?.startsWith('pc')) { setUi({ kind: 'pcrop', handle: Number(h.slice(2)), start: p, orig: pc }); return; }
+          if (pc && inPoly(pc, p)) { setUi({ kind: 'pcrop', handle: -1, start: p, orig: pc }); return; }
+          useStore.setState({ pcrop: [p, p, p, p] });
+          setUi({ kind: 'pcrop', handle: -2, start: p, orig: [p, p, p, p] });
           return;
         }
         case 'text': {
@@ -412,7 +507,17 @@ export function CanvasArea() {
         return;
       }
       case 'crop': {
-        const o = g.orig, dx = p[0] - g.start[0], dy = p[1] - g.start[1];
+        const o = g.orig;
+        if (g.handle === 'rotate') {
+          // Girar el cuadro alrededor de su centro (el pivote pasa a ser el centro).
+          const c0 = cropCenter(o);
+          let a = (o.angle ?? 0) + Math.atan2(p[1] - c0[1], p[0] - c0[0]) - Math.atan2(g.start[1] - c0[1], g.start[0] - c0[0]);
+          if (e.shiftKey) a = Math.round(a / (Math.PI / 12)) * (Math.PI / 12);
+          useStore.setState({ crop: { x: c0[0] - o.w / 2, y: c0[1] - o.h / 2, w: o.w, h: o.h, angle: a, pivot: c0 } });
+          return;
+        }
+        const ls = cropLocal(o, g.start), lp = cropLocal(o, p);
+        const dx = lp[0] - ls[0], dy = lp[1] - ls[1];
         let r: Rect;
         if (g.handle === 'new') r = normRect(g.start, p);
         else if (g.handle === 'move') r = { ...o, x: o.x + dx, y: o.y + dy };
@@ -424,10 +529,30 @@ export function CanvasArea() {
           if (g.handle.includes('s')) y1 += dy;
           r = normRect([x0, y0], [x1, y1]);
         }
-        useStore.setState({ crop: { x: Math.round(r.x), y: Math.round(r.y), w: Math.max(1, Math.round(r.w)), h: Math.max(1, Math.round(r.h)) } });
+        const keep = g.handle === 'new' ? {} : { angle: o.angle, pivot: o.pivot };
+        useStore.setState({ crop: { x: Math.round(r.x), y: Math.round(r.y), w: Math.max(1, Math.round(r.w)), h: Math.max(1, Math.round(r.h)), ...keep } });
+        return;
+      }
+      case 'straighten': setUi({ ...g, cur: p }); return;
+      case 'pcrop': {
+        const o = g.orig, dx = p[0] - g.start[0], dy = p[1] - g.start[1];
+        let q: Pt[];
+        if (g.handle === -2) q = [g.start, [p[0], g.start[1]], p, [g.start[0], p[1]]];
+        else if (g.handle === -1) q = o.map(([x, y]) => [x + dx, y + dy] as Pt);
+        else q = o.map((c, i) => (i === g.handle ? [c[0] + dx, c[1] + dy] as Pt : c));
+        useStore.setState({ pcrop: q });
         return;
       }
       case 'transform': moveTransform(g, p, e); return;
+      case 'puppet': {
+        const pu = useStore.getState().puppet;
+        if (!pu) return;
+        const q: Pt = [g.orig[0] + p[0] - g.start[0], g.orig[1] + p[1] - g.start[1]];
+        const np = { ...pu, pins: pu.pins.map((pin, i) => (i === g.pin ? { ...pin, q } : pin)) };
+        useStore.setState({ puppet: np });
+        pushPuppet(np);
+        return;
+      }
       case 'pen': penMove(g.g, p, e, useStore.getState().view.zoom); return;
       case 'patchDrag': case 'redEye': case 'textBox': case 'objectSel': setUi({ ...g, cur: p }); return;
       case 'quickSel': {
@@ -453,7 +578,35 @@ export function CanvasArea() {
 
   function moveTransform(g: Extract<UIDrag, { kind: 'transform' }>, p: Pt, e: React.PointerEvent) {
     const t = useStore.getState().transform!;
-    const b = t.bounds, o = g.orig;
+    const b = t.bounds, o = g.orig, T0 = g.origT;
+    const toL = docToLocal(T0), l0 = toL(g.start[0], g.start[1]), l1 = toL(p[0], p[1]);
+    const dl: Pt = [l1[0] - l0[0], l1[1] - l0[1]];
+    // Deformar: puntos de control (las esquinas arrastran sus tiradores) o el interior del parche.
+    if (T0.mode === 'warp' && (g.handle.startsWith('w') && g.handle.length > 1 && /^w\d+$/.test(g.handle) || g.handle === 'warpIn')) {
+      const ctrl = (T0.warp?.ctrl ?? identityPatch(b)).map((c) => [...c] as Pt);
+      if (g.handle === 'warpIn' && g.uv) {
+        // Las esquinas quedan fijas; el resto se mueve lo mínimo para que el punto siga al cursor.
+        const w = patchWeights(g.uv.u, g.uv.v).map((x, i) => (PATCH_CORNERS.includes(i) ? 0 : x));
+        const s2 = w.reduce((a, x) => a + x * x, 0) || 1;
+        for (let i = 0; i < 16; i++) { ctrl[i][0] += (w[i] / s2) * dl[0]; ctrl[i][1] += (w[i] / s2) * dl[1]; }
+      } else {
+        const i = Number(g.handle.slice(1));
+        for (const k of CORNER_GROUP[i] ?? [i]) { ctrl[k][0] += dl[0]; ctrl[k][1] += dl[1]; }
+      }
+      setT({ ...t, warp: { ctrl, style: 'custom', bend: T0.warp?.bend ?? 0 } });
+      return;
+    }
+    // Sesgar / distorsionar / perspectiva (por modo o con Ctrl, Ctrl+Mayús, Ctrl+Alt+Mayús, como Photoshop).
+    if (g.handle !== 'move' && g.handle !== 'rotate') {
+      const corner = g.handle.length === 2, ctrl = e.ctrlKey || e.metaKey;
+      const qm = T0.mode === 'skew' || T0.mode === 'distort' || T0.mode === 'perspective' ? T0.mode
+        : ctrl ? (corner && e.shiftKey && e.altKey ? 'perspective' : !corner && e.shiftKey ? 'skew' : 'distort') : null;
+      if (qm) {
+        const q = dragQuad(quadOf(T0), g.handle, dl, qm);
+        if (q) setT({ ...t, quad: q });
+        return;
+      }
+    }
     const cx = b.x + b.w / 2 + o.tx, cy = b.y + b.h / 2 + o.ty;
     if (g.handle === 'move') { updateT({ ...o, tx: o.tx + p[0] - g.start[0], ty: o.ty + p[1] - g.start[1] }); return; }
     if (g.handle === 'rotate') {
@@ -497,11 +650,13 @@ export function CanvasArea() {
   function hitTransform(p: Pt): string | null {
     const t = useStore.getState().transform;
     if (!t) return null;
-    const inv = invertM(t.matrix);
-    const [lx, ly] = apply(inv, p[0], p[1]);
-    const b = t.bounds;
-    if (lx >= b.x && ly >= b.y && lx <= b.x + b.w && ly <= b.y + b.h) return 'move';
-    return 'rotate';
+    if (t.mode === 'warp') {
+      const l = docToLocal(t)(p[0], p[1]), r = patchParam(t.warp?.ctrl ?? identityPatch(t.bounds), l);
+      return r.d * useStore.getState().view.zoom < 6 ? 'warpIn' : null;
+    }
+    const q = quadOf(t).map(([x, y]) => apply(t.matrix, x, y));
+    if (inPoly(q, p)) return 'move';
+    return t.mode && t.mode !== 'free' ? null : 'rotate';
   }
 
   const onUp = async (e: React.PointerEvent) => {
@@ -514,6 +669,18 @@ export function CanvasArea() {
       setUi(null);
       const s = useStore.getState();
       switch (g.kind) {
+        case 'straighten': {
+          const dx = g.cur[0] - g.start[0], dy = g.cur[1] - g.start[1];
+          if (Math.hypot(dx, dy) * s.view.zoom < 4) return;
+          // La línea queda horizontal (o vertical si está más cerca de serlo).
+          let a = Math.atan2(dy, dx);
+          a -= Math.round(a / (Math.PI / 2)) * (Math.PI / 2);
+          const W = s.doc.width, H = s.doc.height, c = Math.abs(Math.cos(a)), sn = Math.abs(Math.sin(a));
+          const k = Math.min(W / (W * c + H * sn), H / (W * sn + H * c));
+          const w = Math.floor(W * k), h = Math.floor(H * k);
+          useStore.setState({ crop: { x: W / 2 - w / 2, y: H / 2 - h / 2, w, h, angle: a, pivot: [W / 2, H / 2] }, straighten: false });
+          return;
+        }
         case 'marquee': {
           let r = normRect(g.start, g.cur);
           if (e.altKey && g.mode === 'replace') r = { x: g.start[0] - r.w, y: g.start[1] - r.h, w: r.w * 2, h: r.h * 2 };
@@ -648,14 +815,16 @@ export function CanvasArea() {
     <polyline className="ants" points={[...poly.pts, ...(hover ? [toDoc(hover.x, hover.y)] : [])].map(([x, y]) => `${X(x)},${Y(y)}`).join(' ')} />
   );
 
+  const pcrop = useStore((st) => st.pcrop);
   const cropOverlay = crop && tool === 'crop' && doc.open && (() => {
     const cx = X(crop.x), cy = Y(crop.y), cw = crop.w * Z, ch = crop.h * Z;
     const handles: [string, number, number][] = [
       ['nw', cx, cy], ['n', cx + cw / 2, cy], ['ne', cx + cw, cy], ['e', cx + cw, cy + ch / 2],
       ['se', cx + cw, cy + ch], ['s', cx + cw / 2, cy + ch], ['sw', cx, cy + ch], ['w', cx, cy + ch / 2],
     ];
+    const rotT = crop.angle && crop.pivot ? `rotate(${(crop.angle * 180) / Math.PI} ${X(crop.pivot[0])} ${Y(crop.pivot[1])})` : undefined;
     return (
-      <g>
+      <g transform={rotT} data-testid="crop-overlay">
         <path className="crop-shade" fillRule="evenodd" d={`M-10000 -10000H20000V20000H-10000Z M${cx} ${cy}h${cw}v${ch}h${-cw}Z`} />
         <rect className="crop-box" x={cx} y={cy} width={cw} height={ch} />
         <path className="crop-thirds" d={`M${cx + cw / 3} ${cy}v${ch}M${cx + (2 * cw) / 3} ${cy}v${ch}M${cx} ${cy + ch / 3}h${cw}M${cx} ${cy + (2 * ch) / 3}h${cw}`} />
@@ -663,20 +832,72 @@ export function CanvasArea() {
       </g>
     );
   })();
+  const straightenLine = ui?.kind === 'straighten' && (
+    <line className="straighten-line" x1={X(ui.start[0])} y1={Y(ui.start[1])} x2={X(ui.cur[0])} y2={Y(ui.cur[1])} />
+  );
+  const pcropOverlay = pcrop && tool === 'perspectiveCrop' && doc.open && (() => {
+    const P = (q: Pt) => `${X(q[0])},${Y(q[1])}`;
+    // Rejilla en perspectiva (tercios) para alinear con el plano de la foto.
+    const lerp = (a: Pt, b: Pt, t: number): Pt => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    const grid: string[] = [];
+    for (const t of [1 / 3, 2 / 3]) {
+      grid.push(`M${P(lerp(pcrop[0], pcrop[1], t))}L${P(lerp(pcrop[3], pcrop[2], t))}`);
+      grid.push(`M${P(lerp(pcrop[0], pcrop[3], t))}L${P(lerp(pcrop[1], pcrop[2], t))}`);
+    }
+    return (
+      <g data-testid="pcrop-overlay">
+        <path className="crop-shade" fillRule="evenodd" d={`M-10000 -10000H20000V20000H-10000Z M${pcrop.map(P).join('L')}Z`} />
+        <polygon className="crop-box" points={pcrop.map(P).join(' ')} />
+        <path className="crop-thirds" d={grid.join('')} />
+        {pcrop.map((q, i) => <rect key={i} data-handle={`pc${i}`} className="handle" x={X(q[0]) - 5} y={Y(q[1]) - 5} width={10} height={10} />)}
+      </g>
+    );
+  })();
 
   const transformOverlay = transform && (() => {
-    const b = transform.bounds, m = transform.matrix;
-    const pts = {
-      nw: apply(m, b.x, b.y), n: apply(m, b.x + b.w / 2, b.y), ne: apply(m, b.x + b.w, b.y), e: apply(m, b.x + b.w, b.y + b.h / 2),
-      se: apply(m, b.x + b.w, b.y + b.h), s: apply(m, b.x + b.w / 2, b.y + b.h), sw: apply(m, b.x, b.y + b.h), w: apply(m, b.x, b.y + b.h / 2),
-    };
     const P = (q: Pt) => `${X(q[0])},${Y(q[1])}`;
+    if (transform.mode === 'warp') {
+      const L = localToDoc(transform), ctrl = transform.warp?.ctrl ?? identityPatch(transform.bounds);
+      const C = ctrl.map(([x, y]) => L(x, y));
+      return (
+        <g>
+          {patchGrid(transform).map((line, i) => <polyline key={i} className={i < 2 || i > 5 ? 'warp-edge' : 'warp-grid'} points={line.map(P).join(' ')} />)}
+          {CORNER_TANGENTS.map(([a, b]) => <line key={`${a}-${b}`} className="warp-tangent" x1={X(C[a][0])} y1={Y(C[a][1])} x2={X(C[b][0])} y2={Y(C[b][1])} />)}
+          {C.map((q, i) => PATCH_CORNERS.includes(i)
+            ? <rect key={i} data-handle={`w${i}`} className="handle" x={X(q[0]) - 5} y={Y(q[1]) - 5} width={10} height={10} />
+            : [5, 6, 9, 10].includes(i) ? null
+              : <circle key={i} data-handle={`w${i}`} className="handle warp-pt" cx={X(q[0])} cy={Y(q[1])} r={4.5} />)}
+        </g>
+      );
+    }
+    const q = quadOf(transform).map(([x, y]) => apply(transform.matrix, x, y));
+    const mid = (a: Pt, b: Pt): Pt => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const pts: Record<string, Pt> = { nw: q[0], n: mid(q[0], q[1]), ne: q[1], e: mid(q[1], q[2]), se: q[2], s: mid(q[3], q[2]), sw: q[3], w: mid(q[0], q[3]) };
     return (
       <g>
-        <polygon className="transform-box" points={[pts.nw, pts.ne, pts.se, pts.sw].map(P).join(' ')} data-handle="move" />
-        {Object.entries(pts).map(([h, q]) => (
-          <rect key={h} data-handle={h} className="handle" x={X(q[0]) - 5} y={Y(q[1]) - 5} width={10} height={10} style={{ cursor: `${h}-resize` }} />
+        <polygon className="transform-box" points={q.map(P).join(' ')} data-handle="move" />
+        {Object.entries(pts).map(([h, c]) => (
+          <rect key={h} data-handle={h} className="handle" x={X(c[0]) - 5} y={Y(c[1]) - 5} width={10} height={10} style={{ cursor: transform.mode && transform.mode !== 'free' ? 'default' : `${h}-resize` }} />
         ))}
+      </g>
+    );
+  })();
+
+  const puppet = useStore((s) => s.puppet);
+  const puppetOverlay = puppet && (() => {
+    const P = (q: Pt) => `${X(q[0])},${Y(q[1])}`;
+    let mesh: React.ReactElement | null = null;
+    if (puppet.showMesh) {
+      const m = puppetMesh(puppet), C1 = m.cols + 1, at = (i: number, j: number): Pt => [m.pts[(j * C1 + i) * 2], m.pts[(j * C1 + i) * 2 + 1]];
+      const lines: string[] = [];
+      for (let j = 0; j <= m.rows; j++) { const a: Pt[] = []; for (let i = 0; i <= m.cols; i++) a.push(at(i, j)); lines.push(a.map(P).join(' ')); }
+      for (let i = 0; i <= m.cols; i++) { const a: Pt[] = []; for (let j = 0; j <= m.rows; j++) a.push(at(i, j)); lines.push(a.map(P).join(' ')); }
+      mesh = <g className="puppet-mesh">{lines.map((l, i) => <polyline key={i} points={l} />)}</g>;
+    }
+    return (
+      <g data-testid="puppet-overlay">
+        {mesh}
+        {puppet.pins.map((pin, i) => <circle key={i} className={`puppet-pin ${puppet.sel === i ? 'on' : ''}`} cx={X(pin.q[0])} cy={Y(pin.q[1])} r={6} />)}
       </g>
     );
   })();
@@ -730,7 +951,10 @@ export function CanvasArea() {
         {polyPreview}
         <PathOverlay X={X} Y={Y} hover={hover && (tool === 'pen') ? toDoc(hover.x, hover.y) : null} />
         {cropOverlay}
+        {pcropOverlay}
+        {straightenLine}
         {transformOverlay}
+        {puppetOverlay}
         </g>
         {painting && hover && doc.open && !ui && !transform && (
           caps
@@ -779,10 +1003,12 @@ function inside(p: Pt, r: Rect) {
   return p[0] >= r.x && p[1] >= r.y && p[0] <= r.x + r.w && p[1] <= r.y + r.h;
 }
 
-function invertM(m: Matrix): Matrix {
-  const det = m[0] * m[3] - m[1] * m[2] || 1e-12;
-  const a = m[3] / det, b = -m[1] / det, c = -m[2] / det, d = m[0] / det;
-  return [a, b, c, d, -(a * m[4] + c * m[5]), -(b * m[4] + d * m[5])];
+function inPoly(q: Pt[], p: Pt) {
+  let c = false;
+  for (let i = 0, j = q.length - 1; i < q.length; j = i++) {
+    if ((q[i][1] > p[1]) !== (q[j][1] > p[1]) && p[0] < ((q[j][0] - q[i][0]) * (p[1] - q[i][1])) / (q[j][1] - q[i][1]) + q[i][0]) c = !c;
+  }
+  return c;
 }
 
 /** Cuadro de edición de texto sobre el lienzo (el texto real se ve renderizado debajo). */
@@ -841,4 +1067,19 @@ function TextEditor() {
       }}
     />
   );
+}
+
+/** Punto del documento en el espacio (sin girar) del cuadro de recorte. */
+function cropLocal(c: Rect & { angle?: number; pivot?: Pt }, p: Pt): Pt {
+  if (!c.angle || !c.pivot) return p;
+  const [px, py] = c.pivot, co = Math.cos(-c.angle), si = Math.sin(-c.angle);
+  return [px + (p[0] - px) * co - (p[1] - py) * si, py + (p[0] - px) * si + (p[1] - py) * co];
+}
+
+/** Centro del cuadro de recorte en coordenadas de documento. */
+function cropCenter(c: Rect & { angle?: number; pivot?: Pt }): Pt {
+  const lc: Pt = [c.x + c.w / 2, c.y + c.h / 2];
+  if (!c.angle || !c.pivot) return lc;
+  const [px, py] = c.pivot, co = Math.cos(c.angle), si = Math.sin(c.angle);
+  return [px + (lc[0] - px) * co - (lc[1] - py) * si, py + (lc[0] - px) * si + (lc[1] - py) * co];
 }

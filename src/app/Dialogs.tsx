@@ -263,6 +263,7 @@ export function Dialogs() {
     case 'feather': return <NumberDialog title="Calar selección" label="Radio de calado (px)" initial={5} min={0.5} max={500} onOk={(v) => engine.call('featherSelection', v)} close={close} />;
     case 'grow': return <NumberDialog title={dialog.dir > 0 ? 'Expandir selección' : 'Contraer selección'} label={`${dialog.dir > 0 ? 'Expandir' : 'Contraer'} (px)`} initial={5} min={1} max={100} onOk={(v) => engine.call('growSelection', v * dialog.dir)} close={close} />;
     case 'fill': return <FillDialog close={close} />;
+    case 'rotateArbitrary': return <NumberDialog title="Rotar lienzo" label="Ángulo (°, + horario)" initial={0} min={-359.99} max={359.99} onOk={(v) => engine.call('rotateArbitrary', v)} close={close} />;
     case 'layerStyle': return <LayerStyleDialog close={close} />;
     case 'newGuide': return <NewGuideDialog close={close} />;
     case 'applyImage': return <ApplyImageDialog close={close} />;

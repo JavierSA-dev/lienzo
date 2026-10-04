@@ -176,6 +176,235 @@ try {
   await key('Control+z', 400);
   ok('Deshacer elimina la capa refinada y vuelve a mostrar la original', (await S()).doc.layers.length === before && (await S()).doc.layers.every((l) => l.visible));
 
+  // =========================================================== TRANSFORMAR: PERSPECTIVA, DISTORSIONAR, SESGAR, DEFORMAR
+  const red = (c) => c[3] > 200 && c[0] > 180 && c[1] < 60;
+  const clear = (c) => c[3] < 20;
+  const square = async () => {
+    await newDoc(600, 450, 'transparent');
+    await call('selectShape', { x: 100, y: 100, w: 200, h: 200 }, 'rect', 'replace', 0);
+    await call('fill', [220, 30, 30, 255]); await call('deselect');
+  };
+  const handleDrag = async (h, dx, dy, mods = []) => {
+    const hb = await page.locator(`[data-handle=${h}]`).first().boundingBox();
+    const { view } = await S();
+    const x = hb.x + hb.width / 2, y = hb.y + hb.height / 2;
+    for (const m of mods) await page.keyboard.down(m);
+    await page.mouse.move(x, y); await page.mouse.down();
+    await page.mouse.move(x + dx * view.zoom, y + dy * view.zoom, { steps: 8 }); await page.mouse.up();
+    for (const m of mods) await page.keyboard.up(m);
+    await wait(200);
+  };
+  const commitT = async () => { await key('Enter', 200); await page.waitForFunction(() => !window.__lienzoStore.getState().busy, null, { timeout: 20000 }).catch(() => {}); await wait(400); };
+
+  await square();
+  await menu('Edición', 'Transformar', 'Perspectiva');
+  ok('Edición > Transformar > Perspectiva entra en modo perspectiva', (await S()).transform?.mode === 'perspective');
+  await handleDrag('ne', 60, 0);
+  await commitT();
+  ok('Perspectiva: el lado superior se ensancha simétricamente y el inferior no cambia',
+    red(await lpx(55, 103)) && red(await lpx(345, 103)) && clear(await lpx(55, 296)) && red(await lpx(105, 296)),
+    JSON.stringify([await lpx(55, 103), await lpx(345, 103), await lpx(55, 296)]));
+  { const d = (await S()).doc; ok('El historial muestra «Perspectiva»', d.history[d.historyIndex]?.label === 'Perspectiva', JSON.stringify(d.history[d.historyIndex])); }
+  await key('Control+z', 400);
+  ok('Deshacer la perspectiva', clear(await lpx(55, 103)) && red(await lpx(105, 103)));
+
+  await key('Control+t', 400);
+  await handleDrag('se', 80, 40, ['Control']);
+  ok('Ctrl+arrastrar una esquina distorsiona (vista previa con malla)', !!(await S()).transform?.quad);
+  await commitT();
+  ok('Distorsionar: la esquina se desplaza libremente', red(await lpx(330, 300)) && red(await lpx(370, 330)) && clear(await lpx(330, 345)),
+    JSON.stringify([await lpx(330, 300), await lpx(370, 330)]));
+  await key('Control+z', 400);
+
+  await key('Control+t', 400);
+  await handleDrag('n', 80, 30, ['Control', 'Shift']);
+  await commitT();
+  ok('Ctrl+Mayús+arrastrar un lado sesga (el lado se desliza sobre sí mismo)', red(await lpx(360, 103)) && clear(await lpx(110, 103)) && red(await lpx(110, 296)),
+    JSON.stringify([await lpx(360, 103), await lpx(110, 103), await lpx(110, 296)]));
+  await key('Control+z', 400);
+
+  await menu('Edición', 'Transformar', 'Deformar');
+  ok('Edición > Transformar > Deformar muestra la malla', (await S()).transform?.mode === 'warp' && (await page.locator('.warp-grid').count()) >= 4);
+  await page.getByLabel('Estilo de deformación').selectOption('arch');
+  await wait(300);
+  await page.screenshot({ path: 'tests/out-warp.png' });
+  await commitT();
+  ok('Deformar con el estilo «Arco (edificio)» levanta el centro', red(await lpx(200, 62)) && clear(await lpx(104, 62)) && red(await lpx(200, 240)) && red(await lpx(104, 285)),
+    JSON.stringify([await lpx(200, 62), await lpx(104, 62), await lpx(200, 240), await lpx(104, 296), await lpx(104, 290), await lpx(110, 296)]));
+  await key('Control+z', 400);
+
+  await menu('Edición', 'Transformar', 'Deformar');
+  await handleDrag('w15', 60, 60);
+  await commitT();
+  ok('Deformar: arrastrar una esquina de la malla la lleva consigo', red(await lpx(352, 352)) && red(await lpx(200, 200)), JSON.stringify(await lpx(352, 352)));
+  await key('Control+z', 400);
+
+  // Interior: arrastrar dentro de la malla dobla el contenido.
+  await menu('Edición', 'Transformar', 'Deformar');
+  {
+    const [x, y] = await scr(200, 200), z = (await S()).view.zoom;
+    await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.move(x, y + 80 * z, { steps: 8 }); await page.mouse.up(); await wait(200);
+  }
+  await commitT();
+  ok('Deformar: arrastrar el interior dobla la imagen', clear(await lpx(200, 104)) && red(await lpx(200, 320)) && red(await lpx(104, 104)),
+    JSON.stringify([await lpx(200, 104), await lpx(200, 320), await lpx(104, 104)]));
+  await key('Control+z', 400);
+
+  // =========================================================== DEFORMACIÓN DE POSICIÓN LIBRE
+  await menu('Edición', 'Deformación de posición libre');
+  ok('Deformación de posición libre: barra de opciones y malla', !!(await S()).puppet || (await page.getByTestId('puppet-options').count()) === 1);
+  await click([130, 130]);
+  await click([270, 270]);
+  ok('Clic añade chinchetas', (await page.locator('.puppet-pin').count()) === 2);
+  {
+    const [x, y] = await scr(270, 270), z = (await S()).view.zoom;
+    await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.move(x + 70 * z, y + 70 * z, { steps: 10 }); await page.mouse.up(); await wait(300);
+  }
+  await page.screenshot({ path: 'tests/out-puppet.png' });
+  await commitT();
+  ok('Mover una chincheta deforma y la otra queda fija', red(await lpx(335, 335)) && red(await lpx(130, 130)) && red(await lpx(104, 104)) && clear(await lpx(380, 120)),
+    JSON.stringify([await lpx(335, 335), await lpx(130, 130)]));
+  await key('Control+z', 400);
+  ok('Deshacer la deformación de posición libre', clear(await lpx(335, 335)) && red(await lpx(295, 295)));
+
+  // Objeto inteligente: la perspectiva se guarda sin pérdida y el texto se convierte solo.
+  await call('convertToSmart'); await wait(400);
+  await menu('Edición', 'Transformar', 'Perspectiva');
+  await handleDrag('ne', 60, 0);
+  await commitT();
+  {
+    const L = await active();
+    ok('Perspectiva en objeto inteligente (sigue siendo inteligente)', L.kind === 'smart' && red(await lpx(55, 103)), JSON.stringify({ kind: L.kind }));
+  }
+  await call('createText', { text: 'Hola', x: 120, y: 360, size: 60, color: [0, 0, 0, 255] }); await wait(400);
+  await menu('Edición', 'Transformar', 'Distorsionar');
+  await handleDrag('se', 40, 30);
+  await commitT();
+  ok('Distorsionar un texto lo convierte en objeto inteligente', (await active()).kind === 'smart', (await active()).kind);
+
+  // =========================================================== RECORTAR: ENDEREZAR, GIRAR, PERSPECTIVA
+  await newDoc(600, 400, 'white');
+  // Banda negra inclinada 10° que pasa por el centro (un horizonte torcido).
+  {
+    const a = 10 * Math.PI / 180, c = Math.cos(a), sn = Math.sin(a), cx = 300, cy = 200, hl = 400, hw = 10;
+    const P = (u, v) => [cx + u * c - v * sn, cy + u * sn + v * c];
+    await call('selectPolygon', [P(-hl, -hw), P(hl, -hw), P(hl, hw), P(-hl, hw)], 'replace', 'Lazo');
+    await call('fill', [0, 0, 0, 255]); await call('deselect');
+  }
+  await call('rotateArbitrary', 10); await wait(500);
+  ok('Imagen > Rotación de imagen > Arbitraria agranda el lienzo', (await S()).doc.width > 600 && (await S()).doc.height > 400, `${(await S()).doc.width}×${(await S()).doc.height}`);
+  await key('Control+z', 400);
+  {
+    const st = await S();
+    const W = st.doc.width, H = st.doc.height, a = 10 * Math.PI / 180;
+    await useTool('crop');
+    await page.getByRole('button', { name: 'Enderezar' }).click();
+    // La banda pasa por el centro con 10°: se traza sobre ella.
+    const cx = W / 2, cy = H / 2, L = 200;
+    await drag([cx - L * Math.cos(a), cy - L * Math.sin(a)], [cx + L * Math.cos(a), cy + L * Math.sin(a)], 10);
+    const c = (await S()).crop;
+    ok('Enderezar: el cuadro de recorte gira con la línea', c && Math.abs(c.angle - a) < 0.01, JSON.stringify(c));
+    await page.screenshot({ path: 'tests/out-straighten.png' });
+    await key('Enter', 300);
+    await page.waitForFunction(() => window.__lienzoStore.getState().doc.width < 640, null, { timeout: 15000 }).catch(() => {});
+    const d2 = (await S()).doc;
+    // Tras enderezar, la banda queda horizontal: negro a la izquierda y a la derecha a la misma altura.
+    let yl = -1, yr = -1;
+    for (let y = 0; y < d2.height; y += 2) { const l = await px(30, y), r = await px(d2.width - 30, y); if (yl < 0 && l[3] > 200 && l[0] < 60) yl = y; if (yr < 0 && r[3] > 200 && r[0] < 60) yr = y; }
+    ok('Enderezar deja el horizonte recto y sin esquinas vacías', yl > 0 && Math.abs(yl - yr) <= 3 && (await px(2, 2))[3] === 255 && (await px(d2.width - 3, d2.height - 3))[3] === 255, `${d2.width}×${d2.height} izq=${yl} der=${yr}`);
+  }
+
+  // Recortar con perspectiva: un cuadrilátero rojo se vuelve un rectángulo lleno.
+  await newDoc(600, 400, 'white');
+  await useTool('marquee');
+  await call('selectPolygon', [[150, 80], [450, 120], [480, 330], [120, 300]], 'replace', 'Lazo');
+  await call('fill', [200, 20, 20, 255]); await call('deselect');
+  await page.keyboard.press('c'); await page.keyboard.press('Shift+c'); await wait(100);
+  ok('C / Mayús+C → Recortar con perspectiva', (await S()).tool === 'perspectiveCrop');
+  await drag([200, 150], [400, 250], 6);
+  for (const [i, p] of [[0, [150, 80]], [1, [450, 120]], [2, [480, 330]], [3, [120, 300]]]) {
+    const hb = await page.locator(`[data-handle=pc${i}]`).boundingBox();
+    const [tx, ty] = await scr(...p);
+    await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2); await page.mouse.down(); await page.mouse.move(tx, ty, { steps: 6 }); await page.mouse.up();
+  }
+  await wait(200);
+  await page.screenshot({ path: 'tests/out-pcrop.png' });
+  await key('Enter', 300);
+  await page.waitForFunction(() => window.__lienzoStore.getState().doc.width !== 600, null, { timeout: 15000 }).catch(() => {});
+  {
+    const d3 = (await S()).doc;
+    const corners = [await px(3, 3), await px(d3.width - 4, 3), await px(d3.width - 4, d3.height - 4), await px(3, d3.height - 4), await px(d3.width >> 1, d3.height >> 1)];
+    ok('Recortar con perspectiva endereza el plano (todo rojo, sin blanco)', d3.width > 250 && d3.height > 150 && corners.every((c) => c[0] > 150 && c[1] < 80), `${d3.width}×${d3.height} ${JSON.stringify(corners)}`);
+  }
+  await key('Control+z', 400);
+  ok('Deshacer el recorte con perspectiva', (await S()).doc.width === 600);
+
+  // =========================================================== MÁSCARAS VECTORIALES
+  await newDoc(500, 400, 'transparent');
+  await call('selectShape', { x: 0, y: 0, w: 500, h: 400 }, 'rect', 'replace', 0);
+  await call('fill', [30, 90, 200, 255]); await call('deselect');
+  await useTool('pen');
+  for (const p of [[100, 100], [300, 100], [300, 300], [100, 300]]) await click(p);
+  await click([100, 100]);
+  await menu('Capa', 'Máscara vectorial', 'Trazado actual');
+  await wait(300);
+  {
+    const L = await active();
+    ok('Capa > Máscara vectorial > Trazado actual', !!L.vmask && !L.vmask.empty && (await page.getByTestId('vmask-thumb').count()) === 1, JSON.stringify(L.vmask && { ...L.vmask, svg: undefined }));
+    ok('La máscara vectorial recorta la capa con borde nítido', (await px(200, 200))[3] === 255 && (await px(350, 200))[3] === 0 && (await px(101, 200))[3] > 200 && (await px(98, 200))[3] < 30,
+      JSON.stringify([await px(200, 200), await px(350, 200), await px(101, 200), await px(98, 200)]));
+  }
+  await page.getByLabel('Calado de la máscara vectorial').fill('10'); await wait(400);
+  ok('Calar la máscara vectorial suaviza el borde', (await px(100, 200))[3] > 40 && (await px(100, 200))[3] < 220, JSON.stringify(await px(100, 200)));
+  await page.getByLabel('Calado de la máscara vectorial').fill('0'); await wait(300);
+  await page.evaluate(() => document.activeElement?.blur());
+  const h0 = (await S()).doc.historyIndex;
+  await call('addMask', 'reveal'); await wait(200);
+  await call('selectShape', { x: 150, y: 150, w: 60, h: 60 }, 'rect', 'replace', 0);
+  await call('fill', [0, 0, 0, 255]); await call('deselect'); await wait(300);
+  ok('Máscara de píxeles y vectorial se combinan', (await px(180, 180))[3] === 0 && (await px(250, 250))[3] === 255 && (await px(350, 200))[3] === 0,
+    JSON.stringify([await px(180, 180), await px(250, 250)]));
+  await page.evaluate(() => document.activeElement?.blur());
+  for (let i = 0; i < 8 && (await S()).doc.historyIndex > h0; i++) await key('Control+z', 200);
+  ok('Deshacer quita la máscara de píxeles', !(await active()).hasMask);
+  // Mover la capa mueve la máscara vectorial con ella.
+  await useTool('move');
+  await drag([200, 200], [250, 200], 8);
+  ok('La máscara vectorial se mueve con la capa', (await px(320, 200))[3] === 255 && (await px(130, 200))[3] === 0, JSON.stringify([await px(320, 200), await px(130, 200)]));
+  await key('Control+z', 300);
+  // Transformar (escalar con Ctrl+T) transforma también la máscara vectorial.
+  await call('beginTransform'); await call('updateTransform', [0.5, 0, 0, 0.5, 0, 0]); await call('commitTransform'); await wait(400);
+  ok('Transformar escala también la máscara vectorial', (await px(100, 100))[3] === 255 && (await px(160, 100))[3] === 0 && (await px(45, 100))[3] === 0 && (await px(60, 60))[3] === 255, JSON.stringify([await px(100, 100), await px(160, 100), await px(45, 100)]));
+  await key('Control+z', 400);
+  // Guardar y abrir PSD conserva la máscara vectorial.
+  {
+    const buf = await page.evaluate(async () => { const b = await window.__lienzo.call('savePsd'); return Array.from(new Uint8Array(b)); });
+    await page.evaluate(async (arr) => { await window.__lienzo.call('open', 'vm.psd', new Uint8Array(arr).buffer, 'image/vnd.adobe.photoshop'); }, buf);
+    await wait(600);
+    const L = (await S()).doc.layers[0];
+    ok('PSD: la máscara vectorial se guarda y se vuelve a abrir', !!L.vmask && (await px(200, 200))[3] === 255 && (await px(350, 200))[3] === 0, JSON.stringify({ vm: !!L.vmask, a: (await px(200, 200))[3], b: (await px(350, 200))[3] }));
+  }
+  await menu('Capa', 'Máscara vectorial', 'Rasterizar máscara vectorial'); await wait(300);
+  ok('Rasterizar la máscara vectorial la pasa a máscara de píxeles', !(await active()).vmask && (await active()).hasMask && (await px(350, 200))[3] === 0);
+
+  // Rotar el lienzo conserva grupos y objetos inteligentes (antes se perdían).
+  await newDoc(400, 300, 'white');
+  await call('newLayer'); await call('selectShape', { x: 20, y: 20, w: 50, h: 50 }, 'rect', 'replace', 0); await call('fill', [255, 0, 0, 255]); await call('deselect');
+  await key('Control+g', 300);
+  await call('rotateCanvas', 90); await wait(400);
+  {
+    const st = await S();
+    const g = st.doc.layers.find((l) => l.kind === 'group');
+    const inside = st.doc.layers.find((l) => l.parent === g?.id);
+    ok('Rotar el lienzo 90° conserva los grupos', st.doc.width === 300 && !!g && !!inside, JSON.stringify(st.doc.layers.map((l) => [l.name, l.kind, l.parent])));
+  }
+  await call('resizeImage', 150, 200); await wait(400);
+  {
+    const st = await S();
+    const g = st.doc.layers.find((l) => l.kind === 'group');
+    ok('Tamaño de imagen conserva los grupos', st.doc.width === 150 && !!g && st.doc.layers.some((l) => l.parent === g.id), JSON.stringify(st.doc.layers.map((l) => [l.name, l.kind, l.parent])));
+  }
+
   await page.screenshot({ path: 'tests/out-select.png' });
   ok('Sin errores en consola', errors.length === 0, errors.slice(0, 3).join(' | '));
 } catch (e) {

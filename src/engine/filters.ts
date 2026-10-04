@@ -3,6 +3,7 @@
  * filtros, transformación afín y deformación (licuar). Funciones puras sobre RGBA
  * con alfa directo; los desenfoques trabajan en premultiplicado.
  */
+import { backMap, type WarpSpec } from './meshwarp';
 import { resampleBand, type BandJob } from './resample';
 import { inpaint, heal } from './inpaint';
 
@@ -87,13 +88,22 @@ export interface HealJob {
   src: Uint8ClampedArray; dst: Uint8ClampedArray; mask: Float32Array; w: number; h: number;
 }
 
-export type PoolJob = ({ op: 'resample' } & BandJob) | FilterJob | AffineJob | WarpJob | InpaintJob | HealJob;
+/** Transformación no afín (perspectiva, deformar, posición libre) por muestreo inverso. */
+export interface MapWarpJob {
+  op: 'mapwarp';
+  src: Uint8ClampedArray; sw: number; sh: number; sx: number; sy: number;
+  spec: WarpSpec;
+  x: number; y: number; w: number; rows: number; ss: number;
+}
+
+export type PoolJob = ({ op: 'resample' } & BandJob) | FilterJob | AffineJob | WarpJob | InpaintJob | HealJob | MapWarpJob;
 
 export function runJob(j: PoolJob): Uint8ClampedArray {
   switch (j.op) {
     case 'resample': return resampleBand(j);
     case 'filter': return runFilter(j);
     case 'affine': return runAffine(j);
+    case 'mapwarp': return runMapWarp(j);
     case 'warp': return runWarp(j);
     case 'inpaint': {
       const filled = inpaint(j.src, j.w, j.h, j.hole, j.seed);
@@ -406,6 +416,29 @@ function runAffine(j: AffineJob): Uint8ClampedArray {
       }
       const a = acc[3] / n;
       if (a < 0.5) continue;
+      const o = (r * w + c) * 4;
+      out[o] = acc[0] / acc[3]; out[o + 1] = acc[1] / acc[3]; out[o + 2] = acc[2] / acc[3]; out[o + 3] = a;
+    }
+  }
+  return out;
+}
+
+function runMapWarp(j: MapWarpJob): Uint8ClampedArray {
+  const { src, sw, sh, sx, sy, spec, x, y, w, rows, ss } = j;
+  const map = backMap(spec, x, y, w, rows, ss);
+  const out = new Uint8ClampedArray(w * rows * 4);
+  const acc = new Float32Array(4), W = w * ss, n = ss * ss;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < w; c++) {
+      acc.fill(0);
+      for (let q = 0; q < n; q++) {
+        const k = ((r * ss + Math.floor(q / ss)) * W + c * ss + (q % ss)) * 2;
+        const ux = map[k];
+        if (ux !== ux) continue; // NaN: fuera de la malla
+        sampleBilinear(src, sw, sh, ux - sx, map[k + 1] - sy, acc);
+      }
+      const a = acc[3] / n;
+      if (a < 0.5 / n) continue; // bordes suavizados por el supermuestreo
       const o = (r * w + c) * 4;
       out[o] = acc[0] / acc[3]; out[o + 1] = acc[1] / acc[3]; out[o + 2] = acc[2] / acc[3]; out[o + 3] = a;
     }

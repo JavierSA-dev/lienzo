@@ -9,7 +9,7 @@ export type DialogId =
   | { kind: 'new' } | { kind: 'imageSize' } | { kind: 'canvasSize' } | { kind: 'export' }
   | { kind: 'adjust'; type: AdjustmentType } | { kind: 'filter'; name: FilterName }
   | { kind: 'feather' } | { kind: 'grow'; dir: 1 | -1 } | { kind: 'fill' } | { kind: 'layerStyle' }
-  | { kind: 'shortcuts' } | { kind: 'liquify' } | { kind: 'generative' } | { kind: 'about' } | { kind: 'confirmClose'; docId: number } | { kind: 'newGuide' } | { kind: 'colorPicker'; which: 'fg' | 'bg' } | { kind: 'applyImage' } | { kind: 'stroke' } | { kind: 'newLayer' } | { kind: 'warpText' } | { kind: 'newArtboard' } | { kind: 'refine' } | { kind: 'colorRange' }
+  | { kind: 'shortcuts' } | { kind: 'liquify' } | { kind: 'generative' } | { kind: 'about' } | { kind: 'confirmClose'; docId: number } | { kind: 'newGuide' } | { kind: 'colorPicker'; which: 'fg' | 'bg' } | { kind: 'applyImage' } | { kind: 'stroke' } | { kind: 'newLayer' } | { kind: 'warpText' } | { kind: 'newArtboard' } | { kind: 'refine' } | { kind: 'colorRange' } | { kind: 'rotateArbitrary' }
   | null;
 
 export type MobileSheet = 'menu' | 'layers' | 'adjust' | 'props' | 'history' | 'color' | 'export' | 'tools' | 'select';
@@ -51,8 +51,30 @@ export interface ToolOptions {
   darkenAmount: number;
 }
 
+/** Modo de la transformación: libre, sesgar, distorsionar, perspectiva o deformar (Edición > Transformar). */
+export type TMode = 'free' | 'skew' | 'distort' | 'perspective' | 'warp';
+export type TPt = [number, number];
+
 /** Estado de la transformación libre (Ctrl+T) mientras está activa. */
-export interface TransformState { bounds: Rect; matrix: Matrix }
+export interface TransformState {
+  bounds: Rect;
+  matrix: Matrix;
+  mode?: TMode;
+  /** Esquinas (sup-izq, sup-der, inf-der, inf-izq) en el espacio local, antes de `matrix`. */
+  quad?: TPt[] | null;
+  /** Deformar: 16 puntos de control (4×4) en el espacio local, estilo y curvatura. */
+  warp?: { ctrl: TPt[]; style: string; bend: number } | null;
+}
+
+/** Deformación de posición libre (Edición > Deformación de posición libre). */
+export interface PuppetState {
+  bounds: Rect;
+  pins: { p: TPt; q: TPt }[];
+  mode: 'rigid' | 'normal' | 'distort';
+  density: 0 | 1 | 2;
+  showMesh: boolean;
+  sel: number | null;
+}
 
 /** Edición de texto en curso (cuadro sobre el lienzo). */
 export interface TextEdit { layerId: number | null; x: number; y: number; text: string }
@@ -83,8 +105,16 @@ interface Store {
   dialog: DialogId;
   selectionPath: string;
   transform: TransformState | null;
+  puppet: PuppetState | null;
+  /** Capa cuya máscara vectorial se edita con la pluma (el trazado de trabajo es el de la máscara). */
+  vmaskEdit: number | null;
   textEdit: TextEdit | null;
-  crop: Rect | null;
+  /** Cuadro de recorte; con `angle` está girado alrededor de `pivot` (Enderezar). */
+  crop: (Rect & { angle?: number; pivot?: TPt }) | null;
+  /** Recortar: modo Enderezar (trazar una línea del horizonte). */
+  straighten: boolean;
+  /** Recortar con perspectiva: esquinas (sup-izq, sup-der, inf-der, inf-izq). */
+  pcrop: TPt[] | null;
   recording: boolean;
   actions: { name: string; steps: { id: string; args?: unknown[] }[] }[];
   fullscreen: boolean;
@@ -206,8 +236,12 @@ export const useStore = create<Store>((set, get) => ({
   dialog: null,
   selectionPath: '',
   transform: null,
+  puppet: null,
+  vmaskEdit: null,
   textEdit: null,
   crop: null,
+  straighten: false,
+  pcrop: null,
   recording: false,
   actions: loadPrefs('actions', { list: [] as Store['actions'] }).list,
   fullscreen: false,
@@ -293,6 +327,7 @@ export function commitPath(label: string) {
   const s = useStore.getState();
   useStore.setState({ penLocal: false });
   pathEdits++;
+  if (s.vmaskEdit != null && s.vmaskEdit === s.doc.activeLayerId) engine.call('addVectorMask', 'path', s.path);
   engine.call('setPathData', s.doc.activePathId, s.path, label).finally(() => {
     if (--pathEdits === 0) syncPathFromDoc();
   });
@@ -310,7 +345,7 @@ engine.on((m) => {
       break;
     }
     case 'state':
-      useStore.setState({ doc: m.state });
+      useStore.setState({ doc: m.state, ...(s.vmaskEdit != null && m.state.activeLayerId !== s.vmaskEdit ? { vmaskEdit: null } : {}) });
       if (!pathEdits && !useStore.getState().penLocal) syncPathFromDoc();
       break;
     case 'view':
