@@ -1,7 +1,7 @@
 import { newVectorMask } from './vmask';
 import { USER_PATTERNS } from './effects';
 import { readPsd, writePsdUint8Array, initializeCanvas, type Layer as PsdLayer, type Psd, type AdjustmentLayer, type LayerEffectsInfo, type Color as PsdColor, type UnitsValue } from 'ag-psd';
-import { EditorDocument, PixelLayer, MaskChannel } from './document';
+import { EditorDocument, PixelLayer, MaskChannel, type AnimFrame } from './document';
 import { BLEND_MODES, SELECTIVE_RANGES, IDENTITY, type AdjustmentParams, type BlendMode, type RGBA, type LayerEffects, type BevelStyle, type TextParams, type Matrix, type WarpStyle } from './types';
 import { SYSTEM_FONTS, GOOGLE_FONTS, fontReady } from './fonts';
 import { parseCube, encodeLut, decodeLut, toCube } from './lut';
@@ -268,7 +268,7 @@ function textToPsd(t: TextParams): LayerTextData {
 // ------------------------------------------------------------------ datos propios de Lienzo en el XMP
 
 /** Lo que Photoshop no sabe guardar a nuestra manera (p. ej. los motivos generados) va en el XMP del archivo. */
-interface Extra { patternOverlay?: LayerEffects['patternOverlay']; patternData?: { id: string; w: number; h: number; b64: string } }
+interface Extra { patternOverlay?: LayerEffects['patternOverlay']; patternData?: { id: string; w: number; h: number; b64: string }; mode?: 'rgb' | 'gray' | 'cmyk'; frames?: AnimFrame[]; loop?: number; activeFrame?: number }
 function writeExtras(x: Record<number, Extra>): string {
   const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(x))));
   return `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:lienzo="https://lienzo.app/ns/1.0/" lienzo:data="${b64}"/></rdf:RDF></x:xmpmeta><?xpacket end="w"?>`;
@@ -285,6 +285,11 @@ export function importPsd(name: string, buffer: ArrayBuffer): ImportResult {
   const doc = new EditorDocument(name, psd.width, psd.height);
   const warnings = new Set<string>();
   const extras = readExtras(psd);
+  // Modo de color (los píxeles llegan en RGB) y resolución.
+  const cm = (psd as { colorMode?: number }).colorMode;
+  doc.mode = extras[0]?.mode ?? (cm === 1 ? 'gray' : cm === 4 ? 'cmyk' : 'rgb');
+  const ri = psd.imageResources?.resolutionInfo;
+  if (ri?.horizontalResolution) doc.dpi = Math.round(ri.horizontalResolutionUnit === 'PPCM' ? ri.horizontalResolution * 2.54 : ri.horizontalResolution);
 
   const readMask = (l: PsdLayer, L: PixelLayer) => {
     const m = l.mask;
@@ -367,9 +372,11 @@ export function importPsd(name: string, buffer: ArrayBuffer): ImportResult {
       L.blend = PSD_BLEND[l.blendMode ?? 'normal'] ?? 'normal';
       if (L.blend === 'pass-through' && L.kind !== 'group') L.blend = 'normal';
       if (l.blendMode && !PSD_BLEND[l.blendMode]) warnings.add(`modo "${l.blendMode}"`);
+      if (l.id !== undefined) idMap.set(l.id, L.id);
       doc.layers.push(L);
     }
   };
+  const idMap = new Map<number, number>();
 
   if (psd.children?.length) walk(psd.children, null);
   else if (psd.imageData) {
@@ -377,6 +384,17 @@ export function importPsd(name: string, buffer: ArrayBuffer): ImportResult {
     doc.layers.push(layerFromPixels('Fondo', u8(img.data), img.width, img.height));
   }
   if (!doc.layers.length) doc.layers.push(new PixelLayer('Capa 1'));
+  // Línea de tiempo guardada por Lienzo (los id de capa cambian al abrir).
+  const anim = extras[0];
+  if (anim?.frames?.length) {
+    doc.frames = anim.frames.map((f) => {
+      const layers: AnimFrame['layers'] = {};
+      for (const [k, v] of Object.entries(f.layers)) { const id = idMap.get(Number(k)); if (id != null) layers[id] = v; }
+      return { delay: f.delay, layers };
+    });
+    doc.loop = anim.loop ?? 0;
+    doc.activeFrame = Math.min(anim.activeFrame ?? 0, doc.frames.length - 1);
+  }
   doc.activeLayerId = doc.layers[doc.layers.length - 1].id;
   return { doc, warnings: [...warnings] };
 }
@@ -456,6 +474,10 @@ export function exportPsd(doc: EditorDocument, composite: Uint8ClampedArray, psb
   const level = (pid: number | null): PsdLayer[] => doc.children(pid).map(toPsd).filter((x): x is PsdLayer => !!x);
   const children = level(null);
   const psd: Psd = { width: doc.width, height: doc.height, imageData: { width: doc.width, height: doc.height, data: composite }, children };
-  if (Object.keys(extras).length) psd.imageResources = { xmpMetadata: writeExtras(extras) };
+  if (doc.mode !== 'rgb' || doc.frames.length) extras[0] = { mode: doc.mode, ...(doc.frames.length ? { frames: doc.frames, loop: doc.loop, activeFrame: doc.activeFrame } : {}) };
+  psd.imageResources = {
+    resolutionInfo: { horizontalResolution: doc.dpi, horizontalResolutionUnit: 'PPI', widthUnit: 'Inches', verticalResolution: doc.dpi, verticalResolutionUnit: 'PPI', heightUnit: 'Inches' },
+    ...(Object.keys(extras).length ? { xmpMetadata: writeExtras(extras) } : {}),
+  };
   return writePsdUint8Array(psd, { generateThumbnail: false, trimImageData: true, noBackground: true, psb });
 }

@@ -1,7 +1,8 @@
 // Selector de color como el de Photoshop: campo de saturación/brillo, barra de tono,
 // color nuevo y actual, campos HSB, RGB y hexadecimal, recientes y "Añadir a muestras".
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from './store';
+import { cmykOf, proofColor, printModel } from '../engine/color';
 import { Modal } from './Dialogs';
 
 export type HSB = [number, number, number]; // h 0..360, s 0..100, b 0..100
@@ -63,6 +64,16 @@ export function ColorPickerDialog({ which, close }: { which: 'fg' | 'bg'; close:
   const lastHex = useRef(hex);
   useEffect(() => { if (lastHex.current !== hex) { lastHex.current = hex; setHexText(hex); } }, [hex]);
   const setRgb = (r: number, g: number, b: number) => setHsb(rgbToHsb(r, g, b));
+  // Tintas CMYK y aviso de gama (el color no se puede imprimir tal cual).
+  const cmyk = useMemo(() => cmykOf(...rgb), [rgb[0], rgb[1], rgb[2]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const printable = useMemo(() => proofColor(...rgb), [rgb[0], rgb[1], rgb[2]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const outOfGamut = Math.hypot(printable[0] - rgb[0], printable[1] - rgb[1], printable[2] - rgb[2]) > 23;
+  const setCmyk = (i: number, v: number) => {
+    const q = cmyk.map((x) => x / 100) as [number, number, number, number];
+    q[i] = v / 100;
+    const p = printModel(...q);
+    setRgb(...(p.map((x) => Math.round(Math.max(0, Math.min(1, x)) * 255)) as [number, number, number]));
+  };
   const ok = () => {
     const s = useStore.getState();
     if (which === 'fg') s.setColors(hex, s.bg); else s.setColors(s.fg, hex);
@@ -101,6 +112,17 @@ export function ColorPickerDialog({ which, close }: { which: 'fg' | 'bg'; close:
             {field('B:', hsb[2], 100, (v) => setHsb([hsb[0], hsb[1], v]), '%')}
             {field('B:', rgb[2], 255, (v) => setRgb(rgb[0], rgb[1], v))}
           </div>
+          <div className="cp-grid cp-cmyk" data-testid="cp-cmyk">
+            {field('C:', cmyk[0], 100, (v) => setCmyk(0, v), '%')}
+            {field('M:', cmyk[1], 100, (v) => setCmyk(1, v), '%')}
+            {field('Y:', cmyk[2], 100, (v) => setCmyk(2, v), '%')}
+            {field('K:', cmyk[3], 100, (v) => setCmyk(3, v), '%')}
+          </div>
+          {outOfGamut && (
+            <button type="button" className="cp-gamut" data-testid="cp-gamut" title="Fuera de gama para impresión: clic para usar el color imprimible más próximo" onClick={() => setRgb(...printable)}>
+              <span aria-hidden>⚠</span><i style={{ background: rgbToHex(...printable) }} />
+            </button>
+          )}
           <label className="cp-field cp-hex"><span>#</span>
             <input value={hexText.replace('#', '')} maxLength={6} aria-label="Hexadecimal" onKeyDown={(e) => e.stopPropagation()}
               onChange={(e) => { const v = e.target.value.replace(/[^0-9a-f]/gi, ''); setHexText('#' + v); if (v.length === 6) setRgb(...hexToRgb('#' + v)); }} />

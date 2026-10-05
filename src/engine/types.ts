@@ -304,6 +304,15 @@ export interface DocState {
   historySource: number | null;
   /** Canal que se está viendo: 0 = RGB, 1 R, 2 G, 3 B. */
   viewChannel: number;
+  /** Modo de color, resolución y vistas de prueba (Ctrl+Y / Mayús+Ctrl+Y). */
+  mode?: 'rgb' | 'gray' | 'cmyk';
+  dpi?: number;
+  proof?: boolean;
+  gamutWarning?: boolean;
+  /** Línea de tiempo: duración de cada cuadro (ms), cuadro activo y repeticiones (0 = infinito). */
+  frames?: { delay: number }[];
+  activeFrame?: number;
+  loop?: number;
   /** Pestañas abiertas. */
   docs: { id: number; name: string; dirty: boolean }[];
   activeDocId: number;

@@ -14,13 +14,15 @@ npm run dev          # http://localhost:5173
 | `npm run dev` | Servidor de desarrollo con recarga en caliente |
 | `npm run build` | Comprueba tipos y genera `dist/` para producción |
 | `npm test` | Tests unitarios del motor (Vitest) |
-| `npm run e2e` | Todas las baterías en Chromium: fase 1, escritorio, fases 10, 11 y 12, y móvil |
+| `npm run e2e` | Todas las baterías en Chromium: fase 1, escritorio, fases 10 a 13, y móvil |
 | `node tests/e2e.mjs` | Fase 1 (pincel, historial, capas, PSD de 50 capas, rendimiento) |
 | `node tests/e2e-full.mjs` | Fases 2–9: 242 comprobaciones con ratón y teclado reales |
 | `node tests/e2e-select.mjs` | Fase 10: selección avanzada, transformaciones, recortes y máscaras vectoriales (53 comprobaciones) |
 | `node tests/e2e-photo.mjs` | Fase 11: revelado, RAW, lente, ruido, desenfoques, Quitar, escalado, panorámica, HDR y alinear (34 comprobaciones; la de RAW usa `tests/fixtures/sample.arw` si existe) |
 | `node tests/e2e-art.mjs` | Fase 12: pinceles (puntas, dinámicas, ABR, simetría, mezclador), degradados y motivos (25 comprobaciones) |
-| `npm run e2e:mobile` | Móvil vertical/horizontal y tableta: 64 comprobaciones con toques de varios dedos |
+| `node tests/e2e-output.mjs` | Fase 13: modos de color y prueba de colores, TIFF/PDF/SVG/GIF (validados con PIL, qpdf y pdftoppm), línea de tiempo, acciones con parámetros, lotes e inglés (66 comprobaciones) |
+| `npm run e2e:mobile` | Móvil vertical/horizontal y tableta: 72 comprobaciones con toques de varios dedos |
+| `npm run i18n:scan` | Recorre menús, diálogos, herramientas y hojas móviles en inglés y lista los textos sin traducir |
 | `node tests/shots.mjs` | Capturas de la interfaz para revisión visual |
 | `npm run bench` | Compara Lienzo con Photopea en **tu** Chrome y **tu** GPU (`bench/resultados.md`) |
 
@@ -63,6 +65,14 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 **Ilustración**: motor de pincel con puntas redondas (ángulo, redondez, dureza) y muestreadas, dinámicas de forma, dispersión, color y transferencia (presión, desvanecer, dirección), ruido, bordes húmedos y suavizado; valores preestablecidos incluidos (tiza, carboncillo, pincel seco, acuarela, salpicadura, hierba, hojas, estrellas…), importar pinceles .abr de Photoshop y Definir valor de pincel; Ajustes de pincel (F5); pintura simétrica (vertical, horizontal, doble, diagonal, radial y mandala); Pincel mezclador (humedad, carga, mezcla); editor de degradado con paradas de color y opacidad (herramienta, superposición de degradado y mapa de degradado); Definir motivo, rellenar con motivo y superposición con motivos propios (viajan dentro del PSD).
 
+**Salida e impresión**: Imagen > Modo (Escala de grises, Color RGB, Color CMYK con un modelo de tintas de cuatricromía estucada, límite de tinta del 300 % y generación de negro), Prueba de colores (Ctrl+Y) y Avisar sobre gama (Ctrl+Mayús+Y), canales Cian/Magenta/Amarillo/Negro en el panel Canales, valores CMYK y aviso de gama en el Selector de color, resolución en ppp. Exportar como TIFF (RGB con transparencia, CMYK o gris, Deflate), PDF (RGB, CMYK o gris; ZIP o JPEG), SVG (formas y textos como vectores, el resto como imágenes) y GIF (paleta y tramado).
+
+**Animación**: Ventana > Línea de tiempo con animación de cuadros (visibilidad, opacidad y posición de cada capa por cuadro), duplicar, eliminar, retardos, repeticiones, Interpolar y reproducir; Exportar animación como GIF animado o secuencia PNG. La animación se guarda dentro del PSD.
+
+**Automatización**: las acciones graban también las operaciones con diálogo y sus valores (filtros, ajustes, tamaño de imagen y de lienzo, rellenar…); Archivo > Automatizar > Lote aplica una acción a muchos archivos, con redimensionado opcional, sufijo y formato de salida (JPEG, PNG, WebP, TIFF, PDF o PSD), y lo descarga en un ZIP.
+
+**Idiomas**: español e inglés (Ayuda > Idioma; por defecto, el del navegador).
+
 **Retoque**: pincel corrector puntual y relleno según contenido (síntesis de textura con PatchMatch y fusión de Poisson, en local), pincel corrector con Alt+clic de origen.
 
 **Espacio de trabajo**: varios documentos en pestañas (Ctrl+Tab/Ctrl+F6, cerrar con confirmación, arrastrar una capa a otra pestaña), reglas (Ctrl+R), guías (arrastrar desde la regla, Vista > Nueva guía, bloquear, borrar) y ajuste magnético a guías y bordes (Ctrl+Mayús+;), Selector de color con HSB/RGB/hex, recientes y panel Muestras, panel Canales, instantáneas en el Historial.
@@ -77,7 +87,7 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 **IA**: quitar fondo y seleccionar sujeto en local (u2netp, Apache-2.0, 4,5 MB, sin servidor). Relleno generativo con proveedor configurable; `server/generative-proxy.mjs` es un proxy de referencia con créditos diarios por usuario (base del modelo freemium).
 
-**Archivos**: PSD/PSB (grupos, máscaras de recorte, máscaras y capas de ajuste de ida y vuelta), PNG, JPEG, WebP, GIF, BMP, AVIF. Exportar como en 0,5x/1x/2x/3x, por mesas de trabajo, en un ZIP. PWA instalable que abre imágenes desde el sistema operativo.
+**Archivos**: PSD/PSB (grupos, máscaras de recorte, máscaras y capas de ajuste de ida y vuelta; modo de color, resolución y línea de tiempo), PNG, JPEG, WebP, GIF, BMP, AVIF. Exportar como PNG, JPEG, WebP, GIF, TIFF, PDF o SVG en 0,5x/1x/2x/3x, por mesas de trabajo, en un ZIP. PWA instalable que abre imágenes desde el sistema operativo.
 
 **Acciones**: grabar, reproducir, renombrar (doble clic) y borrar secuencias de comandos.
 
@@ -90,12 +100,13 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 - Pincel: `[` `]` tamaño, Mayús+`[` `]` dureza, Alt+clic derecho arrastrando = tamaño/dureza en vivo, Bloq Mayús = cursor de precisión.
 - Grupos y recortes: Ctrl+G agrupa, Ctrl+Mayús+G desagrupa, Ctrl+Alt+G (o Alt+clic en la capa) crea/libera la máscara de recorte, Ctrl+E con un grupo lo combina.
 - Pluma: Ctrl+Intro = selección, Intro/Esc terminan, Retroceso borra el ancla o el trazado.
+- Vista: Ctrl+Y prueba de colores, Ctrl+Mayús+Y avisar sobre gama (rehacer es Ctrl+Mayús+Z, como en Photoshop).
 - Menús: Ctrl+Z/Ctrl+Mayús+Z/Ctrl+Alt+Z, Ctrl+J, Ctrl+Mayús+J, Ctrl+E, Ctrl+Mayús+E, Ctrl+Alt+Mayús+E, Ctrl+[ ], Alt+[ ], Ctrl+L/M/U/B/I, Ctrl+Mayús+U/L/B, Ctrl+Alt+I/C, Ctrl+T, Ctrl+D, Ctrl+Mayús+D, Ctrl+Mayús+I, Mayús+F5/F6/F7, Ctrl+Alt+F, Ctrl+Mayús+X, Ctrl+0/1, Ctrl+H, Tab, F…
 - Chrome reserva Ctrl+N/T/W y Ctrl+Mayús+N/T/W en una pestaña normal: funcionan en pantalla completa (F) y tienen alternativa (Ctrl+Alt+N, Ctrl+F4, Ctrl+Alt+Mayús+N…), indicada en los menús.
 
 ## Resultados verificados (entorno de pruebas, GPU emulada por CPU)
 
-- 26/26 tests unitarios, 24/24 de la fase 1, 244/244 de las fases 2–9, 53/53 de la fase 10, 34/34 de la fase 11, 25/25 de la fase 12 y 64/64 de móvil y tableta (toques de varios dedos simulados) en Chromium.
+- 33/33 tests unitarios, 24/24 de la fase 1, 244/244 de las fases 2–9, 53/53 de la fase 10, 34/34 de la fase 11, 25/25 de la fase 12, 66/66 de la fase 13 y 72/72 de móvil y tableta (toques de varios dedos simulados) en Chromium.
 - Composición GPU igual que la referencia en CPU (diferencia máxima 1/255, PSD de 50 capas).
 - Desenfoque gaussiano de 20 px en 24 MP: la interfaz no se bloquea (tarea larga máxima 0 ms).
 - Quitar fondo con IA local: ~2,5 s en CPU emulada. Relleno según contenido de un hueco de 150 px: ~1–3 s en un hilo.
@@ -104,7 +115,7 @@ Los tiempos absolutos no son representativos en ese entorno; ejecuta `npm run be
 
 ## Pendiente
 
-Ver el plan completo por fases en el documento del proyecto: 16 bits por canal, CMYK, colaboración en tiempo real y app de escritorio (Tauri).
+Ver el plan completo por fases en el documento del proyecto: 16 bits por canal, perfiles ICC reales (el CMYK actual es un modelo aproximado), Punto de fuga, asistente de IA, colaboración en tiempo real y app de escritorio (Tauri).
 
 ## Componentes de terceros
 
@@ -113,6 +124,7 @@ Ver el plan completo por fases en el documento del proyecto: 16 bits por canal, 
 | ag-psd | Leer y escribir PSD/PSB y pinceles .abr | MIT |
 | onnxruntime-web + u2netp | IA local (sujeto, quitar fondo, selección de objeto) | MIT / Apache-2.0 |
 | libraw-wasm (LibRaw) | Revelar archivos RAW de cámara | ISC (enlace) / LibRaw: LGPL-2.1 o CDDL-1.0 (se usa sin modificar) |
+| gifenc | Codificar GIF (también animados) | MIT |
 | React, zustand, lucide-react, Vite | Interfaz y compilación | MIT / ISC |
 
 Los pinceles de prueba `tests/fixtures/*.abr` proceden de la batería de pruebas de ag-psd (MIT).

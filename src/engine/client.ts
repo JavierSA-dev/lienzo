@@ -43,7 +43,11 @@ export class EngineClient {
     this.send({ type: 'init', canvas: off, width, height, dpr }, [off]);
   }
 
+  /** Observador de llamadas (grabación de acciones). */
+  onCall: ((method: string, args: unknown[]) => void) | null = null;
+
   call<T = unknown>(method: string, ...args: unknown[]): Promise<T> {
+    this.onCall?.(method, args);
     const id = this.seq++;
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });

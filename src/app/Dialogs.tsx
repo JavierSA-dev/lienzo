@@ -1,3 +1,4 @@
+import { TweenDialog, ExportAnimDialog } from './Timeline';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { engine } from '../engine/client';
 import { useStore, toRgba } from './store';
@@ -16,7 +17,7 @@ import { GenerativeDialog } from './Generative';
 import { ColorRangeDialog, RefineDialog } from './SelectDialogs';
 import { DevelopDialog } from './Develop';
 import { BlurGalleryDialog } from './BlurGallery';
-import { AutomateDialog } from './Automate';
+import { AutomateDialog, BatchDialog } from './Automate';
 import { BrushSettingsDialog } from './BrushPanel';
 
 export function Modal({ title, children, onOk, okLabel = 'OK', onClose, wide }: { title: string; children: ReactNode; onOk: () => void; okLabel?: string; onClose: () => void; wide?: boolean }) {
@@ -83,13 +84,21 @@ function ImageSizeDialog({ close }: { close: () => void }) {
   const [keep, setKeep] = useState(true);
   const [method, setMethod] = useState('auto');
   const [noise, setNoise] = useState(0);
+  const [dpi, setDpi] = useState(doc.dpi ?? 72);
   const ratio = doc.width / doc.height;
   const details = method === 'details';
+  const cm = (px: number) => ((px / Math.max(1, dpi)) * 2.54).toFixed(2).replace('.', ',');
   return (
-    <Modal title="Tamaño de imagen" onClose={close} onOk={() => { engine.call('resizeImage', w, h, method, details ? noise : 0); close(); }}>
+    <Modal title="Tamaño de imagen" onClose={close} onOk={() => {
+      if (dpi !== (doc.dpi ?? 72)) engine.call('setResolution', dpi);
+      if (w !== doc.width || h !== doc.height) engine.call('resizeImage', w, h, method, details ? noise : 0);
+      close();
+    }}>
       <label className="field">Anchura (px)<input type="number" min={1} value={w} autoFocus onChange={(e) => { const v = num(e.target.value, 1); setW(v); if (keep) setH(Math.max(1, Math.round(v / ratio))); }} /></label>
       <label className="field">Altura (px)<input type="number" min={1} value={h} onChange={(e) => { const v = num(e.target.value, 1); setH(v); if (keep) setW(Math.max(1, Math.round(v * ratio))); }} /></label>
       <label className="field">Proporciones<span><input type="checkbox" checked={keep} onChange={(e) => setKeep(e.target.checked)} /> Restringir</span></label>
+      <label className="field">Resolución (ppp)<input type="number" min={1} max={9999} value={dpi} aria-label="Resolución" onChange={(e) => setDpi(num(e.target.value, 1))} /></label>
+      <span className="hint" data-testid="print-size">Tamaño de impresión: {cm(w)} × {cm(h)} cm</span>
       <label className="field">Remuestrear
         <select value={method} aria-label="Remuestrear" onChange={(e) => setMethod(e.target.value)}>
           <option value="auto">Automático</option>
@@ -300,6 +309,9 @@ export function Dialogs() {
     case 'imageSize': return <ImageSizeDialog close={close} />;
     case 'canvasSize': return <CanvasSizeDialog close={close} />;
     case 'export': return <ExportAsDialog close={close} />;
+    case 'tween': return <TweenDialog close={close} />;
+    case 'batch': return <BatchDialog close={close} />;
+    case 'exportAnim': return <ExportAnimDialog close={close} />;
     case 'adjust': return <AdjustDialog type={dialog.type} close={close} />;
     case 'filter': return <FilterDialog name={dialog.name} close={close} />;
     case 'feather': return <NumberDialog title="Calar selección" label="Radio de calado (px)" initial={5} min={0.5} max={500} onOk={(v) => engine.call('featherSelection', v)} close={close} />;

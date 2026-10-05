@@ -13,7 +13,8 @@ import { TextProperties } from './TextPanels';
 import { SmartProperties } from './SmartPanel';
 import { ArtboardProperties } from './Artboards';
 import { rgbToHsb, hsbToRgb, hexToRgb, rgbToHex, pushRecent, addSwatch, removeSwatch } from './ColorPicker';
-import { startRecording, stopRecording, playAction, deleteAction, renameAction } from './commands';
+import { trName } from './i18n';
+import { startRecording, stopRecording, playAction, deleteAction, renameAction, stepLabel } from './commands';
 
 const BLEND_LABEL = Object.fromEntries([...BLEND_GROUPS.flat(), PASS_THROUGH].map((b) => [b.id, b.label]));
 
@@ -205,7 +206,7 @@ export function ActionsPanel() {
                 ? <input className="action-name" autoFocus onFocus={(e) => e.target.select()} defaultValue={a.name}
                     onBlur={(e) => { renameAction(i, e.target.value.trim() || a.name); setEditing(null); }}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') (e.target as HTMLInputElement).blur(); e.stopPropagation(); }} />
-                : <span title={`${a.steps.map((s) => s.id).join(', ')}\nDoble clic para renombrar`} onDoubleClick={() => setEditing(i)}>{a.name} <span className="hint">({a.steps.length})</span></span>}
+                : <span title={`${a.steps.map((s) => stepLabel(s)).join(', ')}\nDoble clic para renombrar`} onDoubleClick={() => setEditing(i)}>{a.name} <span className="hint">({a.steps.length})</span></span>}
               <button className="icon-btn" title="Reproducir" onClick={() => playAction(i)}><Play size={13} /></button>
               <button className="icon-btn" title="Eliminar" onClick={() => deleteAction(i)}><Trash2 size={13} /></button>
             </div>
@@ -320,7 +321,7 @@ function LayerRow({ layer, active, selected, editMask, depth, isBase }: { layer:
             <input autoFocus defaultValue={layer.name} onClick={(e) => e.stopPropagation()}
               onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setEditing(false); e.stopPropagation(); }}
               onBlur={(e) => { setEditing(false); if (e.target.value.trim()) engine.call('setLayer', layer.id, { name: e.target.value.trim() }); }} />
-          ) : <span className={isBase ? 'clip-base' : ''} title="Doble clic: renombrar" onDoubleClick={(e) => { e.stopPropagation(); setEditing(true); }}>{layer.name}</span>}
+          ) : <span className={isBase ? 'clip-base' : ''} title="Doble clic: renombrar" onDoubleClick={(e) => { e.stopPropagation(); setEditing(true); }}><span translate="no">{trName(layer.name)}</span></span>}
         </div>
         <div className="meta">
           {[layer.blend !== 'normal' && layer.blend !== 'pass-through' ? BLEND_LABEL[layer.blend] : '', layer.opacity < 1 ? `${Math.round(layer.opacity * 100)} %` : ''].filter(Boolean).join(' · ')}
@@ -487,7 +488,7 @@ export function PathsPanel({ onTab }: { onTab: (t: 'layers' | 'paths' | 'channel
   );
 }
 
-type ChanThumbs = { w: number; h: number; data: Uint8ClampedArray; alphas: { id: number; data: Uint8ClampedArray }[] };
+type ChanThumbs = { w: number; h: number; data: Uint8ClampedArray; alphas: { id: number; data: Uint8ClampedArray }[]; cmyk?: Uint8Array };
 
 /** Miniatura de un canal: RGB en color, R/G/B y alfas en grises. */
 function ChannelThumb({ t, channel, alpha }: { t: ChanThumbs | null; channel?: number; alpha?: number }) {
@@ -499,7 +500,7 @@ function ChannelThumb({ t, channel, alpha }: { t: ChanThumbs | null; channel?: n
     const img = new ImageData(t.w, t.h);
     const a = alpha != null ? t.alphas.find((x) => x.id === alpha)?.data : null;
     for (let i = 0; i < t.w * t.h; i++) {
-      const v = a ? a[i] : channel ? t.data[i * 4 + channel - 1] : -1;
+      const v = a ? a[i] : channel ? (t.cmyk ? 255 - t.cmyk[i * 4 + channel - 1] : t.data[i * 4 + channel - 1]) : -1;
       if (v < 0) { img.data.set(t.data.subarray(i * 4, i * 4 + 4), i * 4); continue; }
       img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v; img.data[i * 4 + 3] = 255;
     }
@@ -518,7 +519,7 @@ export function ChannelsPanel({ onTab }: { onTab: (t: 'layers' | 'paths' | 'chan
     const t = setTimeout(() => { engine.call<ChanThumbs | null>('channelThumbs', 48).then(setThumbs); }, 250);
     return () => clearTimeout(t);
   }, [doc]);
-  const names = ['RGB', 'Rojo', 'Verde', 'Azul'];
+  const names = doc.mode === 'cmyk' ? ['CMYK', 'Cian', 'Magenta', 'Amarillo', 'Negro'] : doc.mode === 'gray' ? ['Gris'] : ['RGB', 'Rojo', 'Verde', 'Azul'];
   const mode = (e: React.MouseEvent) => (e.shiftKey && e.altKey ? 'intersect' : e.shiftKey ? 'add' : e.altKey ? 'subtract' : 'replace');
   return (
     <section className="panel grow">

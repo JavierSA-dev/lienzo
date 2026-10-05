@@ -1,3 +1,4 @@
+import { Timeline } from './Timeline';
 import { useEffect } from 'react';
 import { MenuBar } from './MenuBar';
 import { OptionsBar } from './OptionsBar';
@@ -117,10 +118,11 @@ export function App() {
   const panelsHidden = useStore((s) => s.panelsHidden);
   const mobile = useIsMobile();
   const docOpen = useStore((s) => s.doc.open);
+  const timeline = useStore((s) => s.timelineOpen);
   // El lienzo ocupa siempre la misma posición del árbol: al cambiar de interfaz no se vuelve a crear
   // (su canvas ya pertenece al motor del worker).
   return (
-    <div className={`app ${mobile ? 'mobile' : ''} ${panelsHidden && !mobile ? 'panels-hidden' : ''}`}>
+    <div className={`app ${mobile ? 'mobile' : ''} ${panelsHidden && !mobile ? 'panels-hidden' : ''} ${timeline ? 'with-timeline' : ''}`}>
       {mobile ? <MobileTopBar /> : <MenuBar />}
       {mobile && !docOpen ? null : <OptionsBar />}
       {mobile ? null : <Toolbar />}
@@ -134,6 +136,7 @@ export function App() {
           <LayersPanel />
         </div>
       )}
+      <Timeline />
       {mobile ? null : <StatusBar />}
       {mobile ? <MobileContextBar /> : null}
       {mobile ? <MobileBottomBar /> : null}

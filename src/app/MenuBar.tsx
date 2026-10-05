@@ -8,13 +8,14 @@ export type Item = string | '-' | { label: string; soon: true } | { sub: string;
 /** Estructura de menús de Photoshop; lo que aún no existe aparece desactivado. */
 export const MENUS: { label: string; items: Item[] }[] = [
   { label: 'Archivo', items: ['file.new', 'file.open', 'file.place', '-', 'file.close', '-', 'file.save', 'file.saveAs', 'file.saveCopy', 'file.savePsb', '-',
-    { sub: 'Exportar', items: ['file.quickPng', 'file.export', 'file.saveForWeb'] },
-    { sub: 'Automatizar', items: ['file.photomerge', 'file.hdr'] }] },
+    { sub: 'Exportar', items: ['file.quickPng', 'file.export', 'file.saveForWeb', '-', 'file.exportAnim'] },
+    { sub: 'Automatizar', items: ['file.batch', '-', 'file.photomerge', 'file.hdr'] }] },
   { label: 'Edición', items: ['edit.undo', 'edit.redo', 'edit.toggleLast', '-', 'edit.cut', 'edit.copy', 'edit.copyMerged', 'edit.paste', 'edit.pasteInPlace', 'edit.clear', '-',
     'edit.fill', 'edit.stroke', 'edit.fillFg', 'edit.fillBg', '-', 'edit.puppet', 'edit.freeTransform',
     { sub: 'Transformar', items: ['edit.scale', 'edit.rotate', 'edit.skew', 'edit.distort', 'edit.perspective', 'edit.warp', '-', 'edit.rot180', 'edit.rot90', 'edit.rot-90', '-', 'edit.flipH', 'edit.flipV'] },
     '-', 'edit.autoAlign', 'edit.autoBlend', 'edit.autoStack', '-', 'edit.defineBrush', 'edit.definePattern', '-', 'edit.contentAware', 'ai.generative', '-', 'edit.shortcuts'] },
   { label: 'Imagen', items: [
+    { sub: 'Modo', items: ['image.mode.gray', 'image.mode.rgb', 'image.mode.cmyk'] },
     { sub: 'Ajustes', items: ['image.brightness', 'image.levels', 'image.curves', 'image.exposure', '-', 'image.vibrance', 'image.hueSat', 'image.colorBalance', 'image.blackWhite', '-',
       'image.invert', 'image.posterize', 'image.threshold', 'image.gradientMap', 'image.selectiveColor', '-', 'image.photoFilter', 'image.channelMixer', 'image.colorLookup', '-', 'image.desaturate'] },
     '-', 'image.autoTone', 'image.autoContrast', 'image.autoColor', '-', 'image.size', 'image.canvasSize', '-', 'image.applyImage',
@@ -48,10 +49,10 @@ export const MENUS: { label: string; items: Item[] }[] = [
     { sub: 'Estilizar', items: ['filter.findEdges', 'filter.emboss'] },
     { sub: 'Otro', items: ['filter.highPass'] },
     '-', 'ai.removeBg'] },
-  { label: 'Vista', items: ['view.zoomIn', 'view.zoomOut', 'view.fit', 'view.actual', '-', 'view.extras', 'view.grid', 'view.rulers', 'view.guides', '-',
+  { label: 'Vista', items: ['view.zoomIn', 'view.zoomOut', 'view.fit', 'view.actual', '-', 'view.proof', 'view.gamut', '-', 'view.extras', 'view.grid', 'view.rulers', 'view.guides', '-',
     'view.snap', 'view.lockGuides', 'view.newGuide', 'view.clearGuides', '-', 'view.fullscreen', 'view.mobileUi'] },
-  { label: 'Ventana', items: ['view.panels', 'window.brushSettings'] },
-  { label: 'Ayuda', items: ['help.shortcuts', 'help.about'] },
+  { label: 'Ventana', items: ['view.panels', 'window.brushSettings', 'window.timeline'] },
+  { label: 'Ayuda', items: ['help.shortcuts', { sub: 'Idioma', items: ['help.langEs', 'help.langEn'] }, '-', 'help.about'] },
 ];
 
 function MenuItems({ items, close }: { items: Item[]; close: () => void }) {

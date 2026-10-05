@@ -17,7 +17,7 @@ const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--ena
 const errors = [];
 
 async function open(viewport) {
-  const ctx = await browser.newContext({ viewport, deviceScaleFactor: 2, isMobile: true, hasTouch: true, serviceWorkers: 'block' });
+  const ctx = await browser.newContext({ viewport, deviceScaleFactor: 2, isMobile: true, hasTouch: true, serviceWorkers: 'block', locale: 'es-ES' });
   const page = await ctx.newPage();
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('pageerror', (e) => errors.push(String(e)));
@@ -257,6 +257,38 @@ try {
     await page.evaluate(() => window.__lienzoStore.getState().setBrush({ tip: null, dyn: undefined, preset: undefined, spacing: 0.25 }));
   }
 
+  // Fase 13 en el móvil: línea de tiempo, exportar como (formatos nuevos) y modo de color.
+  await page.getByTestId('m-menu').click(); await wait();
+  await sheet().getByRole('button', { name: 'Ventana' }).click(); await wait();
+  await sheet().getByRole('button', { name: 'Línea de tiempo' }).click(); await wait(400);
+  {
+    const tb = await page.getByTestId('timeline').boundingBox();
+    ok('Línea de tiempo en el móvil: cabe y deja sitio al lienzo', !!tb && tb.x >= 0 && tb.x + tb.width <= 391 && (await page.getByTestId('canvas-area').boundingBox()).height > 250, JSON.stringify(tb));
+    await page.getByRole('button', { name: 'Crear animación de cuadros' }).click();
+    await page.waitForFunction(() => window.__lienzoStore.getState().doc.frames?.length === 1, null, { timeout: 5000 }).catch(() => {});
+    await wait(300);
+    await page.getByRole('button', { name: 'Duplicar cuadro' }).click();
+    await page.waitForFunction(() => window.__lienzoStore.getState().doc.frames?.length === 2, null, { timeout: 5000 }).catch(() => {});
+    ok('Cuadros desde el móvil', (await S()).doc.frames?.length === 2 && (await page.getByTestId('frame').count()) === 2, JSON.stringify([(await S()).doc.frames?.length, await page.getByTestId('frame').count(), await page.getByTestId('timeline').boundingBox()]));
+    await page.screenshot({ path: 'tests/out-mobile-timeline.png' });
+    await page.getByRole('button', { name: 'Eliminar cuadro' }).click(); await wait(200);
+    await page.getByRole('button', { name: 'Eliminar cuadro' }).click(); await wait(200);
+    await page.getByLabel('Cerrar línea de tiempo').click(); await wait(300);
+    ok('Cerrar la línea de tiempo en el móvil', !(await page.getByTestId('timeline').isVisible().catch(() => false)) && !(await S()).doc.frames?.length);
+  }
+  await page.evaluate(() => window.__lienzoStore.getState().setDialog({ kind: 'export' })); await wait(300);
+  {
+    const opts = await page.getByLabel('Formato').locator('option').allInnerTexts();
+    const mb = await page.locator('.modal').boundingBox();
+    ok('Exportar como en el móvil: TIFF, PDF, SVG y GIF; cabe en pantalla', ['TIFF', 'PDF', 'SVG', 'GIF'].every((f) => opts.includes(f)) && mb.x >= 0 && mb.x + mb.width <= 391, opts.join(','));
+    await page.getByLabel('Formato').selectOption('application/pdf'); await wait(100);
+    ok('PDF en el móvil ofrece CMYK', (await page.getByLabel('Color').locator('option').allInnerTexts()).some((t) => /CMYK/.test(t)));
+    await page.getByRole('button', { name: 'Cancelar' }).click(); await wait(200);
+  }
+  await call('setMode', 'cmyk'); await wait(300);
+  ok('Modo CMYK en el móvil (vista de prueba)', (await S()).doc.mode === 'cmyk');
+  await call('undo'); await wait(200);
+
   // Deformación de posición libre con el dedo: tocar pone chinchetas y arrastrar deforma.
   await page.getByTestId('m-menu').click(); await wait();
   await sheet().getByRole('button', { name: 'Edición' }).click(); await wait();
@@ -320,6 +352,21 @@ try {
   await tab.touch('touchEnd', []); await tab.wait(300);
   ok('Pellizcar también funciona en la interfaz de escritorio', Math.abs((await tab.S()).view.zoom / tz0 - 2) < 0.1);
   await tab.ctx.close();
+
+  // =========================================================== INGLÉS EN EL MÓVIL
+  {
+    const ctxE = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, serviceWorkers: 'block', locale: 'en-US' });
+    const pe = await ctxE.newPage();
+    pe.on('pageerror', (e) => errors.push(String(e)));
+    await pe.goto(URL);
+    await pe.waitForFunction(() => window.__lienzoStore?.getState().ready, null, { timeout: 20000 });
+    ok('Navegador en inglés → interfaz en inglés (portada)', (await pe.locator('body').innerText()).includes('New project') || /Open/.test(await pe.locator('body').innerText()), (await pe.locator('body').innerText()).slice(0, 120).replace(/\n/g, ' | '));
+    await pe.evaluate(() => window.__lienzo.call('newDoc', 800, 600, 'white', 'en.psd')); await pe.waitForTimeout(500);
+    await pe.getByTestId('m-menu').click(); await pe.waitForTimeout(250);
+    const rows = await pe.getByTestId('m-sheet').locator('.m-row').allInnerTexts();
+    ok('Menú del móvil en inglés', rows.some((r) => /^File/.test(r)) && rows.some((r) => /^Image/.test(r)), rows.slice(0, 6).join(','));
+    await ctxE.close();
+  }
 
   ok('Sin errores en consola', errors.length === 0, errors.slice(0, 3).join(' | '));
 } catch (e) {

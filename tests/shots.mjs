@@ -6,7 +6,7 @@ const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--stric
 await new Promise((r) => server.stdout.on('data', (d) => String(d).includes('localhost') && r()));
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 process.on('exit', () => { try { process.kill(-server.pid); } catch {} });
-const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 }, serviceWorkers: 'block' })).newPage();
+const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 }, serviceWorkers: 'block', locale: 'es-ES' })).newPage();
 const call = (m, ...a) => page.evaluate(([m, a]) => window.__lienzo.call(m, ...a), [m, a]);
 const wait = (ms = 300) => page.waitForTimeout(ms);
 const out = process.argv[2] ?? 'tests/shots';

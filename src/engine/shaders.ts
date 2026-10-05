@@ -353,12 +353,28 @@ precision highp float;
 uniform sampler2D uTex;
 uniform vec4 uUV;
 uniform float uAlpha;
-uniform int uChannel; // 0 = RGB; 1..3 = ver un solo canal en grises (panel Canales)
+uniform int uChannel; // 0 = compuesto; 1..3 = R/G/B en grises; 5..8 = tinta C/M/Y/K (blanco = sin tinta)
+uniform int uDisplay; // 0 normal; 1 escala de grises; 2 prueba CMYK; 3 prueba + aviso de gama; 4 aviso de gama
+uniform highp sampler3D uProof; // RGB → RGB impreso (33³)
+uniform highp sampler3D uInk;   // RGB → CMYK (33³)
 in vec2 vUV;
 out vec4 outColor;
+vec3 lut(highp sampler3D t, vec3 c) { return texture(t, c * (32.0 / 33.0) + 0.5 / 33.0).rgb; }
 void main() {
   vec4 c = texture(uTex, mix(uUV.xy, uUV.zw, vUV)) * uAlpha;
-  if (uChannel > 0) { float g = c.a > 0.0 ? c[uChannel - 1] / c.a : 0.0; c = vec4(vec3(g) * c.a, c.a); }
+  vec3 u = c.a > 0.0 ? clamp(c.rgb / c.a, 0.0, 1.0) : vec3(0.0);
+  if (uChannel >= 5) {
+    float ink = texture(uInk, u * (32.0 / 33.0) + 0.5 / 33.0)[uChannel - 5];
+    c = vec4(vec3(1.0 - ink) * c.a, c.a);
+  } else if (uChannel > 0) { float g = u[uChannel - 1]; c = vec4(vec3(g) * c.a, c.a); }
+  else if (uDisplay == 1) { float g = dot(u, vec3(0.299, 0.587, 0.114)); c = vec4(vec3(g) * c.a, c.a); }
+  else if (uDisplay >= 2) {
+    vec3 p = lut(uProof, u);
+    bool outside = distance(p, u) > 0.09;
+    if (uDisplay == 4) p = u;
+    if (uDisplay >= 3 && outside) p = vec3(0.5);
+    c = vec4(p * c.a, c.a);
+  }
   outColor = c;
 }`;
 

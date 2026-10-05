@@ -2,7 +2,7 @@ node_modules/
 dist/
 tests/fixtures/*
 !tests/fixtures/test-font.ttf
-tests/out-*.png
+tests/out-*
 bench/resultados.md
 *.log
 !tests/fixtures/pano*.jpg

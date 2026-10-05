@@ -3,8 +3,9 @@ import { identityPatch } from '../engine/meshwarp';
 import { RAW_EXT, RAW_ACCEPT, decodeRaw } from './raw';
 import { defineBrushPreset } from './BrushPanel';
 import { definePattern } from './patterns';
-import { useStore, toRgba, savePrefs, type DialogId, type TMode } from './store';
+import { useStore, toRgba, toHex, savePrefs, type DialogId, type TMode } from './store';
 import { askLocalFonts } from './localFonts';
+import { getLang, setLang } from './i18n';
 import type { AdjustmentType, BlendMode, ShapeKind, ToolId } from '../engine/types';
 import { BLEND_MODES, BLEND_GROUPS } from '../engine/types';
 
@@ -128,6 +129,20 @@ export async function savePsd(psb = false): Promise<boolean> {
   }
   download(blob, `${baseName()}.${ext}`);
   return true;
+}
+
+/** Imagen > Modo: confirma si se descarta información de color. */
+function setMode(mode: 'rgb' | 'gray' | 'cmyk') {
+  const cur = S().doc.mode ?? 'rgb';
+  if (cur === mode) return;
+  engine.call('setMode', mode).then(() => {
+    if (mode === 'gray') {
+      const g = (h: string) => { const [r, gg, b] = toRgba(h); const v = Math.round(0.299 * r + 0.587 * gg + 0.114 * b); return toHex([v, v, v, 255]); };
+      useStore.setState({ fg: g(S().fg), bg: g(S().bg) });
+      engine.call('setColors', toRgba(g(S().fg)), toRgba(g(S().bg)));
+    }
+    S().toast(mode === 'gray' ? 'Escala de grises: se ha descartado la información de color de las capas de píxeles.' : mode === 'cmyk' ? 'Color CMYK: los colores se ajustan a la gama de impresión (tintas estucado, límite 300 %).' : 'Color RGB');
+  });
 }
 
 export async function exportImage(type: 'image/png' | 'image/jpeg' | 'image/webp', quality = 0.92) {
@@ -259,11 +274,12 @@ export const COMMANDS: Command[] = [
   { id: 'file.savePsb', label: 'Guardar como PSB (documento grande)', needsDoc: true, run: () => savePsd(true) },
   { id: 'file.quickPng', label: 'Exportación rápida como PNG', needsDoc: true, run: () => exportImage('image/png') },
   { id: 'file.export', label: 'Exportar como…', keys: ['Ctrl+Alt+Shift+W'], needsDoc: true, run: dlg({ kind: 'export' }) },
+  { id: 'file.exportAnim', label: 'Exportar animación (GIF)…', needsDoc: true, run: dlg({ kind: 'exportAnim' }) },
   { id: 'file.saveForWeb', label: 'Guardar para Web (heredado)…', keys: ['Ctrl+Alt+Shift+S'], needsDoc: true, run: dlg({ kind: 'export' }) },
 
   // Edición
   { id: 'edit.undo', label: 'Deshacer', keys: ['Ctrl+Z'], needsDoc: true, run: call('undo') },
-  { id: 'edit.redo', label: 'Rehacer', keys: ['Ctrl+Shift+Z', 'Ctrl+Y'], needsDoc: true, run: call('redo') },
+  { id: 'edit.redo', label: 'Rehacer', keys: ['Ctrl+Shift+Z'], needsDoc: true, run: call('redo') },
   { id: 'edit.toggleLast', label: 'Alternar último estado', keys: ['Ctrl+Alt+Z'], needsDoc: true, run: call('toggleLastState') },
   { id: 'edit.cut', label: 'Cortar', keys: ['Ctrl+X'], needsDoc: true, run: () => copyToClipboard(false, true) },
   { id: 'edit.copy', label: 'Copiar', keys: ['Ctrl+C'], needsDoc: true, run: () => copyToClipboard(false) },
@@ -318,6 +334,9 @@ export const COMMANDS: Command[] = [
   { id: 'image.canvasSize', label: 'Tamaño de lienzo…', keys: ['Ctrl+Alt+C'], needsDoc: true, run: dlg({ kind: 'canvasSize' }) },
   { id: 'image.rot180', label: 'Rotación de imagen 180°', needsDoc: true, rec: true, run: call('rotateCanvas', 180) },
   { id: 'image.rot90', label: 'Rotación de imagen 90° AC', needsDoc: true, rec: true, run: call('rotateCanvas', 90) },
+  { id: 'image.mode.gray', label: 'Escala de grises', needsDoc: true, rec: true, checked: () => S().doc.mode === 'gray', run: () => setMode('gray') },
+  { id: 'image.mode.rgb', label: 'Color RGB', needsDoc: true, rec: true, checked: () => (S().doc.mode ?? 'rgb') === 'rgb', run: () => setMode('rgb') },
+  { id: 'image.mode.cmyk', label: 'Color CMYK', needsDoc: true, rec: true, checked: () => S().doc.mode === 'cmyk', run: () => setMode('cmyk') },
   { id: 'image.rotArbitrary', label: 'Arbitraria…', needsDoc: true, run: dlg({ kind: 'rotateArbitrary' }) },
   { id: 'image.rot-90', label: 'Rotación de imagen 90° ACD', needsDoc: true, rec: true, run: call('rotateCanvas', -90) },
   { id: 'image.flipH', label: 'Voltear lienzo horizontal', needsDoc: true, rec: true, run: call('flipCanvas', true) },
@@ -429,6 +448,7 @@ export const COMMANDS: Command[] = [
   { id: 'filter.irisBlur', label: 'Desenfoque de iris…', needsDoc: true, run: dlg({ kind: 'blurGallery', mode: 'iris' }) },
   { id: 'filter.tiltShift', label: 'Cambio de inclinación…', needsDoc: true, run: dlg({ kind: 'blurGallery', mode: 'tilt' }) },
   { id: 'file.photomerge', label: 'Panorámica…', run: dlg({ kind: 'automate', mode: 'photomerge' }) },
+  { id: 'file.batch', label: 'Lote…', needsDoc: false, run: dlg({ kind: 'batch' }) },
   { id: 'file.hdr', label: 'Combinar para HDR…', run: dlg({ kind: 'automate', mode: 'hdr' }) },
   { id: 'edit.autoAlign', label: 'Alinear capas automáticamente', needsDoc: true, run: call('autoAlignLayers') },
   { id: 'edit.autoBlend', label: 'Fusionar capas automáticamente (panorámica)', needsDoc: true, run: call('autoBlendLayers', 'panorama') },
@@ -464,6 +484,11 @@ export const COMMANDS: Command[] = [
   { id: 'view.guides', label: 'Mostrar guías', keys: ['Ctrl+;'], checked: () => S().opts.guides, run: () => S().setOpts({ guides: !S().opts.guides }) },
   { id: 'view.snap', label: 'Ajustar', keys: ['Ctrl+Shift+;'], checked: () => S().opts.snap, run: () => S().setOpts({ snap: !S().opts.snap }) },
   { id: 'view.lockGuides', label: 'Bloquear guías', keys: ['Ctrl+Alt+;'], checked: () => S().opts.lockGuides, run: () => S().setOpts({ lockGuides: !S().opts.lockGuides }) },
+  { id: 'view.proof', label: 'Prueba de colores', keys: ['Ctrl+Y'], needsDoc: true, checked: () => !!S().doc.proof || S().doc.mode === 'cmyk', run: call('setProof') },
+  { id: 'view.gamut', label: 'Avisar sobre gama', keys: ['Ctrl+Shift+Y'], needsDoc: true, checked: () => !!S().doc.gamutWarning, run: call('setGamutWarning') },
+  { id: 'window.timeline', label: 'Línea de tiempo', checked: () => S().timelineOpen, run: () => useStore.setState({ timelineOpen: !S().timelineOpen }) },
+  { id: 'help.langEs', label: 'Español', checked: () => getLang() === 'es', run: () => setLang('es') },
+  { id: 'help.langEn', label: 'English', checked: () => getLang() === 'en', run: () => setLang('en') },
   { id: 'view.newGuide', label: 'Nueva guía…', needsDoc: true, run: dlg({ kind: 'newGuide' }) },
   { id: 'view.clearGuides', label: 'Borrar guías', needsDoc: true, run: call('clearGuides') },
   { id: 'view.panels', label: 'Ocultar paneles', keys: ['Tab'], run: () => useStore.setState({ panelsHidden: !S().panelsHidden }) },
@@ -671,9 +696,13 @@ export function runCommand(c: Command) {
     const actions = [...s.actions];
     const cur = actions[actions.length - 1];
     if (cur) { cur.steps = [...cur.steps, { id: c.id }]; useStore.setState({ actions }); savePrefs('actions', { list: actions }); }
+    // Lo que el comando llame al motor ya queda grabado con el comando.
+    suppressRec = true;
+    try { return c.run(); } finally { suppressRec = false; }
   }
   return c.run();
 }
+let suppressRec = false;
 
 export function startRecording(name: string) {
   const actions = [...S().actions, { name, steps: [] }];
@@ -686,13 +715,58 @@ export function stopRecording() {
   savePrefs('actions', { list: S().actions });
 }
 
+/** Operaciones con parámetros (diálogos) que se graban en las acciones con sus valores. */
+const RECORDABLE: Record<string, string> = {
+  commitFilterPreview: 'Filtro', applyFilter: 'Filtro', applyAdjustment: 'Ajuste', resizeImage: 'Tamaño de imagen', canvasSize: 'Tamaño de lienzo',
+  setResolution: 'Resolución', rotateArbitrary: 'Rotar lienzo', fill: 'Rellenar', strokeSelection: 'Contornear', applyImage: 'Aplicar imagen',
+};
+let pendingAdjust: unknown[] | null = null;
+engine.onCall = (method, args) => {
+  const s = S();
+  if (!s.recording || suppressRec) return;
+  let step: { id: string; args?: unknown[] } | null = null;
+  if (method === 'applyAdjustment') {
+    if (args[1]) { pendingAdjust = args; return; } // vista previa: se graba al aceptar
+    step = { id: 'call:applyAdjustment', args: [args[0], false] };
+  } else if (method === 'endPreview') {
+    if (args[0] && pendingAdjust) step = { id: 'call:applyAdjustment', args: [pendingAdjust[0], false] };
+    pendingAdjust = null;
+  } else if (method === 'applyFilter') {
+    if (!args[2]) step = { id: 'call:applyFilter', args: [args[0], args[1], false] };
+  } else if (method === 'commitFilterPreview') step = { id: 'call:applyFilter', args: [args[0], args[1], false] };
+  else if (RECORDABLE[method]) step = { id: `call:${method}`, args: JSON.parse(JSON.stringify(args)) };
+  if (!step) return;
+  const actions = [...s.actions];
+  const cur = actions[actions.length - 1];
+  if (cur) { cur.steps = [...cur.steps, step]; useStore.setState({ actions }); savePrefs('actions', { list: actions }); }
+};
+
+/** Nombre legible de un paso de acción. */
+export function stepLabel(step: { id: string; args?: unknown[] }) {
+  if (step.id.startsWith('call:')) {
+    const m = step.id.slice(5);
+    const detail = m === 'applyFilter' ? ` (${String(step.args?.[0])})` : m === 'applyAdjustment' ? ` (${String((step.args?.[0] as { type?: string })?.type)})` : m === 'resizeImage' || m === 'canvasSize' ? ` (${step.args?.[0]} × ${step.args?.[1]})` : m === 'setMode' ? ` (${String(step.args?.[0])})` : '';
+    return (RECORDABLE[m] ?? m) + detail;
+  }
+  return commandById[step.id]?.label ?? step.id;
+}
+
+/** Ejecuta los pasos de una acción (comandos y operaciones grabadas con sus parámetros). */
+export async function runSteps(steps: { id: string; args?: unknown[] }[]) {
+  const was = S().recording;
+  if (was) useStore.setState({ recording: false }); // no grabar lo que se reproduce
+  try {
+    for (const step of steps) {
+      if (step.id.startsWith('call:')) await engine.call(step.id.slice(5), ...(step.args ?? []));
+      else { const c = commandById[step.id]; if (c) await c.run(); }
+    }
+  } finally { if (was) useStore.setState({ recording: true }); }
+}
+
 export async function playAction(index: number) {
   const a = S().actions[index];
   if (!a) return;
-  for (const step of a.steps) {
-    const c = commandById[step.id];
-    if (c) await c.run();
-  }
+  await runSteps(a.steps);
   S().toast(`Acción "${a.name}" ejecutada (${a.steps.length} pasos)`);
 }
 

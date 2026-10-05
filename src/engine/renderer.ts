@@ -4,6 +4,7 @@ import { RECT_VS, QUAD_VS, MESH_VS, BLEND_FS, NORMAL_FS, ADJ_FS, VIEW_FS, CHECKE
 import { adjustmentUniforms } from './adjust';
 import { apply } from './vector';
 import { cpuFlatten } from './ops';
+import { cmykLuts } from './color';
 
 type Prog = { p: WebGLProgram; u: Record<string, WebGLUniformLocation | null> };
 
@@ -68,8 +69,36 @@ export class Renderer {
   private meshBuf: WebGLBuffer;
   /** Superposición roja de una máscara (Máscara rápida). */
   private overlay: { mask: MaskChannel; tex: Map<number, WebGLTexture> } | null = null;
-  /** Canal visible (panel Canales): 0 = RGB, 1 R, 2 G, 3 B. */
+  /** Canal visible (panel Canales): 0 = compuesto, 1 R, 2 G, 3 B, 5..8 tintas C, M, Y, K. */
   viewChannel = 0;
+  /** Vista > Prueba de colores (Ctrl+Y) y Avisar sobre gama (Mayús+Ctrl+Y). */
+  proof = false;
+  gamutWarning = false;
+  private proofTex: [WebGLTexture, WebGLTexture] | null = null;
+  /** Modo de presentación para VIEW_FS según el modo de color del documento y las pruebas. */
+  private display(doc: EditorDocument): number {
+    if (doc.mode === 'gray') return 1;
+    const proof = doc.mode === 'cmyk' || this.proof;
+    const d = this.gamutWarning ? (proof ? 3 : 4) : proof ? 2 : 0;
+    if ((d >= 2 || this.viewChannel >= 5) && !this.proofTex) {
+      const gl = this.gl, { proof: P, cmyk } = cmykLuts(), n = 33;
+      const mk = (unit: number, data: Uint8Array, rgba: boolean) => {
+        const t = gl.createTexture()!;
+        gl.activeTexture(gl.TEXTURE0 + unit);
+        gl.bindTexture(gl.TEXTURE_3D, t);
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+        gl.texImage3D(gl.TEXTURE_3D, 0, rgba ? gl.RGBA8 : gl.RGB8, n, n, n, 0, rgba ? gl.RGBA : gl.RGB, gl.UNSIGNED_BYTE, data);
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        for (const w of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, w, gl.CLAMP_TO_EDGE);
+        return t;
+      };
+      this.proofTex = [mk(5, P, false), mk(6, cmyk, true)];
+      gl.activeTexture(gl.TEXTURE0);
+    }
+    return d;
+  }
   private mixProg: Prog;
   private docDirty = new Set<number>();
   private allDirty = true;
@@ -95,12 +124,15 @@ export class Renderer {
     this.blendProg = this.program(RECT_VS, BLEND_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uBack', 'uSrc', 'uSrcOffset', 'uDocOrigin', 'uOpacity', 'uMode', 'uPremul', 'uAtop', 'uBif', 'uBifSelf', 'uBifUnder']);
     this.normalProg = this.program(RECT_VS, NORMAL_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uSrc', 'uSrcOffset', 'uOpacity', 'uPremul']);
     this.adjProg = this.program(RECT_VS, ADJ_FS, [...UNIFORMS_BASE, ...MASK_UNIFORMS, 'uBack', 'uLut', 'uKind', 'uP0', 'uP1', 'uP2', 'uSel', 'uLut3', 'uOpacity', 'uMode', 'uAtop']);
-    this.viewProg = this.program(RECT_VS, VIEW_FS, [...UNIFORMS_BASE, 'uTex', 'uUV', 'uAlpha', 'uChannel']);
-    this.quadProg = this.program(QUAD_VS, VIEW_FS, ['uP', 'uTarget', 'uTex', 'uUV', 'uAlpha', 'uChannel']);
+    const VIEW_U = ['uTex', 'uUV', 'uAlpha', 'uChannel', 'uDisplay', 'uProof', 'uInk'];
+    this.viewProg = this.program(RECT_VS, VIEW_FS, [...UNIFORMS_BASE, ...VIEW_U]);
+    this.quadProg = this.program(QUAD_VS, VIEW_FS, ['uP', 'uTarget', ...VIEW_U]);
     this.maskViewProg = this.program(RECT_VS, MASKVIEW_FS, [...UNIFORMS_BASE, 'uTex', 'uUV', 'uFill', 'uHasTex']);
     this.maskQuadProg = this.program(QUAD_VS, MASKVIEW_FS, ['uP', 'uTarget', 'uTex', 'uUV', 'uFill', 'uHasTex']);
     this.checkerQuadProg = this.program(QUAD_VS, CHECKER_FS, ['uP', 'uTarget', 'uCell']);
-    this.meshProg = this.program(MESH_VS, VIEW_FS, ['uTarget', 'uTex', 'uUV', 'uAlpha', 'uChannel']);
+    this.meshProg = this.program(MESH_VS, VIEW_FS, ['uTarget', ...VIEW_U]);
+    // Las tablas de prueba de color van en las unidades 5 y 6 (no se comparten con muestreadores 2D).
+    for (const P of [this.viewProg, this.quadProg, this.meshProg]) { gl.useProgram(P.p); gl.uniform1i(P.u.uProof, 5); gl.uniform1i(P.u.uInk, 6); }
     this.meshVao = gl.createVertexArray()!;
     this.meshBuf = gl.createBuffer()!;
     gl.bindVertexArray(this.meshVao);
@@ -819,6 +851,12 @@ export class Renderer {
     gl.uniform1i(P.u.uTex, 0);
     gl.uniform1f(P.u.uAlpha, 1);
     gl.uniform1i(P.u.uChannel, this.viewChannel);
+    const disp = this.display(doc);
+    gl.uniform1i(P.u.uDisplay, disp);
+    if (this.proofTex) {
+      gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_3D, this.proofTex[0]);
+      gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_3D, this.proofTex[1]);
+    }
     gl.activeTexture(gl.TEXTURE0);
     const minify = s < 1;
     // Con la vista girada se dibujan todos los tiles (el recorte a pantalla es rectangular).
@@ -884,6 +922,7 @@ export class Renderer {
       gl.uniform2f(M.u.uTarget, W, H);
       gl.uniform1i(M.u.uTex, 0);
       gl.uniform1i(M.u.uChannel, this.viewChannel);
+      gl.uniform1i(M.u.uDisplay, disp);
       gl.uniform4f(M.u.uUV, 0, 0, 1, 1);
       gl.uniform1f(M.u.uAlpha, 1);
       gl.bindTexture(gl.TEXTURE_2D, pv.tex);
@@ -903,6 +942,7 @@ export class Renderer {
       gl.uniform2f(Q.u.uTarget, W, H);
       gl.uniform1i(Q.u.uTex, 0);
       gl.uniform1i(Q.u.uChannel, this.viewChannel);
+      gl.uniform1i(Q.u.uDisplay, disp);
       gl.uniform4f(Q.u.uUV, 0, 0, 1, 1);
       gl.uniform1f(Q.u.uAlpha, 1);
       gl.bindTexture(gl.TEXTURE_2D, pv.tex);
@@ -943,6 +983,14 @@ export class Renderer {
    * Compone un conjunto de capas en una región del documento y la devuelve en CPU
    * (RGBA, alfa directo). Sirve para combinar, acoplar, exportar y "muestrear todas las capas".
    */
+  /** Lee un píxel del lienzo de pantalla (llamar justo después de draw). */
+  readScreenPixel(x: number, y: number): number[] {
+    const gl = this.gl, b = new Uint8Array(4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.readPixels(Math.floor(x), this.canvas.height - 1 - Math.floor(y), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, b);
+    return [...b];
+  }
+
   flatten(doc: EditorDocument, layers: PixelLayer[], region: Rect, background?: [number, number, number, number]): Uint8ClampedArray {
     // Caso común (Normal, sin estilos ni ajustes) y tamaño moderado: CPU, sin esperar a la GPU.
     if (region.w * region.h * layers.length <= 8e6) {

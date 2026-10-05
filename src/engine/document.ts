@@ -358,6 +358,9 @@ export function cloneLayers(list: PixelLayer[]): { copies: PixelLayer[]; map: Ma
   return { copies, map };
 }
 
+/** Un cuadro de animación: visibilidad, opacidad y posición de cada capa, y su duración (ms). */
+export interface AnimFrame { delay: number; layers: Record<number, { v: boolean; o: number; x: number; y: number }> }
+
 export class EditorDocument {
   name: string;
   width: number;
@@ -374,6 +377,15 @@ export class EditorDocument {
   /** Guías (Vista > Nueva guía o arrastrando desde las reglas). pos en px de documento. */
   guides: { id: number; dir: 'h' | 'v'; pos: number }[] = [];
   activePathId: number | null = null;
+  /** Modo de color (Imagen > Modo): los píxeles siguen siendo RGB; gris y CMYK cambian la vista y la salida. */
+  mode: 'rgb' | 'gray' | 'cmyk' = 'rgb';
+  /** Resolución (píxeles por pulgada) para imprimir, PDF y TIFF. */
+  dpi = 72;
+  /** Línea de tiempo (animación de cuadros): estado de cada capa por cuadro. */
+  frames: AnimFrame[] = [];
+  activeFrame = 0;
+  /** Repeticiones: 0 = infinito. */
+  loop = 0;
 
   /** Capas seleccionadas que siguen existiendo, en el orden del documento. */
   selected(): PixelLayer[] {

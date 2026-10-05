@@ -18,7 +18,7 @@ const stopServer = () => { try { process.kill(-server.pid, 'SIGTERM'); } catch {
 await new Promise((r) => server.stdout.on('data', (d) => String(d).includes('localhost') && r()));
 
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
-const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, serviceWorkers: 'block' });
+const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, serviceWorkers: 'block', locale: 'es-ES' });
 await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: URL });
 page = await ctx.newPage();
 const errors = [];

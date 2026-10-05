@@ -87,19 +87,32 @@ export function ArtboardLabels({ X, Y }: { X: (x: number) => number; Y: (y: numb
   );
 }
 
-/** Archivo > Exportar > Exportar como… (formato, calidad, tamaños y mesas de trabajo). */
-export function ExportAsDialog({ close }: { close: () => void }) {
+type ExportFmt = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' | 'image/tiff' | 'application/pdf' | 'image/svg+xml';
+const FORMATS: [ExportFmt, string][] = [['image/png', 'PNG'], ['image/jpeg', 'JPEG'], ['image/webp', 'WebP'], ['image/gif', 'GIF'], ['image/tiff', 'TIFF'], ['application/pdf', 'PDF'], ['image/svg+xml', 'SVG']];
+
+/** Archivo > Exportar > Exportar como… (formato, calidad, tamaños, color y mesas de trabajo). */
+export function ExportAsDialog({ close, initial }: { close: () => void; initial?: ExportFmt }) {
   const hasArtboards = useStore((s) => s.doc.layers.some((l) => !!l.artboard));
-  const [fmt, setFmt] = useState<'image/png' | 'image/jpeg' | 'image/webp'>('image/png');
+  const docMode = useStore((s) => s.doc.mode ?? 'rgb');
+  const [fmt, setFmt] = useState<ExportFmt>(initial ?? 'image/png');
   const [q, setQ] = useState(90);
   const [scales, setScales] = useState<number[]>([1]);
   const [which, setWhich] = useState<'document' | 'artboards'>(hasArtboards ? 'artboards' : 'document');
+  const [color, setColor] = useState<'rgb' | 'cmyk' | 'gray'>(docMode);
+  const [alpha, setAlpha] = useState(true);
+  const [colors, setColors] = useState(256);
+  const [dither, setDither] = useState(true);
+  const [pdfJpeg, setPdfJpeg] = useState(false);
   const [busy, setBusy] = useState(false);
   const toggle = (s: number) => setScales((cur) => (cur.includes(s) ? (cur.length > 1 ? cur.filter((x) => x !== s) : cur) : [...cur, s].sort()));
+  const print = fmt === 'image/tiff' || fmt === 'application/pdf';
+  const lossy = fmt === 'image/jpeg' || fmt === 'image/webp' || (fmt === 'application/pdf' && pdfJpeg && color === 'rgb');
   const go = async () => {
     setBusy(true);
     try {
-      const files = await engine.call<{ name: string; blob: Blob }[]>('exportSet', fmt, q / 100, scales, which);
+      const quality = fmt === 'application/pdf' && !(pdfJpeg && color === 'rgb') ? 1 : q / 100;
+      const opts = { color: print ? color : undefined, alpha, colors, dither };
+      const files = await engine.call<{ name: string; blob: Blob }[]>('exportSet', fmt, quality, scales, which, opts);
       if (files.length === 1) download(files[0].blob, files[0].name);
       else download(await makeZip(files), `${useStore.getState().doc.name.replace(/\.[^.]+$/, '') || 'exportacion'}.zip`);
       useStore.getState().toast(files.length === 1 ? `Exportado ${files[0].name}` : `${files.length} archivos en un ZIP`);
@@ -109,11 +122,36 @@ export function ExportAsDialog({ close }: { close: () => void }) {
   return (
     <Modal title="Exportar como" okLabel={busy ? 'Exportando…' : 'Exportar'} onClose={close} onOk={() => { if (!busy) void go(); }}>
       <label className="field">Formato
-        <select value={fmt} aria-label="Formato" onChange={(e) => setFmt(e.target.value as typeof fmt)}>
-          <option value="image/png">PNG</option><option value="image/jpeg">JPEG</option><option value="image/webp">WebP</option>
+        <select value={fmt} aria-label="Formato" onChange={(e) => setFmt(e.target.value as ExportFmt)}>
+          {FORMATS.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
         </select>
       </label>
-      {fmt !== 'image/png' && <label className="field">Calidad: {q}<input type="range" min={1} max={100} value={q} onChange={(e) => setQ(Number(e.target.value))} /></label>}
+      {print && (
+        <label className="field">Color
+          <select value={color} aria-label="Color" onChange={(e) => setColor(e.target.value as typeof color)}>
+            <option value="rgb">RGB</option><option value="cmyk">CMYK (imprenta)</option><option value="gray">Escala de grises</option>
+          </select>
+        </label>
+      )}
+      {fmt === 'image/tiff' && color !== 'cmyk' && <label className="field">Transparencia<span><input type="checkbox" checked={alpha} aria-label="Transparencia" onChange={(e) => setAlpha(e.target.checked)} /> Conservar</span></label>}
+      {fmt === 'application/pdf' && color === 'rgb' && (
+        <label className="field">Compresión
+          <select value={pdfJpeg ? 'jpeg' : 'zip'} aria-label="Compresión" onChange={(e) => setPdfJpeg(e.target.value === 'jpeg')}>
+            <option value="zip">ZIP (sin pérdida)</option><option value="jpeg">JPEG</option>
+          </select>
+        </label>
+      )}
+      {fmt === 'image/gif' && (
+        <>
+          <label className="field">Colores
+            <select value={colors} aria-label="Colores" onChange={(e) => setColors(Number(e.target.value))}>
+              {[256, 128, 64, 32, 16, 8, 4, 2].map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+          <label className="field">Tramado<span><input type="checkbox" checked={dither} aria-label="Tramado" onChange={(e) => setDither(e.target.checked)} /> Difusión</span></label>
+        </>
+      )}
+      {lossy && <label className="field">Calidad: {q}<input type="range" min={1} max={100} value={q} onChange={(e) => setQ(Number(e.target.value))} /></label>}
       <div className="field">Tamaños
         <span className="row-btns">{[0.5, 1, 2, 3].map((s) => <button type="button" key={s} className={`chip ${scales.includes(s) ? 'on' : ''}`} aria-pressed={scales.includes(s)} onClick={() => toggle(s)}>{s}x</button>)}</span>
       </div>
@@ -124,7 +162,7 @@ export function ExportAsDialog({ close }: { close: () => void }) {
           </select>
         </label>
       )}
-      <span className="hint">Varios archivos se descargan juntos en un ZIP.</span>
+      <span className="hint">{fmt === 'image/svg+xml' ? 'Las formas y los textos se exportan como vectores; el resto, como imágenes incrustadas. ' : print ? 'CMYK usa un perfil aproximado de estucado (sin gestión ICC). ' : ''}Varios archivos se descargan juntos en un ZIP.</span>
     </Modal>
   );
 }

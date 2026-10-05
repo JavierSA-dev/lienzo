@@ -13,7 +13,7 @@ export type DialogId =
   | { kind: 'new' } | { kind: 'imageSize' } | { kind: 'canvasSize' } | { kind: 'export' }
   | { kind: 'adjust'; type: AdjustmentType } | { kind: 'filter'; name: FilterName }
   | { kind: 'feather' } | { kind: 'grow'; dir: 1 | -1 } | { kind: 'fill' } | { kind: 'layerStyle' }
-  | { kind: 'shortcuts' } | { kind: 'liquify' } | { kind: 'generative' } | { kind: 'about' } | { kind: 'confirmClose'; docId: number } | { kind: 'newGuide' } | { kind: 'colorPicker'; which: 'fg' | 'bg' } | { kind: 'applyImage' } | { kind: 'stroke' } | { kind: 'newLayer' } | { kind: 'warpText' } | { kind: 'newArtboard' } | { kind: 'refine' } | { kind: 'colorRange' } | { kind: 'rotateArbitrary' } | { kind: 'automate'; mode: 'photomerge' | 'hdr' } | { kind: 'brushSettings' } | { kind: 'blurGallery'; mode: 'field' | 'iris' | 'tilt' } | { kind: 'develop'; edit?: { layerId: number; index: number; cr: CameraRaw } }
+  | { kind: 'shortcuts' } | { kind: 'liquify' } | { kind: 'generative' } | { kind: 'about' } | { kind: 'confirmClose'; docId: number } | { kind: 'newGuide' } | { kind: 'colorPicker'; which: 'fg' | 'bg' } | { kind: 'applyImage' } | { kind: 'stroke' } | { kind: 'newLayer' } | { kind: 'warpText' } | { kind: 'newArtboard' } | { kind: 'refine' } | { kind: 'colorRange' } | { kind: 'rotateArbitrary' } | { kind: 'automate'; mode: 'photomerge' | 'hdr' } | { kind: 'brushSettings' } | { kind: 'tween' } | { kind: 'exportAnim' } | { kind: 'batch' } | { kind: 'blurGallery'; mode: 'field' | 'iris' | 'tilt' } | { kind: 'develop'; edit?: { layerId: number; index: number; cr: CameraRaw } }
   | null;
 
 export type MobileSheet = 'menu' | 'layers' | 'adjust' | 'props' | 'history' | 'color' | 'export' | 'tools' | 'select';
@@ -109,6 +109,8 @@ interface Store {
   perf: { label: string; ms: number } | null;
   cursor: { x: number; y: number } | null;
   panelsHidden: boolean;
+  /** Ventana > Línea de tiempo. */
+  timelineOpen: boolean;
   dialog: DialogId;
   selectionPath: string;
   transform: TransformState | null;
@@ -249,6 +251,7 @@ export const useStore = create<Store>((set, get) => ({
   perf: null,
   cursor: null,
   panelsHidden: false,
+  timelineOpen: false,
   dialog: null,
   selectionPath: '',
   transform: null,
@@ -312,6 +315,11 @@ export const useStore = create<Store>((set, get) => ({
     if (o.snap !== undefined) engine.call('setSnap', o.snap);
   },
   setColors(fg, bg) {
+    // En escala de grises los colores de pintura también son grises (como Photoshop).
+    if (get().doc.mode === 'gray') {
+      const g = (h: string) => { const [r, gg, b] = toRgba(h); const v = Math.round(0.299 * r + 0.587 * gg + 0.114 * b); return toHex([v, v, v, 255]); };
+      fg = g(fg); bg = g(bg);
+    }
     set({ fg, bg });
     engine.call('setColors', toRgba(fg), toRgba(bg));
   },

@@ -3,12 +3,15 @@ import {
   type SmartFilter, type Artboard, type ToolId, type ViewState, type BlendMode, type AdjustmentParams, type AdjustmentType, type TextParams,
   type ShapeParams, type LayerEffects, type Matrix,
 } from './types';
-import { EditorDocument, PixelLayer, MaskChannel, tileKey, keyTx, keyTy, cloneLayers, type SmartObject } from './document';
+import { EditorDocument, type AnimFrame, PixelLayer, MaskChannel, tileKey, keyTx, keyTy, cloneLayers, type SmartObject } from './document';
 import { History, TilePatch, FnEntry, GroupEntry, type HistoryEntry } from './history';
 import { BrushStroke, type BrushMode } from './brush';
 import { Renderer } from './renderer';
 import { Pool, shareable } from './pool';
 import { importRaster, encodeRaster } from './io';
+import { proofPixels, toCmyk } from './color';
+import { encodeTiff, encodePdf, encodeGif, type ColorOut } from './encoders';
+import { buildSvg } from './svgexport';
 import {
   resampleLayer, applyLut, invertLut, brightnessContrastLut, desaturate, layerThumb, layerFromPixels, pruneEmpty,
   applyRegion, gradientPixels, type GradientType,
@@ -297,6 +300,13 @@ export class Engine {
       quickMask: !!this.qm,
       alphas: d.alphas.map((a) => ({ id: a.id, name: a.name })),
       viewChannel: this.viewChannel,
+      mode: d.mode,
+      dpi: d.dpi,
+      frames: d.frames.map((f) => ({ delay: f.delay })),
+      activeFrame: d.activeFrame,
+      loop: d.loop,
+      proof: this.r.proof,
+      gamutWarning: this.r.gamutWarning,
       snapshots: d.snapshots.map((x) => ({ id: x.id, name: x.name })),
       historySource: d.historySource,
       docs: this.slots.map((x) => ({ id: x.id, name: x.id === this.slotId ? d.name : x.doc.name, dirty: x.id === this.slotId ? d.dirty : x.doc.dirty })),
@@ -2524,11 +2534,16 @@ export class Engine {
     this.invalidate(null);
   }
 
-  /** Exporta cada mesa de trabajo (o el documento si no hay) en uno o varios tamaños. */
-  async exportSet(type: 'image/png' | 'image/jpeg' | 'image/webp', quality: number, scales: number[], which: 'document' | 'artboards'): Promise<{ name: string; blob: Blob }[]> {
+  /**
+   * Exporta cada mesa de trabajo (o el documento si no hay) en uno o varios tamaños.
+   * Formatos: PNG, JPEG, WebP, GIF (paleta), TIFF y PDF (RGB, CMYK o gris) y SVG (formas y texto como vectores).
+   */
+  async exportSet(type: ExportType, quality: number, scales: number[], which: 'document' | 'artboards', o: ExportOptions = {}): Promise<{ name: string; blob: Blob }[]> {
     const d = this.doc!;
-    const bg: RGBA | undefined = type === 'image/jpeg' ? [255, 255, 255, 255] : undefined;
-    const ext = type.split('/')[1].replace('jpeg', 'jpg');
+    const color: ColorOut = o.color ?? (d.mode === 'cmyk' ? 'cmyk' : d.mode === 'gray' ? 'gray' : 'rgb');
+    const opaque = type === 'image/jpeg' || ((type === 'application/pdf' || type === 'image/tiff') && color === 'cmyk');
+    const bg: RGBA | undefined = opaque ? [255, 255, 255, 255] : undefined;
+    const ext = EXT[type];
     const base = d.name.replace(/\.[^.]+$/, '');
     const jobs: { name: string; rect: Rect; layers: PixelLayer[] }[] = [];
     const abs = this.artboards();
@@ -2539,22 +2554,46 @@ export class Engine {
     for (const j of jobs) {
       // Las capas del documento en orden (el árbol de composición necesita el orden original).
       const layers = j.layers === d.layers ? d.layers : d.layers.filter((l) => j.layers.includes(l));
+      const fname = (s: number) => `${j.name.replace(/[\\/:*?"<>|]/g, '_')}${scales.length > 1 || s !== 1 ? (s === 1 ? '' : `@${s}x`) : ''}.${ext}`;
+      if (type === 'image/svg+xml') {
+        const { svg } = await buildSvg(d, layers, j.rect, {
+          flatten: (ls, r) => this.modePixels(this.r.flatten(d, ls, r)),
+          png: async (px, w, h) => blobToDataUrl(await encodeRaster(px, w, h, 'image/png', 1)),
+        });
+        for (const s of scales) {
+          const sized = s === 1 ? svg : svg.replace(/<svg ([^>]*?)width="(\d+)" height="(\d+)"/, (_m, a, w, h) => `<svg ${a}width="${Math.round(+w * s)}" height="${Math.round(+h * s)}"`);
+          out.push({ name: fname(s), blob: new Blob([sized], { type: 'image/svg+xml' }) });
+        }
+        continue;
+      }
       const px = this.r.flatten(d, layers, j.rect, bg);
       for (const s of scales) {
         const w = Math.max(1, Math.round(j.rect.w * s)), h = Math.max(1, Math.round(j.rect.h * s));
         let data = px;
-        if (s !== 1) {
-          const bmp = await createImageBitmap(new ImageData(px as Uint8ClampedArray<ArrayBuffer>, j.rect.w, j.rect.h), { resizeWidth: w, resizeHeight: h, resizeQuality: 'high', premultiplyAlpha: 'none' });
-          const c = new OffscreenCanvas(w, h).getContext('2d')!;
-          c.drawImage(bmp, 0, 0);
-          bmp.close();
-          data = c.getImageData(0, 0, w, h).data;
+        if (s !== 1) data = await this.scalePixels(px, j.rect.w, j.rect.h, w, h);
+        let blob: Blob;
+        const dpi = d.dpi * s;
+        if (type === 'image/tiff') blob = await encodeTiff(color === 'rgb' ? this.modePixels(data.slice()) : data, w, h, { mode: color, alpha: o.alpha !== false, dpi });
+        else if (type === 'application/pdf') {
+          const flat = color === 'rgb' ? this.modePixels(data.slice()) : data;
+          blob = await encodePdf(flat, w, h, { mode: color, dpi, title: j.name, jpeg: color === 'rgb' && quality < 1 && !hasTransparency(flat) ? await encodeRaster(flat, w, h, 'image/jpeg', quality) : null });
+        } else {
+          const view = this.modePixels(s === 1 ? data.slice() : data);
+          if (type === 'image/gif') blob = encodeGif([{ px: view, delay: 0 }], w, h, { colors: o.colors, dither: o.dither });
+          else blob = await encodeRaster(view, w, h, type, quality);
         }
-        const suffix = scales.length > 1 || s !== 1 ? (s === 1 ? '' : `@${s}x`) : '';
-        out.push({ name: `${j.name.replace(/[\\/:*?"<>|]/g, '_')}${suffix}.${ext}`, blob: await encodeRaster(data, w, h, type, quality) });
+        out.push({ name: fname(s), blob });
       }
     }
     return out;
+  }
+
+  private async scalePixels(px: Uint8ClampedArray, w0: number, h0: number, w: number, h: number) {
+    const bmp = await createImageBitmap(new ImageData(px as Uint8ClampedArray<ArrayBuffer>, w0, h0), { resizeWidth: w, resizeHeight: h, resizeQuality: 'high', premultiplyAlpha: 'none' });
+    const c = new OffscreenCanvas(w, h).getContext('2d')!;
+    c.drawImage(bmp, 0, 0);
+    bmp.close();
+    return c.getImageData(0, 0, w, h).data;
   }
 
   // ================================================================ objetos inteligentes
@@ -3950,27 +3989,258 @@ export class Engine {
     this.requestFrame();
   }
 
-  /** Panel Canales: ver un solo canal en escala de grises (0 = RGB). */
+  /** Panel Canales: ver un solo canal en escala de grises (0 = compuesto; en CMYK 1..4 = C, M, Y, K). */
   setViewChannel(c: number) {
-    this.viewChannel = Math.max(0, Math.min(3, c | 0));
-    this.r.viewChannel = this.viewChannel;
+    const mode = this.doc?.mode ?? 'rgb';
+    this.viewChannel = Math.max(0, Math.min(mode === 'cmyk' ? 4 : mode === 'gray' ? 0 : 3, c | 0));
+    this.r.viewChannel = mode === 'cmyk' && this.viewChannel ? this.viewChannel + 4 : this.viewChannel;
     this.pushState(false);
     this.requestFrame();
   }
 
-  /** Ctrl+clic en un canal: su luminosidad (RGB) o su valor (R, G o B) como selección. */
+  /** Ctrl+clic en un canal: su luminosidad (compuesto), su valor (R, G, B) o la ausencia de tinta (C, M, Y, K) como selección. */
   loadChannelSelection(c: number, mode: CombineMode = 'replace') {
     const d = this.doc;
     if (!d) return;
     const px = this.r.flatten(d, d.layers, this.docRect());
     const n = d.width * d.height;
     const m = new Uint8Array(n);
+    const ink = d.mode === 'cmyk' && c > 0 ? toCmyk(px) : null;
     for (let i = 0; i < n; i++) {
       const a = px[i * 4 + 3] / 255;
-      const v = c === 0 ? 0.3 * px[i * 4] + 0.59 * px[i * 4 + 1] + 0.11 * px[i * 4 + 2] : px[i * 4 + c - 1];
+      const v = ink ? 255 - ink[i * 4 + c - 1] : c === 0 ? 0.3 * px[i * 4] + 0.59 * px[i * 4 + 1] + 0.11 * px[i * 4 + 2] : px[i * 4 + c - 1];
       m[i] = Math.round(v * a);
     }
     this.setSelection(this.combine(Selection.fromMask(m, d.width, d.height), mode), 'Cargar selección');
+  }
+
+  // ================================================================ línea de tiempo (animación de cuadros)
+
+  /** Posición de referencia de una capa (las de texto, forma y objeto inteligente se mueven con su matriz). */
+  private animPos(L: PixelLayer): [number, number] {
+    const m = L.text?.matrix ?? L.shape?.matrix ?? L.smart?.matrix;
+    return m ? [m[4], m[5]] : [L.x, L.y];
+  }
+
+  private captureFrame(): AnimFrame['layers'] {
+    const out: AnimFrame['layers'] = {};
+    for (const L of this.doc!.layers) { const [x, y] = this.animPos(L); out[L.id] = { v: L.visible, o: L.opacity, x, y }; }
+    return out;
+  }
+
+  /** Lleva las capas al estado del cuadro i (sin historial: los cuadros guardan su propio estado). */
+  private applyFrame(i: number) {
+    const d = this.doc!, f = d.frames[i];
+    if (!f) return;
+    for (const L of d.layers) {
+      const st = f.layers[L.id];
+      if (!st) continue;
+      L.visible = st.v; L.opacity = st.o;
+      const [x, y] = this.animPos(L);
+      if (L.kind !== 'group' && L.kind !== 'adjustment' && (x !== st.x || y !== st.y)) this.shiftLayer(L, st.x - x, st.y - y);
+    }
+  }
+
+  /** Guarda en el cuadro activo los cambios hechos en las capas. */
+  private storeFrame() {
+    const d = this.doc;
+    if (d?.frames[d.activeFrame]) d.frames[d.activeFrame].layers = this.captureFrame();
+  }
+
+  /** Ventana > Línea de tiempo > Crear animación de cuadros. */
+  timelineCreate() {
+    const d = this.doc;
+    if (!d || d.frames.length) return;
+    d.frames = [{ delay: 100, layers: this.captureFrame() }];
+    d.activeFrame = 0;
+    this.pushState(false);
+  }
+
+  timelineSelect(i: number) {
+    const d = this.doc;
+    if (!d || !d.frames[i]) return;
+    if (i !== d.activeFrame) { this.storeFrame(); d.activeFrame = i; this.applyFrame(i); }
+    this.invalidate(null);
+    this.pushState(false);
+  }
+
+  /** Duplica el cuadro activo detrás de él y lo selecciona. */
+  timelineAdd() {
+    const d = this.doc;
+    if (!d) return;
+    if (!d.frames.length) return this.timelineCreate();
+    this.storeFrame();
+    const cur = d.frames[d.activeFrame];
+    d.frames.splice(d.activeFrame + 1, 0, { delay: cur.delay, layers: this.captureFrame() });
+    d.activeFrame++;
+    this.pushState(false);
+  }
+
+  timelineDelete(i?: number) {
+    const d = this.doc;
+    if (!d || !d.frames.length) return;
+    const k = i ?? d.activeFrame;
+    d.frames.splice(k, 1);
+    if (!d.frames.length) { d.activeFrame = 0; this.pushState(false); return; }
+    d.activeFrame = Math.min(d.activeFrame, d.frames.length - 1);
+    this.applyFrame(d.activeFrame);
+    this.invalidate(null);
+    this.pushState(false);
+  }
+
+  timelineDelay(i: number | 'all', ms: number) {
+    const d = this.doc;
+    if (!d) return;
+    for (const [k, f] of d.frames.entries()) if (i === 'all' || i === k) f.delay = Math.max(0, Math.round(ms));
+    this.pushState(false);
+  }
+
+  timelineLoop(n: number) {
+    if (!this.doc) return;
+    this.doc.loop = Math.max(0, n | 0);
+    this.pushState(false);
+  }
+
+  timelineMove(from: number, to: number) {
+    const d = this.doc;
+    if (!d || !d.frames[from] || to < 0 || to >= d.frames.length) return;
+    this.storeFrame();
+    const [f] = d.frames.splice(from, 1);
+    d.frames.splice(to, 0, f);
+    d.activeFrame = to;
+    this.applyFrame(to);
+    this.invalidate(null);
+    this.pushState(false);
+  }
+
+  /** Interpolar: añade `n` cuadros entre el activo y el siguiente (opacidad y posición). */
+  timelineTween(n: number) {
+    const d = this.doc;
+    if (!d || d.activeFrame >= d.frames.length - 1 || n < 1) return;
+    this.storeFrame();
+    const a = d.frames[d.activeFrame], b = d.frames[d.activeFrame + 1];
+    const add: AnimFrame[] = [];
+    for (let k = 1; k <= n; k++) {
+      const t = k / (n + 1), layers: AnimFrame['layers'] = {};
+      for (const id of Object.keys(a.layers).map(Number)) {
+        const p = a.layers[id], q = b.layers[id] ?? p;
+        layers[id] = { v: p.v || q.v, o: p.v && q.v ? p.o + (q.o - p.o) * t : p.v ? p.o * (1 - t) : q.o * t, x: Math.round(p.x + (q.x - p.x) * t), y: Math.round(p.y + (q.y - p.y) * t) };
+      }
+      add.push({ delay: a.delay, layers });
+    }
+    d.frames.splice(d.activeFrame + 1, 0, ...add);
+    this.pushState(false);
+  }
+
+  /** Miniaturas de los cuadros. */
+  timelineThumbs(max = 64): { w: number; h: number; data: Uint8ClampedArray }[] {
+    const d = this.doc;
+    if (!d || !d.frames.length) return [];
+    this.storeFrame();
+    const k = Math.min(1, max / Math.max(d.width, d.height));
+    const w = Math.max(1, Math.round(d.width * k)), h = Math.max(1, Math.round(d.height * k));
+    const out: { w: number; h: number; data: Uint8ClampedArray }[] = [];
+    for (let i = 0; i < d.frames.length; i++) {
+      this.applyFrame(i);
+      const full = this.modePixels(this.r.flatten(d, d.layers, this.docRect()));
+      const t = new Uint8ClampedArray(w * h * 4);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const si = (Math.min(d.height - 1, Math.floor((y + 0.5) / k)) * d.width + Math.min(d.width - 1, Math.floor((x + 0.5) / k))) * 4;
+        t.set(full.subarray(si, si + 4), (y * w + x) * 4);
+      }
+      out.push({ w, h, data: t });
+    }
+    this.applyFrame(d.activeFrame);
+    this.r.invalidate(null);
+    return out;
+  }
+
+  /** Exporta la animación como GIF (o los cuadros sueltos en PNG). */
+  async timelineExport(o: { colors?: number; dither?: boolean; scale?: number; format?: 'gif' | 'png' } = {}): Promise<{ name: string; blob: Blob }[]> {
+    const d = this.doc;
+    if (!d) return [];
+    if (!d.frames.length) this.timelineCreate();
+    this.storeFrame();
+    const s = o.scale ?? 1, w = Math.max(1, Math.round(d.width * s)), h = Math.max(1, Math.round(d.height * s));
+    const frames: { px: Uint8ClampedArray; delay: number }[] = [];
+    for (let i = 0; i < d.frames.length; i++) {
+      this.applyFrame(i);
+      let px = this.r.flatten(d, d.layers, this.docRect());
+      if (s !== 1) px = await this.scalePixels(px, d.width, d.height, w, h);
+      frames.push({ px: this.modePixels(px), delay: d.frames[i].delay });
+    }
+    this.applyFrame(d.activeFrame);
+    this.invalidate(null);
+    const base = d.name.replace(/\.[^.]+$/, '');
+    if (o.format === 'png') {
+      const out: { name: string; blob: Blob }[] = [];
+      for (const [i, f] of frames.entries()) out.push({ name: `${base}_${String(i + 1).padStart(3, '0')}.png`, blob: await encodeRaster(f.px, w, h, 'image/png', 1) });
+      return out;
+    }
+    return [{ name: `${base}.gif`, blob: encodeGif(frames, w, h, { colors: o.colors, dither: o.dither, loop: d.loop === 0 ? 0 : d.loop === 1 ? -1 : d.loop - 1 }) }];
+  }
+
+  // ================================================================ modos de color
+
+  /**
+   * Imagen > Modo. Escala de grises descarta el color de las capas de píxeles; CMYK lleva sus colores
+   * a la gama imprimible. Las capas de texto, formas y ajustes conservan sus parámetros: la vista y
+   * la exportación aplican el modo al resultado.
+   */
+  setMode(mode: 'rgb' | 'gray' | 'cmyk') {
+    const d = this.doc;
+    if (!d || d.mode === mode) return;
+    const before = d.mode;
+    const label = { rgb: 'Color RGB', gray: 'Escala de grises', cmyk: 'Color CMYK' }[mode];
+    this.perf(label, () => this.batched(label, () => {
+      if (mode !== 'rgb') {
+        for (const L of d.layers) {
+          if (L.kind !== 'pixel' || !L.tiles.size) continue;
+          const patch = new TilePatch('', L);
+          if (mode === 'gray') desaturate(L, (k) => patch.capture(L, k));
+          else for (const k of [...L.tiles.keys()]) { patch.capture(L, k); proofPixels(L.ensureTile(k)); L.touch(k); }
+          this.commit(patch);
+        }
+      }
+      const sync = () => { this.viewChannel = 0; this.r.viewChannel = 0; };
+      this.commit(new FnEntry('', (doc) => { doc.mode = before; sync(); }, (doc) => { doc.mode = mode; sync(); }));
+      d.mode = mode;
+      sync();
+    }));
+    this.invalidate(null);
+  }
+
+  /** Vista > Prueba de colores (Ctrl+Y). */
+  setProof(on?: boolean) {
+    this.r.proof = on ?? !this.r.proof;
+    this.pushState(false);
+    this.requestFrame();
+  }
+
+  /** Vista > Avisar sobre gama (Mayús+Ctrl+Y): gris donde el color no se puede imprimir. */
+  setGamutWarning(on?: boolean) {
+    this.r.gamutWarning = on ?? !this.r.gamutWarning;
+    this.pushState(false);
+    this.requestFrame();
+  }
+
+  /** Resolución del documento (no remuestrea). */
+  setResolution(dpi: number) {
+    const d = this.doc;
+    if (!d) return;
+    const before = d.dpi, after = Math.max(1, Math.min(9999, Math.round(dpi)));
+    if (before === after) return;
+    d.dpi = after;
+    this.commit(new FnEntry('Resolución', (doc) => { doc.dpi = before; }, (doc) => { doc.dpi = after; }));
+  }
+
+  /** Aplica a una imagen acoplada lo que el modo de color hace en la vista (para PNG, JPEG, WebP, GIF). */
+  private modePixels(px: Uint8ClampedArray, proof = false) {
+    const mode = this.doc?.mode ?? 'rgb';
+    if (mode === 'gray') {
+      for (let i = 0; i < px.length; i += 4) px[i] = px[i + 1] = px[i + 2] = Math.round(0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]);
+    } else if (mode === 'cmyk' || proof) proofPixels(px);
+    return px;
   }
 
   /** Selección > Guardar selección: nuevo canal alfa. */
@@ -4014,6 +4284,9 @@ export class Engine {
       const sx = Math.min(d.width - 1, Math.floor(x / k)), sy = Math.min(d.height - 1, Math.floor(y / k));
       out.set(full.subarray((sy * d.width + sx) * 4, (sy * d.width + sx) * 4 + 4), (y * w + x) * 4);
     }
+    // En CMYK, las tintas (0 = sin tinta); el compuesto como se verá impreso.
+    const cmyk = d.mode === 'cmyk' ? toCmyk(out) : undefined;
+    this.modePixels(out);
     const alphas = d.alphas.map((a) => {
       const g = new Uint8ClampedArray(w * h);
       for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
@@ -4023,7 +4296,7 @@ export class Engine {
       }
       return { id: a.id, data: g };
     });
-    return { w, h, data: out, alphas };
+    return { w, h, data: out, alphas, cmyk };
   }
 
   /**
@@ -4325,13 +4598,14 @@ export class Engine {
   async exportImage(type: 'image/png' | 'image/jpeg' | 'image/webp', quality = 0.92): Promise<Blob> {
     const d = this.doc!;
     const bg: RGBA | undefined = type === 'image/jpeg' ? [255, 255, 255, 255] : undefined;
-    const px = this.r.flatten(d, d.layers, this.docRect(), bg);
+    const px = this.modePixels(this.r.flatten(d, d.layers, this.docRect(), bg));
     return encodeRaster(px, d.width, d.height, type, quality);
   }
 
   async savePsd(psb = false): Promise<Uint8Array> {
     const d = this.doc!;
     const { exportPsd } = await import('./psd');
+    this.storeFrame();
     const composite = this.r.flatten(d, d.layers, this.docRect());
     const out = exportPsd(d, composite, psb);
     d.dirty = false;
@@ -4358,6 +4632,14 @@ export class Engine {
   debugPixel(x: number, y: number) {
     if (this.doc) this.r.compose(this.doc);
     return this.r.readCompositePixel(x, y);
+  }
+
+  /** Color en pantalla (tras la vista: canal, modo de color, prueba) del punto de documento (x, y). */
+  debugScreenPixel(x: number, y: number) {
+    if (!this.doc) return null;
+    this.frame();
+    const v = this.view;
+    return this.r.readScreenPixel((v.panX + (x + 0.5) * v.zoom) * v.dpr, (v.panY + (y + 0.5) * v.zoom) * v.dpr);
   }
 
   debugLayerBounds() {
@@ -4611,4 +4893,20 @@ function featherMask(m: Float32Array, w: number, h: number, r: number): Float32A
   // Dentro de la zona siempre 1 (sólo se suaviza hacia fuera).
   for (let i = 0; i < a.length; i++) if (m[i] >= 1) a[i] = 1;
   return a;
+}
+
+export type ExportType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif' | 'image/tiff' | 'application/pdf' | 'image/svg+xml';
+export interface ExportOptions { color?: ColorOut; alpha?: boolean; colors?: number; dither?: boolean }
+const EXT: Record<ExportType, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/tiff': 'tif', 'application/pdf': 'pdf', 'image/svg+xml': 'svg' };
+
+function hasTransparency(px: Uint8ClampedArray) {
+  for (let i = 3; i < px.length; i += 4) if (px[i] < 255) return true;
+  return false;
+}
+
+async function blobToDataUrl(b: Blob): Promise<string> {
+  const u = new Uint8Array(await b.arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < u.length; i += 0x8000) bin += String.fromCharCode(...u.subarray(i, i + 0x8000));
+  return `data:${b.type};base64,${btoa(bin)}`;
 }
