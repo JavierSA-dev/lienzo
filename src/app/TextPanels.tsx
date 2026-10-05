@@ -158,8 +158,8 @@ export function WarpTextDialog({ close }: { close: () => void }) {
     </label>
   );
   return (
-    <Modal title="Deformar texto" onClose={() => { engine.call('updateText', L.id, { warp: initial }, false); engine.call('updateText', L.id, { warp: initial }, true); close(); }}
-      onOk={() => { const cur = wRef.current; engine.call('updateText', L.id, { warp: initial }, false); engine.call('updateText', L.id, { warp: cur.style === 'none' ? null : cur }, true); close(); }}>
+    <Modal title="Deformar texto" onClose={() => { engine.call('updateText', L.id, { warp: initial }, true); close(); }}
+      onOk={() => { const cur = wRef.current; engine.call('updateText', L.id, { warp: cur.style === 'none' ? null : cur }, true); close(); }}>
       <label className="adj-row"><span>Estilo</span>
         <select value={w.style} aria-label="Estilo" onChange={(e) => { const style = e.target.value as TextWarp['style']; setW((c) => ({ ...c, style })); }}>
           {WARP_STYLES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}

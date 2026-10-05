@@ -2904,6 +2904,8 @@ export class Engine {
     if (!record) { this.pendingProps.set(id, before); this.pushState(false); return; }
     this.pendingProps.delete(id);
     const after = L.text;
+    // Sin cambios respecto al estado anterior (p. ej. Cancelar en Deformar texto): sin paso de historial.
+    if (JSON.stringify(before) === JSON.stringify(after)) { this.pushState(false); return; }
     const set = (v: TextParams, from: TextParams) => (doc: EditorDocument) => {
       const l = doc.layer(id);
       if (!l) return;
@@ -4675,6 +4677,11 @@ export class Engine {
     this.frame();
     const v = this.view;
     return this.r.readScreenPixel((v.panX + (x + 0.5) * v.zoom) * v.dpr, (v.panY + (y + 0.5) * v.zoom) * v.dpr);
+  }
+
+  debugLayerInfo() {
+    const L = this.doc?.active();
+    return L ? { info: L.info(), pending: [...this.pendingProps.keys()], hist: this.history.index } : null;
   }
 
   debugLayerBounds() {
