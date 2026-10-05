@@ -810,3 +810,5 @@ button.lstyle-item { font-weight: 600; padding: 6px 8px; }
 .app.mobile .assistant { left: 8px; right: 8px; width: auto; bottom: calc(68px + env(safe-area-inset-bottom)); top: 56px; max-height: none; }
 .home-more { display: inline-block; margin-top: 18px; color: #8ab4ff; font-size: 14px; text-decoration: none; }
 .home-more:hover { text-decoration: underline; }
+.assistant-quota { padding: 6px 10px; font-size: 11.5px; line-height: 1.35; color: #c9b8ff; background: rgba(155, 92, 240, .1); border-bottom: 1px solid var(--border); }
+.assistant-quota b { color: #fff; }

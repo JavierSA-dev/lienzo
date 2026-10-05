@@ -20,6 +20,17 @@ const SUGGESTIONS = ['Mejora la foto', 'Quita el fondo', 'Blanco y negro', 'Reco
 
 const S = () => useStore.getState();
 
+/** Identificador aleatorio de este navegador (para la cuota diaria de la versión de pruebas). */
+function deviceId(): string {
+  try {
+    let id = localStorage.getItem('lienzo:device');
+    if (!id || !/^[a-z0-9-]{16,64}$/i.test(id)) { id = crypto.randomUUID(); localStorage.setItem('lienzo:device', id); }
+    return id;
+  } catch { return 'sin-almacenamiento-0000'; }
+}
+
+type Quota = { configured: boolean; premium?: boolean; limit: number; left: number | null };
+
 /** Ejecuta un paso de herramienta y devuelve la línea para el chat. */
 async function runTool(name: string, args: Record<string, unknown>): Promise<Act & { result: string }> {
   const t = toolByName[name];
@@ -41,6 +52,14 @@ export function AssistantPanel() {
   const [busy, setBusy] = useState(false);
   const [cfg, setCfg] = useState<Cfg>(loadCfg);
   const [showCfg, setShowCfg] = useState(false);
+  const [quota, setQuota] = useState<Quota | null>(null);
+  const headers = () => ({ 'X-Lienzo-Device': deviceId(), ...(cfg.token ? { Authorization: `Bearer ${cfg.token}` } : {}) });
+  // Cuota de hoy al abrir el panel.
+  useEffect(() => {
+    if (!open) return;
+    fetch(cfg.endpoint || '/api/assistant', { headers: headers() })
+      .then((r) => (r.ok ? r.json() : null)).then((q) => setQuota(q && typeof q.limit === 'number' ? q : null)).catch(() => setQuota(null));
+  }, [open, cfg.endpoint, cfg.token]); // eslint-disable-line react-hooks/exhaustive-deps
   const wire = useRef<Wire[]>([]);
   const list = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLTextAreaElement>(null);
@@ -63,10 +82,11 @@ export function AssistantPanel() {
     for (let step = 0; step < 8; step++) {
       const r = await fetch(cfg.endpoint || '/api/assistant', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(cfg.token ? { Authorization: `Bearer ${cfg.token}` } : {}) },
+        headers: { 'Content-Type': 'application/json', ...headers() },
         body: JSON.stringify({ messages: wire.current.slice(-24), tools: toolSchemas() }),
       });
       const j = await r.json().catch(() => ({ error: `Error ${r.status}` }));
+      if (typeof j.left === 'number') setQuota((q) => (q ? { ...q, left: j.left } : { configured: true, limit: j.limit ?? 10, left: j.left }));
       if (!r.ok) throw Object.assign(new Error(j.error ?? `Error ${r.status}`), { status: r.status });
       const blocks = (j.content ?? []) as { type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }[];
       wire.current.push({ role: 'assistant', content: blocks });
@@ -138,6 +158,12 @@ export function AssistantPanel() {
           <label className="field">Siempre la IA<span><input type="checkbox" checked={cfg.alwaysAI} aria-label="Usar siempre el modelo de IA" onChange={(e) => { const c = { ...cfg, alwaysAI: e.target.checked }; setCfg(c); saveCfg(c); }} /> No usar el intérprete local</span></label>
         </div>
       )}
+      <div className="assistant-quota" data-testid="assistant-quota">
+        {quota?.premium ? 'Premium: peticiones de IA sin límite.'
+          : quota?.configured && quota.left != null ? `Versión de pruebas: te quedan ${quota.left} de ${quota.limit} peticiones de IA hoy. Las órdenes sencillas no cuentan.`
+          : quota && !quota.configured ? 'Versión de pruebas: el modelo de IA no está activado; funcionan las órdenes sencillas.'
+          : 'Versión de pruebas: peticiones de IA limitadas al día; las órdenes sencillas no cuentan.'}
+      </div>
       <div className="assistant-list" ref={list} data-testid="assistant-list">
         {!msgs.length && (
           <div className="assistant-empty">

@@ -16,6 +16,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@vercel/blob": "^2.8.0",
     "ag-psd": "^31.0.2",
     "gifenc": "^1.0.3",
     "libraw-wasm": "^1.6.0",

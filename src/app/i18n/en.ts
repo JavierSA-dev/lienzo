@@ -1,6 +1,10 @@
 // Diccionario español → inglés de la interfaz (se carga solo con el idioma inglés).
 // Mantener la terminología de la versión inglesa de los editores de imagen profesionales.
 export const EN: Record<string, string> = {
+  "Premium: peticiones de IA sin límite.": "Premium: unlimited AI requests.",
+  "Versión de pruebas: el modelo de IA no está activado; funcionan las órdenes sencillas.": "Trial version: the AI model isn't enabled; simple commands work.",
+  "Versión de pruebas: peticiones de IA limitadas al día; las órdenes sencillas no cuentan.": "Trial version: AI requests are limited per day; simple commands don't count.",
+  "No se puede comprobar la cuota ahora mismo. Inténtalo en un momento.": "The quota can't be checked right now. Try again in a moment.",
   "Qué es Lienzo y todo lo que puede hacer →": "What Lienzo is and everything it can do →",
   "No hay ninguna capa de píxeles a la que aplicarlo.": "There's no pixel layer to apply it to.",
   "el revelado": "the develop settings",

@@ -118,7 +118,10 @@ try {
 
   // --- modelo de IA (simulado)
   const calls = [];
+  const devices = new Set();
   await page.route('**/api/assistant', async (route) => {
+    devices.add(route.request().headers()['x-lienzo-device']);
+    if (route.request().method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: true, limit: 10, left: 10 }) });
     const body = JSON.parse(route.request().postData());
     calls.push(body);
     const last = body.messages.at(-1);
@@ -126,7 +129,7 @@ try {
     if (!isResult) {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ stop_reason: 'tool_use', content: [{ type: 'text', text: 'Voy a darle un aire veraniego.' }, { type: 'tool_use', id: 'tu_1', name: 'develop', input: { temp: 40, vibrance: 30 } }] }) });
     } else {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'Listo: más cálida y con colores más vivos.' }] }) });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'Listo: más cálida y con colores más vivos.' }], left: 9, limit: 10 }) });
     }
   });
   {
@@ -139,14 +142,20 @@ try {
     ok('Se envían las herramientas, la miniatura y el resumen', calls[0].tools.some((t) => t.name === 'develop') && calls[0].messages.at(-1).content.some((b) => b.type === 'image') && /Documento: \{/.test(JSON.stringify(calls[0].messages.at(-1).content)));
     ok('El resultado de la herramienta vuelve al modelo', calls[1].messages.at(-1).content[0].type === 'tool_result' && calls[1].messages.at(-1).content[0].tool_use_id === 'tu_1');
     ok('La herramienta se ejecuta (más cálida)', after[0] - after[2] > before[0] - before[2] + 5, `${JSON.stringify(before)} → ${JSON.stringify(after)}`);
+    ok('Cuota de la versión de pruebas visible y actualizada (9 de 10)', /te quedan 9 de 10 peticiones de IA hoy/.test(await page.getByTestId('assistant-quota').innerText()), await page.getByTestId('assistant-quota').innerText());
+    ok('Se envía un identificador de navegador estable', devices.size === 1 && /^[0-9a-f-]{36}$/.test([...devices][0] ?? ''), [...devices].join(','));
     ok('Respuesta del modelo en el chat, marcada "IA"', /Listo: más cálida/.test(r) && /\bIA\b/.test(r), r.replace(/\n/g, ' | '));
   }
   await page.unroute('**/api/assistant');
-  await page.route('**/api/assistant', (route) => route.fulfill({ status: 402, contentType: 'application/json', body: JSON.stringify({ error: 'Has usado las peticiones gratuitas de hoy.' }) }));
+  await page.route('**/api/assistant', (route) => route.request().method() === 'GET'
+    ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: true, limit: 10, left: 0 }) })
+    : route.fulfill({ status: 402, contentType: 'application/json', body: JSON.stringify({ error: 'Has usado las 10 peticiones de IA de hoy. Lienzo está en pruebas: cada navegador tiene 10 peticiones de IA al día.', left: 0 }) }));
   await ask('convierte esto en un cuadro de Van Gogh');
-  ok('Sin créditos: mensaje claro', /peticiones gratuitas/.test(await lastReply()));
+  ok('Sin cuota: explica que es una versión de pruebas', /10 peticiones de IA de hoy.*en pruebas/.test(await lastReply()));
   await page.unroute('**/api/assistant');
-  await page.route('**/api/assistant', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'no configurado' }) }));
+  await page.route('**/api/assistant', (route) => route.request().method() === 'GET'
+    ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: false, limit: 10, left: 10 }) })
+    : route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'no configurado' }) }));
   await ask('convierte esto en un cuadro de Van Gogh');
   ok('Sin servicio de IA: explica qué entiende en local', /necesita el modelo de IA/.test(await lastReply()));
   await page.unroute('**/api/assistant');
