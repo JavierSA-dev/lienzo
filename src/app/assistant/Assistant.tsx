@@ -32,16 +32,22 @@ function deviceId(): string {
 type Quota = { configured: boolean; premium?: boolean; limit: number; left: number | null };
 
 /** Ejecuta un paso de herramienta y devuelve la línea para el chat. */
-async function runTool(name: string, args: Record<string, unknown>): Promise<Act & { result: string }> {
+async function runTool(name: string, args: Record<string, unknown>): Promise<Act & { result: string; image?: string }> {
   const t = toolByName[name];
   if (!t) return { label: `Herramienta desconocida: ${name}`, ok: false, result: `Error: herramienta desconocida ${name}` };
   try {
     const r = await t.run(args ?? {});
+    if (typeof r !== 'string') return { label: name === 'inspect' ? 'Zona revisada.' : r.text, ok: true, result: r.text, image: r.image };
     return { label: r, ok: true, result: r };
   } catch (e) {
     const m = (e as Error).message;
     return { label: m, ok: false, result: `Error: ${m}` };
   }
+}
+
+/** Markdown mínimo de las respuestas del modelo: **negrita** y quitar almohadillas de títulos. */
+function rich(t: string) {
+  return t.replace(/^#{1,6}\s+/gm, '').split(/(\*\*[^*]+\*\*)/g).map((p, i) => (/^\*\*[^*]+\*\*$/.test(p) ? <b key={i}>{p.slice(2, -2)}</b> : p));
 }
 
 export function AssistantPanel() {
@@ -74,12 +80,15 @@ export function AssistantPanel() {
     const ctx = await engine.call<Record<string, unknown> | null>('assistantContext', 512);
     const { thumbnail, ...summary } = (ctx ?? {}) as { thumbnail?: { jpegBase64: string } } & Record<string, unknown>;
     // Las imágenes de turnos anteriores se quitan (solo cuenta la actual).
-    wire.current = wire.current.map((w) => (Array.isArray(w.content) ? { ...w, content: (w.content as { type: string }[]).map((b) => (b.type === 'image' ? { type: 'text', text: '[miniatura anterior]' } : b)) } : w));
+    // Las imágenes de turnos anteriores se quitan (también dentro de resultados de herramientas).
+    const strip = (b: { type: string; content?: unknown }): unknown => b.type === 'image' ? { type: 'text', text: '[imagen anterior]' }
+      : b.type === 'tool_result' && Array.isArray(b.content) ? { ...b, content: (b.content as { type: string }[]).map(strip) } : b;
+    wire.current = wire.current.map((w) => (Array.isArray(w.content) ? { ...w, content: (w.content as { type: string }[]).map(strip) } : w));
     const content: unknown[] = [];
     if (thumbnail) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: thumbnail.jpegBase64 } });
     content.push({ type: 'text', text: `Documento: ${ctx ? JSON.stringify(summary) : 'ninguno abierto'}\n\nPetición: ${text}` });
     wire.current.push({ role: 'user', content });
-    for (let step = 0; step < 8; step++) {
+    for (let step = 0; step < 12; step++) {
       const r = await fetch(cfg.endpoint || '/api/assistant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers() },
@@ -92,12 +101,24 @@ export function AssistantPanel() {
       wire.current.push({ role: 'assistant', content: blocks });
       const uses = blocks.filter((b) => b.type === 'tool_use');
       if (!uses.length || j.stop_reason !== 'tool_use') return blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim() || 'Hecho.';
-      const results: unknown[] = [];
+      const results: { type: string; tool_use_id?: string; content: unknown; is_error?: boolean }[] = [];
+      let changed = false;
       for (const u of uses) {
         const a = await runTool(u.name!, u.input ?? {});
-        acts.push(a);
+        if (u.name !== 'inspect') changed = changed || a.ok;
+        acts.push({ label: a.label, ok: a.ok });
         setMsgs((o) => [...o.slice(0, -1), { ...o[o.length - 1], acts: [...acts] }]);
-        results.push({ type: 'tool_result', tool_use_id: u.id, content: a.result, ...(a.ok ? {} : { is_error: true }) });
+        const img = (data: string) => ({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } });
+        results.push({ type: 'tool_result', tool_use_id: u.id, content: a.image ? [{ type: 'text', text: a.result }, img(a.image)] : a.result, ...(a.ok ? {} : { is_error: true }) });
+      }
+      // El modelo ve cómo ha quedado el documento y puede corregirse.
+      if (changed && S().doc.open) {
+        const v = await engine.call<{ w: number; h: number; scale: number; jpegBase64: string } | null>('assistantView', null, 640).catch(() => null);
+        const last = results[results.length - 1];
+        if (v && last) {
+          const note = { type: 'text', text: `Así queda el documento ahora (${v.w}×${v.h}; documento = imagen / ${Math.round(v.scale * 10000) / 10000}). Compruébalo: si no está bien, corrígelo antes de terminar.` };
+          last.content = [...(Array.isArray(last.content) ? last.content : [{ type: 'text', text: String(last.content) }]), note, { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: v.jpegBase64 } }];
+        }
       }
       wire.current.push({ role: 'user', content: results });
     }
@@ -180,7 +201,7 @@ export function AssistantPanel() {
                 {m.acts.map((a, k) => <li key={k} className={a.ok ? 'ok' : 'bad'}>{a.ok ? <Check size={12} /> : <AlertTriangle size={12} />}<span>{a.label}</span></li>)}
               </ul>
             )}
-            {m.text && <div className="amsg-text">{m.text}</div>}
+            {m.text && <div className="amsg-text">{rich(m.text)}</div>}
             {m.role === 'assistant' && (m.via || m.undoTo != null) && (
               <div className="amsg-foot">
                 {m.via && <span className="hint">{m.via === 'local' ? 'Local' : 'IA'}</span>}

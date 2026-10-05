@@ -14,6 +14,8 @@ import crypto from 'node:crypto';
 
 export const DEVICE_LIMIT = Number(process.env.AI_DAILY_LIMIT ?? 10);
 export const IP_LIMIT = Number(process.env.AI_DAILY_IP_LIMIT ?? 30);
+/** Tope de llamadas al modelo (cada paso cuenta) por navegador y día: protege el gasto aunque las respuestas sean solo texto. */
+export const RAW_LIMIT = Number(process.env.AI_DAILY_RAW_LIMIT ?? 120);
 const SALT = process.env.QUOTA_SALT ?? 'lienzo';
 
 const day = () => new Date().toISOString().slice(0, 10);
@@ -79,13 +81,17 @@ const store = redisUrl && redisToken ? {
 
 export const storeName = store.name;
 
-const keysFor = (id) => [`lienzo-ai/${day()}/d/${id.device}`, `lienzo-ai/${day()}/ip/${id.ip}`];
+const keysFor = (id) => [`lienzo-ai/${day()}/d/${id.device}`, `lienzo-ai/${day()}/ip/${id.ip}`, `lienzo-ai/${day()}/raw/${id.device}`];
 
 /** Usos de hoy y cuántos quedan. */
 export async function quota(id) {
-  const [d, i] = await store.get(keysFor(id));
+  const [d, i, raw] = await store.get(keysFor(id));
   const left = Math.max(0, Math.min(DEVICE_LIMIT - d, IP_LIMIT - i));
-  return { limit: DEVICE_LIMIT, used: d, left, ipBlocked: i >= IP_LIMIT };
+  return { limit: DEVICE_LIMIT, used: d, left, ipBlocked: i >= IP_LIMIT, rawBlocked: raw >= RAW_LIMIT };
 }
 
-export async function spend(id) { await store.incr(keysFor(id)); }
+/** Cada llamada suma al tope de llamadas; `charge` = además cuenta como petición. */
+export async function spend(id, charge = true) {
+  const [d, ip, raw] = keysFor(id);
+  await store.incr(charge ? [d, ip, raw] : [raw]);
+}

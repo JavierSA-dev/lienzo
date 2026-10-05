@@ -10,11 +10,14 @@ import { useStore, toRgba } from '../store';
 import { commandById, COMMANDS, download } from '../commands';
 import { parseColor } from './color';
 
+export interface ToolOut { text: string; image?: string }
+
 export interface ToolDef {
   name: string;
   description: string;
   input_schema: { type: 'object'; properties: Record<string, unknown>; required?: string[] };
-  run: (a: Record<string, unknown>) => Promise<string>;
+  /** Texto del resultado, o texto + una imagen (JPEG en base64) que el modelo puede ver. */
+  run: (a: Record<string, unknown>) => Promise<string | ToolOut>;
 }
 
 const S = () => useStore.getState();
@@ -212,19 +215,71 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'add_text',
-    description: 'Añade una capa de texto. position: "top", "center", "bottom" (centrado) o x/y en px (línea base). size en px (por defecto ~8 % del alto). color "#hex" o nombre.',
-    input_schema: { type: 'object', properties: { text: { type: 'string' }, position: { type: 'string', enum: ['top', 'center', 'bottom'] }, x: N('px'), y: N('px'), size: N('px'), color: { type: 'string' }, font: { type: 'string' }, bold: { type: 'boolean' } }, required: ['text'] },
+    description: 'Añade una capa de texto editable. Colocación: position "top" | "center" | "bottom" (centrado en horizontal) o x/y en px de documento (y = línea base; align "left" | "center" | "right" respecto a x). size en px (por defecto ~8 % del alto). color "#hex". font: Arial, Georgia, Impact, Verdana, "Times New Roman" o cualquier Google Font (Montserrat, Bebas Neue, Oswald, Poppins, Playfair Display, Anton, Lobster, Press Start 2P…). Estilo tipo logo: stroke (contorno {color, width}) y shadow (sombra paralela).',
+    input_schema: { type: 'object', properties: {
+      text: { type: 'string' }, position: { type: 'string', enum: ['top', 'center', 'bottom'] }, x: N('px'), y: N('px'), align: { type: 'string', enum: ['left', 'center', 'right'] },
+      size: N('px'), color: { type: 'string' }, font: { type: 'string' }, bold: { type: 'boolean' }, italic: { type: 'boolean' }, tracking: N('milésimas de eme'),
+      stroke: { type: 'object', properties: { color: { type: 'string' }, width: N('px') } }, shadow: { type: 'boolean' },
+    }, required: ['text'] },
     run: async (a) => {
       need();
       const { width: W, height: H } = doc();
       const size = Math.max(6, Math.round(num(a.size, Math.max(12, H * 0.08))));
-      const pos = String(a.position ?? (a.x == null && a.y == null ? 'center' : ''));
-      const centered = !!pos;
-      const x = centered ? W / 2 : num(a.x, W * 0.05);
-      const y = pos === 'top' ? size * 1.4 : pos === 'bottom' ? H - size * 0.6 : pos === 'center' ? H / 2 + size * 0.35 : num(a.y, H / 2);
+      const pos = a.position != null ? String(a.position) : a.x == null && a.y == null ? 'center' : '';
+      const align = (pos ? 'center' : ['left', 'center', 'right'].includes(String(a.align)) ? String(a.align) : 'left') as 'left' | 'center' | 'right';
+      const x = pos ? W / 2 : num(a.x, align === 'center' ? W / 2 : W * 0.05);
+      const y = pos === 'top' ? size * 1.2 : pos === 'bottom' ? H - size * 0.5 : pos === 'center' ? H / 2 + size * 0.35 : num(a.y, H / 2);
       const color = parseColor(a.color) ?? toRgba(S().fg);
-      await engine.call('createText', { text: String(a.text), x, y, size, color, font: typeof a.font === 'string' ? a.font : 'Arial', bold: !!a.bold, align: centered ? 'center' : 'left' });
+      const id = await engine.call<number | undefined>('createText', { text: String(a.text), x, y, size, color, font: typeof a.font === 'string' && a.font ? a.font : 'Arial', bold: !!a.bold, italic: !!a.italic, align, tracking: num(a.tracking) });
+      const st = a.stroke as { color?: string; width?: number } | undefined;
+      if (id && (st || a.shadow)) {
+        await engine.call('setEffects', id, {
+          ...(st ? { stroke: { enabled: true, color: parseColor(st.color) ?? [0, 0, 0, 255], size: Math.max(1, num(st.width, Math.round(size / 18))), position: 'outside' } } : {}),
+          ...(a.shadow ? { dropShadow: { enabled: true, color: [0, 0, 0, 255], opacity: 0.6, angle: 120, distance: Math.round(size / 14), size: Math.round(size / 10) } } : {}),
+        }, true);
+      }
       return `Texto «${String(a.text)}» añadido.`;
+    },
+  },
+  {
+    name: 'draw_svg',
+    description: 'Dibuja una ilustración (un perro, un logo, un icono, una mascota, un fondo decorativo…) escribiendo un SVG completo, que se coloca como objeto inteligente en una capa nueva. Haz dibujos detallados y bonitos: estilo ilustración plana o semiplana con formas suaves (path con curvas Bézier), varias capas de color, luces y sombras, contorno coherente; nunca solo cuatro círculos. Incluye xmlns y viewBox; fondo transparente salvo que se pida. x, y, width en px de documento (por defecto centrado y al 60 % del lado menor).',
+    input_schema: { type: 'object', properties: { svg: { type: 'string' }, name: { type: 'string' }, x: N('px'), y: N('px'), width: N('px') }, required: ['svg'] },
+    run: async (a) => {
+      if (!doc().open) await engine.call('newDoc', 1080, 1080, 'white', 'Dibujo.psd');
+      const { width: W, height: H } = doc();
+      let svg = String(a.svg ?? '').trim();
+      if (!/^<svg[\s>]/i.test(svg.replace(/^<\?xml[^>]*>\s*/, ''))) throw new Error('El dibujo no es un SVG válido.');
+      if (!/xmlns=/.test(svg)) svg = svg.replace(/<svg/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+      const vb = svg.match(/viewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i);
+      const aspect = vb ? Number(vb[1]) / Math.max(1e-6, Number(vb[2])) : 1;
+      let w = num(a.width, Math.min(W, H) * 0.6), h = w / aspect;
+      if (h > H) { h = H; w = h * aspect; }
+      const x = num(a.x, (W - w) / 2), y = num(a.y, (H - h) / 2);
+      const png = await svgToPng(svg, Math.max(1, Math.round(w)), Math.max(1, Math.round(h)));
+      await engine.call('placeSmart', `${String(a.name ?? 'Dibujo')}.png`, png, 'image/png', { x: Math.round(x), y: Math.round(y) });
+      return `Dibujo «${String(a.name ?? 'Dibujo')}» colocado (${Math.round(w)} × ${Math.round(h)} px).`;
+    },
+  },
+  {
+    name: 'new_document',
+    description: 'Crea un documento nuevo (width, height en px; background "white" | "black" | "transparent").',
+    input_schema: { type: 'object', properties: { width: N('px'), height: N('px'), background: { type: 'string', enum: ['white', 'black', 'transparent'] }, name: { type: 'string' } } },
+    run: async (a) => {
+      const w = clamp(Math.round(num(a.width, 1080)), 1, 12000), h = clamp(Math.round(num(a.height, 1080)), 1, 12000);
+      await engine.call('newDoc', w, h, ['white', 'black', 'transparent'].includes(String(a.background)) ? a.background : 'white', `${String(a.name ?? 'Sin título-1')}.psd`);
+      return `Documento nuevo de ${w} × ${h} px.`;
+    },
+  },
+  {
+    name: 'inspect',
+    description: 'Mira de cerca una zona del documento (x, y, width, height en px de documento) y devuelve una imagen ampliada. Úsalo para localizar con precisión lo que vas a seleccionar, borrar o sustituir (un logo, un texto, una cara) antes de actuar.',
+    input_schema: { type: 'object', properties: { x: N('px'), y: N('px'), width: N('px'), height: N('px') }, required: ['x', 'y', 'width', 'height'] },
+    run: async (a) => {
+      need();
+      const v = await engine.call<{ w: number; h: number; scale: number; rect: { x: number; y: number; w: number; h: number }; jpegBase64: string } | null>('assistantView', { x: num(a.x), y: num(a.y), w: num(a.width), h: num(a.height) }, 768);
+      if (!v) throw new Error('Esa zona está fuera del documento.');
+      return { text: `Zona x=${v.rect.x}, y=${v.rect.y}, ${v.rect.w}×${v.rect.h} px de documento, mostrada a ${v.w}×${v.h} (documento = imagen / ${Math.round(v.scale * 1000) / 1000} + origen).`, image: v.jpegBase64 };
     },
   },
   {
@@ -303,6 +358,22 @@ export const TOOLS: ToolDef[] = [
     run: async (a) => { for (let i = 0; i < clamp(num(a.steps, 1), 1, 50); i++) await engine.call('undo'); return 'Deshecho.'; },
   },
 ];
+
+/** Rasteriza un SVG a PNG con el motor del navegador. */
+async function svgToPng(svg: string, w: number, h: number): Promise<ArrayBuffer> {
+  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode().catch(() => { throw new Error('El navegador no pudo dibujar ese SVG.'); });
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    c.getContext('2d')!.drawImage(img, 0, 0, w, h);
+    const blob = await new Promise<Blob | null>((r) => c.toBlob(r, 'image/png'));
+    if (!blob) throw new Error('No se pudo convertir el dibujo.');
+    return blob.arrayBuffer();
+  } finally { URL.revokeObjectURL(url); }
+}
 
 export const toolByName = Object.fromEntries(TOOLS.map((t) => [t.name, t]));
 

@@ -146,6 +146,31 @@ try {
     ok('Se envía un identificador de navegador estable', devices.size === 1 && /^[0-9a-f-]{36}$/.test([...devices][0] ?? ''), [...devices].join(','));
     ok('Respuesta del modelo en el chat, marcada "IA"', /Listo: más cálida/.test(r) && /\bIA\b/.test(r), r.replace(/\n/g, ' | '));
   }
+  // Dibujar con SVG (el modelo escribe el dibujo) y ver el resultado.
+  await page.unroute('**/api/assistant');
+  const calls2 = [];
+  const DOG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 160"><ellipse cx="100" cy="100" rx="70" ry="45" fill="#c98b4f"/><circle cx="150" cy="60" r="35" fill="#c98b4f"/><ellipse cx="170" cy="40" rx="12" ry="25" fill="#7a4b24"/><circle cx="160" cy="55" r="5" fill="#222"/></svg>';
+  await page.route('**/api/assistant', async (route) => {
+    if (route.request().method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: true, limit: 10, left: 8 }) });
+    const body = JSON.parse(route.request().postData());
+    calls2.push(body);
+    const last = body.messages.at(-1);
+    const isResult = Array.isArray(last.content) && last.content.some((b) => b.type === 'tool_result');
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isResult
+      ? { stop_reason: 'end_turn', content: [{ type: 'text', text: 'He dibujado **un perro**.' }], left: 7 }
+      : { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'd1', name: 'draw_svg', input: { svg: DOG, name: 'Perro' } }], left: 8 }) });
+  });
+  {
+    const before = (await S()).doc.layers.length;
+    await ask('dibuja un perro', 2500);
+    const st = await S();
+    const L = st.doc.layers.find((l) => /Perro/.test(l.name));
+    ok('Dibujar con SVG: nueva capa (objeto inteligente) con el dibujo', st.doc.layers.length === before + 1 && L?.kind === 'smart', `${L?.kind} ${L?.name}`);
+    const res = calls2[1]?.messages.at(-1).content[0];
+    ok('Tras dibujar, el modelo recibe una imagen del resultado', Array.isArray(res?.content) && res.content.some((b) => b.type === 'image'));
+    ok('Negrita de la respuesta como texto con formato', (await page.locator('.amsg-text b').last().innerText()) === 'un perro');
+  }
+
   await page.unroute('**/api/assistant');
   await page.route('**/api/assistant', (route) => route.request().method() === 'GET'
     ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: true, limit: 10, left: 0 }) })

@@ -4041,14 +4041,29 @@ export class Engine {
     return {
       name: d.name, width: d.width, height: d.height, mode: d.mode, dpi: d.dpi,
       activeLayerId: d.active()?.id ?? null,
-      layers: d.layers.map((l) => ({ id: l.id, name: l.name, kind: l.kind, visible: l.visible, opacity: Math.round(l.opacity * 100), parent: l.parent })),
+      layers: d.layers.map((l) => ({ id: l.id, name: l.name, kind: l.kind, visible: l.visible, opacity: Math.round(l.opacity * 100), parent: l.parent, bounds: l.kind === 'group' || l.kind === 'adjustment' ? null : exactBounds(l), ...(l.text ? { text: l.text.text.slice(0, 80) } : {}) })),
       selection: d.selection?.bounds() ?? null,
       stats: {
         meanLuma: Math.round((0.299 * sr + 0.587 * sg + 0.114 * sb) / c), p2: pct(0.02), p50: pct(0.5), p98: pct(0.98),
         meanRGB: [Math.round(sr / c), Math.round(sg / c), Math.round(sb / c)], meanSaturation: Math.round((ss / c) * 100),
       },
-      thumbnail: { w: tw, h: th, jpegBase64: await blobToDataUrl(jpeg).then((u) => u.split(',')[1]) },
+      thumbnail: { w: tw, h: th, scale: Math.round(k * 10000) / 10000, note: `Miniatura de ${tw}×${th}; las herramientas usan píxeles del documento (${d.width}×${d.height}): coordenada en documento = coordenada en miniatura / ${Math.round(k * 10000) / 10000}`, jpegBase64: await blobToDataUrl(jpeg).then((u) => u.split(',')[1]) },
     };
+  }
+
+  /** Vista (o un recorte ampliado) del documento en JPEG para que el asistente vea el resultado. */
+  async assistantView(rect: Rect | null = null, max = 640): Promise<{ w: number; h: number; scale: number; rect: Rect; jpegBase64: string } | null> {
+    const d = this.doc;
+    if (!d) return null;
+    const full = this.docRect();
+    const r = rect ? clampRect({ x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.w), h: Math.round(rect.h) }, d.width, d.height) : full;
+    if (!r || r.w < 1 || r.h < 1) return null;
+    const px = this.r.flatten(d, d.layers, r, [255, 255, 255, 255]);
+    const k = Math.min(1, max / Math.max(r.w, r.h));
+    const tw = Math.max(1, Math.round(r.w * k)), th = Math.max(1, Math.round(r.h * k));
+    const small = k < 1 ? await this.scalePixels(px, r.w, r.h, tw, th) : px;
+    const jpeg = await encodeRaster(this.modePixels(small.slice()), tw, th, 'image/jpeg', 0.82);
+    return { w: tw, h: th, scale: k, rect: r, jpegBase64: (await blobToDataUrl(jpeg)).split(',')[1] };
   }
 
   // ================================================================ línea de tiempo (animación de cuadros)
