@@ -1,4 +1,7 @@
 import type { CameraRaw } from '../engine/camraw';
+import type { BrushPreset } from './brushPresets';
+import type { UserPattern } from './patterns';
+import type { Symmetry, GradientDef } from '../engine/types';
 import type { VectorPath } from '../engine/path';
 import { create } from 'zustand';
 import { engine } from '../engine/client';
@@ -10,7 +13,7 @@ export type DialogId =
   | { kind: 'new' } | { kind: 'imageSize' } | { kind: 'canvasSize' } | { kind: 'export' }
   | { kind: 'adjust'; type: AdjustmentType } | { kind: 'filter'; name: FilterName }
   | { kind: 'feather' } | { kind: 'grow'; dir: 1 | -1 } | { kind: 'fill' } | { kind: 'layerStyle' }
-  | { kind: 'shortcuts' } | { kind: 'liquify' } | { kind: 'generative' } | { kind: 'about' } | { kind: 'confirmClose'; docId: number } | { kind: 'newGuide' } | { kind: 'colorPicker'; which: 'fg' | 'bg' } | { kind: 'applyImage' } | { kind: 'stroke' } | { kind: 'newLayer' } | { kind: 'warpText' } | { kind: 'newArtboard' } | { kind: 'refine' } | { kind: 'colorRange' } | { kind: 'rotateArbitrary' } | { kind: 'automate'; mode: 'photomerge' | 'hdr' } | { kind: 'blurGallery'; mode: 'field' | 'iris' | 'tilt' } | { kind: 'develop'; edit?: { layerId: number; index: number; cr: CameraRaw } }
+  | { kind: 'shortcuts' } | { kind: 'liquify' } | { kind: 'generative' } | { kind: 'about' } | { kind: 'confirmClose'; docId: number } | { kind: 'newGuide' } | { kind: 'colorPicker'; which: 'fg' | 'bg' } | { kind: 'applyImage' } | { kind: 'stroke' } | { kind: 'newLayer' } | { kind: 'warpText' } | { kind: 'newArtboard' } | { kind: 'refine' } | { kind: 'colorRange' } | { kind: 'rotateArbitrary' } | { kind: 'automate'; mode: 'photomerge' | 'hdr' } | { kind: 'brushSettings' } | { kind: 'blurGallery'; mode: 'field' | 'iris' | 'tilt' } | { kind: 'develop'; edit?: { layerId: number; index: number; cr: CameraRaw } }
   | null;
 
 export type MobileSheet = 'menu' | 'layers' | 'adjust' | 'props' | 'history' | 'color' | 'export' | 'tools' | 'select';
@@ -33,6 +36,9 @@ export interface ToolOptions {
   gradientType: GradientType;
   gradientReverse: boolean;
   gradientTransparent: boolean;
+  /** Degradado actual (editor de degradado) y si usa sus paradas de opacidad. */
+  gradient?: GradientDef;
+  gradientTransparency?: boolean;
   shapeKind: ShapeKind;
   shapeFill: boolean;
   shapeStroke: boolean;
@@ -107,6 +113,14 @@ interface Store {
   selectionPath: string;
   transform: TransformState | null;
   puppet: PuppetState | null;
+  /** Pinceles del usuario (importados .abr o definidos). */
+  userBrushes: BrushPreset[];
+  /** Degradados guardados por el usuario. */
+  userGradients: GradientDef[];
+  /** Motivos del usuario. */
+  userPatterns: UserPattern[];
+  /** Simetría al pintar. */
+  symmetry: Symmetry | null;
   /** Capa cuya máscara vectorial se edita con la pluma (el trazado de trabajo es el de la máscara). */
   vmaskEdit: number | null;
   textEdit: TextEdit | null;
@@ -198,9 +212,10 @@ const TOOL_DEFAULTS: Partial<Record<ToolId, Partial<BrushSettings>>> = {
   blur: { opacity: 0.5, hardness: 0 }, sharpen: { opacity: 0.5, hardness: 0 }, smudge: { opacity: 0.5, hardness: 0 },
   spotHeal: { hardness: 1, size: 20 }, remove: { hardness: 1, size: 40 }, heal: { hardness: 1, size: 20 }, pencil: { hardness: 1, size: 1, pressureSize: false },
   eraser: { hardness: 1 },
+  mixer: { hardness: 0.6, size: 40, mixer: { wet: 0.5, load: 0.5, mix: 0.5, loadEach: true, cleanEach: false, sampleAll: false } },
   quickSelect: { size: 30, hardness: 1 },
 };
-const BRUSH_TOOLS = new Set<ToolId>(['quickSelect', 'brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'spotHeal', 'remove', 'heal', 'blur', 'sharpen', 'smudge', 'historyBrush']);
+const BRUSH_TOOLS = new Set<ToolId>(['quickSelect', 'mixer', 'brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'spotHeal', 'remove', 'heal', 'blur', 'sharpen', 'smudge', 'historyBrush']);
 
 function brushDefaults(t: ToolId, saved: Record<string, BrushSettings>): BrushSettings {
   return saved[t] ?? { ...BASE_BRUSH, ...TOOL_DEFAULTS[t] };
@@ -238,6 +253,10 @@ export const useStore = create<Store>((set, get) => ({
   selectionPath: '',
   transform: null,
   puppet: null,
+  userBrushes: [],
+  userPatterns: [],
+  userGradients: (() => { try { return JSON.parse(localStorage.getItem('lienzo.gradients') ?? '[]') as GradientDef[]; } catch { return []; } })(),
+  symmetry: null,
   vmaskEdit: null,
   textEdit: null,
   crop: null,
@@ -339,6 +358,14 @@ engine.on((m) => {
   switch (m.type) {
     case 'ready': {
       useStore.setState({ ready: true, renderer: m.renderer });
+      // Pinceles del usuario guardados (IndexedDB) y la punta del pincel actual.
+      void import('./patterns').then(({ loadPatterns }) => loadPatterns());
+      void import('./brushPresets').then(async ({ loadUserPresets, ensureTip, BUILTIN_PRESETS }) => {
+        const user = await loadUserPresets();
+        useStore.setState({ userBrushes: user });
+        const tips = new Set(Object.values(useStore.getState().brushes).map((b) => b.tip).concat(useStore.getState().brush.tip).filter(Boolean));
+        for (const p of [...BUILTIN_PRESETS, ...user]) if (p.tip && tips.has(p.tip.id)) await ensureTip(p);
+      });
       // Sincroniza las preferencias recordadas con el motor.
       engine.call('setBrush', s.brush);
       engine.call('setAutoSelect', s.opts.autoSelect);

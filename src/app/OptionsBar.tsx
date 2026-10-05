@@ -11,6 +11,8 @@ import { isEmpty as isEmptyPath } from '../engine/path';
 import { engine } from '../engine/client';
 import { TOOL_NAMES } from './commands';
 import { FontPicker } from './TextPanels';
+import { BrushPresetPicker, MixerOptions, SymmetryControl } from './BrushPanel';
+import { GradientSwatch, GRADIENT_PRESETS } from './GradientEditor';
 import type { ShapeKind } from '../engine/types';
 import type { GradientType } from '../engine/ops';
 
@@ -128,12 +130,16 @@ export function OptionsBar() {
   return (
     <div className="optionsbar">
       <span className="opt-tool">{TOOL_NAMES[tool]}</span>
-      {painting && (
+      {(painting || tool === 'mixer') && (
         <>
+          {['brush', 'pencil', 'eraser', 'mixer', 'clone'].includes(tool) && <BrushPresetPicker />}
           <Slider label="Tamaño" value={brush.size} min={1} max={1000} unit="px" onChange={(v) => setBrush({ size: v })} />
           {tool !== 'pencil' && <Slider label="Dureza" value={brush.hardness * 100} min={0} max={100} unit="%" onChange={(v) => setBrush({ hardness: v / 100 })} />}
           <Slider label={tool === 'dodge' || tool === 'burn' ? 'Exposición' : strength ? 'Intensidad' : 'Opacidad'} value={brush.opacity * 100} min={1} max={100} unit="%" onChange={(v) => setBrush({ opacity: v / 100 })} />
           {!strength && <Slider label="Flujo" value={brush.flow * 100} min={1} max={100} unit="%" onChange={(v) => setBrush({ flow: v / 100 })} />}
+          {tool === 'mixer' && <MixerOptions />}
+          {['brush', 'pencil', 'eraser', 'mixer'].includes(tool) && <Slider label="Suavizado" value={Math.round((brush.smoothing ?? 0) * 100)} min={0} max={100} unit="%" onChange={(v) => setBrush({ smoothing: v / 100 })} />}
+          {['brush', 'pencil', 'eraser', 'mixer'].includes(tool) && <SymmetryControl />}
           <Toggle on={brush.pressureSize} label="Presión → tamaño" onClick={() => setBrush({ pressureSize: !brush.pressureSize })} />
           <Toggle on={brush.pressureOpacity} label="Presión → opacidad" onClick={() => setBrush({ pressureOpacity: !brush.pressureOpacity })} />
           {tool === 'clone' && <span className="hint">Alt+clic define el origen</span>}
@@ -212,7 +218,8 @@ export function OptionsBar() {
             <option value="linear">Lineal</option><option value="radial">Radial</option><option value="angle">Angular</option>
             <option value="reflected">Reflejado</option><option value="diamond">Diamante</option>
           </select>
-          <Toggle on={opts.gradientTransparent} label="Frontal a transparente" onClick={() => setOpts({ gradientTransparent: !opts.gradientTransparent })} />
+          <GradientSwatch value={opts.gradient ?? GRADIENT_PRESETS[opts.gradientTransparent ? 1 : 0]} onChange={(g) => setOpts({ gradient: g, gradientTransparent: false })} />
+          <Toggle on={opts.gradientTransparency ?? true} label="Transparencia" title="Usar las paradas de opacidad del degradado" onClick={() => setOpts({ gradientTransparency: !(opts.gradientTransparency ?? true) })} />
           <Toggle on={opts.gradientReverse} label="Invertir" onClick={() => setOpts({ gradientReverse: !opts.gradientReverse })} />
           <span className="hint">Mayús: ángulos de 45°</span>
         </>

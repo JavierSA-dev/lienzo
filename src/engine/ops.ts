@@ -1,3 +1,4 @@
+import type { Stops } from './types';
 import { TILE, type RGBA } from './types';
 import { PixelLayer, tileKey, isTileEmpty } from './document';
 import type { Selection } from './selection';
@@ -176,8 +177,22 @@ export function applyRegion(L: PixelLayer, patch: TilePatch, region: R2, px: Uin
 export type GradientType = 'linear' | 'radial' | 'angle' | 'reflected' | 'diamond';
 
 /** Genera un degradado (fg -> bg, o fg -> transparente) en una región de documento. */
+/** Color de un degradado de varias paradas en t ∈ [0,1] (interpola en premultiplicado; suavidad = smoothstep). */
+export function sampleStops(g: Stops, t: number): RGBA {
+  const ease = (u: number) => u + (u * u * (3 - 2 * u) - u) * g.smooth;
+  const seg = <T extends number[]>(arr: T[], tt: number): [T, T, number] => {
+    if (tt <= arr[0][0]) return [arr[0], arr[0], 0];
+    for (let i = 0; i < arr.length - 1; i++) {
+      if (tt <= arr[i + 1][0]) { const span = arr[i + 1][0] - arr[i][0]; return [arr[i], arr[i + 1], span > 0 ? ease((tt - arr[i][0]) / span) : 0]; }
+    }
+    const l = arr[arr.length - 1]; return [l, l, 0];
+  };
+  const [c0, c1, u] = seg(g.c, t), [a0, a1, v] = seg(g.a, t);
+  return [c0[1] + (c1[1] - c0[1]) * u, c0[2] + (c1[2] - c0[2]) * u, c0[3] + (c1[3] - c0[3]) * u, (a0[1] + (a1[1] - a0[1]) * v) * 255];
+}
+
 export function gradientPixels(region: R2, p0: [number, number], p1: [number, number], type: GradientType,
-  from: RGBA, to: RGBA, reverse: boolean): Uint8ClampedArray {
+  from: RGBA, to: RGBA, reverse: boolean, stops?: Stops | null): Uint8ClampedArray {
   const out = new Uint8ClampedArray(region.w * region.h * 4);
   const [ax, ay] = p0, dx = p1[0] - ax, dy = p1[1] - ay;
   const len2 = dx * dx + dy * dy || 1, len = Math.sqrt(len2);
@@ -200,6 +215,11 @@ export function gradientPixels(region: R2, p0: [number, number], p1: [number, nu
       }
       t = Math.min(1, Math.max(0, t));
       const o = (y * region.w + x) * 4;
+      if (stops) {
+        const c = sampleStops(stops, reverse ? 1 - t : t);
+        out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2]; out[o + 3] = c[3];
+        continue;
+      }
       const a = c0[3] + (c1[3] - c0[3]) * t;
       // Interpola en premultiplicado (un degradado a transparente no se oscurece).
       const w0 = (c0[3] * (1 - t)) / (a || 1), w1 = (c1[3] * t) / (a || 1);

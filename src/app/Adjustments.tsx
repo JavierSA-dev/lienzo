@@ -1,3 +1,5 @@
+import { useStore } from './store';
+import { GradientSwatch, resolveGradient } from './GradientEditor';
 import { useRef, useState } from 'react';
 import { SELECTIVE_RANGES, type AdjustmentParams, type RGBA, type SelectiveRange } from '../engine/types';
 import { curveLut, PHOTO_FILTERS } from '../engine/adjust';
@@ -108,7 +110,11 @@ export function AdjustmentEditor({ params, onChange }: { params: AdjustmentParam
     case 'invert': return <p className="hint">Invierte los colores de las capas inferiores.</p>;
     case 'threshold': return R('Nivel de umbral', 'level', 1, 255);
     case 'posterize': return R('Niveles', 'levels', 2, 255);
-    case 'gradientMap': return <><ColorField label="Sombras" value={params.from} onChange={(c) => onChange({ ...params, from: c }, true)} /><ColorField label="Iluminaciones" value={params.to} onChange={(c) => onChange({ ...params, to: c }, true)} /></>;
+    case 'gradientMap': return <>
+      <label className="adj-row"><span>Degradado</span><GradientSwatch value={params.def ?? { name: 'Personalizado', stops: [{ t: 0, c: params.from }, { t: 1, c: params.to }], alpha: [{ t: 0, a: 1 }, { t: 1, a: 1 }], smooth: 1 }}
+        onChange={(g) => { const st = useStore.getState(); onChange({ ...params, def: g, stops: resolveGradient(g, st.fg, st.bg, false) }, true); }} /></label>
+      {!params.def && <><ColorField label="Sombras" value={params.from} onChange={(c) => onChange({ ...params, from: c }, true)} /><ColorField label="Iluminaciones" value={params.to} onChange={(c) => onChange({ ...params, to: c }, true)} /></>}
+    </>;
     case 'solidColor': return <ColorField label="Color" value={params.color} onChange={(c) => onChange({ ...params, color: c }, true)} />;
     case 'photoFilter': {
       const hex = toHex(params.color);

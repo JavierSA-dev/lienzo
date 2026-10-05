@@ -13,7 +13,7 @@ export const MENUS: { label: string; items: Item[] }[] = [
   { label: 'Edición', items: ['edit.undo', 'edit.redo', 'edit.toggleLast', '-', 'edit.cut', 'edit.copy', 'edit.copyMerged', 'edit.paste', 'edit.pasteInPlace', 'edit.clear', '-',
     'edit.fill', 'edit.stroke', 'edit.fillFg', 'edit.fillBg', '-', 'edit.puppet', 'edit.freeTransform',
     { sub: 'Transformar', items: ['edit.scale', 'edit.rotate', 'edit.skew', 'edit.distort', 'edit.perspective', 'edit.warp', '-', 'edit.rot180', 'edit.rot90', 'edit.rot-90', '-', 'edit.flipH', 'edit.flipV'] },
-    '-', 'edit.autoAlign', 'edit.autoBlend', 'edit.autoStack', '-', 'edit.contentAware', 'ai.generative', '-', 'edit.shortcuts'] },
+    '-', 'edit.autoAlign', 'edit.autoBlend', 'edit.autoStack', '-', 'edit.defineBrush', 'edit.definePattern', '-', 'edit.contentAware', 'ai.generative', '-', 'edit.shortcuts'] },
   { label: 'Imagen', items: [
     { sub: 'Ajustes', items: ['image.brightness', 'image.levels', 'image.curves', 'image.exposure', '-', 'image.vibrance', 'image.hueSat', 'image.colorBalance', 'image.blackWhite', '-',
       'image.invert', 'image.posterize', 'image.threshold', 'image.gradientMap', 'image.selectiveColor', '-', 'image.photoFilter', 'image.channelMixer', 'image.colorLookup', '-', 'image.desaturate'] },
@@ -50,7 +50,7 @@ export const MENUS: { label: string; items: Item[] }[] = [
     '-', 'ai.removeBg'] },
   { label: 'Vista', items: ['view.zoomIn', 'view.zoomOut', 'view.fit', 'view.actual', '-', 'view.extras', 'view.grid', 'view.rulers', 'view.guides', '-',
     'view.snap', 'view.lockGuides', 'view.newGuide', 'view.clearGuides', '-', 'view.fullscreen', 'view.mobileUi'] },
-  { label: 'Ventana', items: ['view.panels'] },
+  { label: 'Ventana', items: ['view.panels', 'window.brushSettings'] },
   { label: 'Ayuda', items: ['help.shortcuts', 'help.about'] },
 ];
 

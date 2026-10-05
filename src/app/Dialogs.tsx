@@ -17,6 +17,7 @@ import { ColorRangeDialog, RefineDialog } from './SelectDialogs';
 import { DevelopDialog } from './Develop';
 import { BlurGalleryDialog } from './BlurGallery';
 import { AutomateDialog } from './Automate';
+import { BrushSettingsDialog } from './BrushPanel';
 
 export function Modal({ title, children, onOk, okLabel = 'OK', onClose, wide }: { title: string; children: ReactNode; onOk: () => void; okLabel?: string; onClose: () => void; wide?: boolean }) {
   const cb = useRef({ onOk, onClose });
@@ -25,6 +26,9 @@ export function Modal({ title, children, onOk, okLabel = 'OK', onClose, wide }: 
   // Como en Photoshop: Intro = OK y Esc = Cancelar aunque el foco no esté en el diálogo.
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      // Con diálogos anidados (p. ej. el editor de degradado sobre Estilo de capa) sólo responde el de encima.
+      const all = document.querySelectorAll('form.modal');
+      if (all.length && all[all.length - 1] !== formRef.current) return;
       const inside = formRef.current?.contains(e.target as Node);
       if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); cb.current.onClose(); return; }
       if (e.key === 'Enter' && !inside) { e.preventDefault(); e.stopImmediatePropagation(); formRef.current?.requestSubmit(); }
@@ -216,8 +220,12 @@ function FillDialog({ close }: { close: () => void }) {
   const [what, setWhat] = useState('fg');
   const [color, setColor] = useState('#808080');
   const [preserve, setPreserve] = useState(false);
+  const pats = useStore((s) => s.userPatterns);
+  const [pat, setPat] = useState<string>(pats[0]?.id ?? 'checker');
+  const [scale, setScale] = useState(100);
   const ok = () => {
     if (what === 'content') { engine.call('contentAwareFill'); close(); return; }
+    if (what === 'pattern') { engine.call('fillPattern', pat, scale / 100, preserve); close(); return; }
     const c: RGBA | 'fg' | 'bg' = what === 'fg' ? 'fg' : what === 'bg' ? 'bg' : what === 'gray' ? [128, 128, 128, 255] : what === 'white' ? [255, 255, 255, 255] : what === 'black' ? [0, 0, 0, 255] : toRgba(color);
     engine.call('fill', c, preserve);
     close();
@@ -228,9 +236,19 @@ function FillDialog({ close }: { close: () => void }) {
         <select value={what} onChange={(e) => setWhat(e.target.value)} autoFocus>
           <option value="fg">Color frontal</option><option value="bg">Color de fondo</option><option value="color">Color…</option>
           <option value="content" disabled={!useStore.getState().doc.selection}>Según el contenido</option>
+          <option value="pattern">Motivo</option>
           <option value="gray">Gris al 50 %</option><option value="black">Negro</option><option value="white">Blanco</option>
         </select>
       </label>
+      {what === 'pattern' && <>
+        <label className="field">Motivo
+          <select value={pat} aria-label="Motivo" onChange={(e) => setPat(e.target.value)}>
+            {pats.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.w} × {p.h})</option>)}
+            {([['checker', 'Cuadros'], ['dots', 'Lunares'], ['stripes', 'Rayas'], ['grid', 'Cuadrícula'], ['noise', 'Ruido'], ['canvas', 'Lienzo']] as const).map(([k, l]) => <option key={k} value={k}>{l} (frontal/fondo)</option>)}
+          </select>
+        </label>
+        <label className="field">Escala (%)<input type="number" min={1} max={1000} value={scale} onChange={(e) => setScale(Math.max(1, num(e.target.value, 100)))} /></label>
+      </>}
       {what === 'color' && <label className="field">Color<input type="color" value={color} onChange={(e) => setColor(e.target.value)} /></label>}
       <label className="field">Conservar transparencia<span><input type="checkbox" checked={preserve} onChange={(e) => setPreserve(e.target.checked)} /></span></label>
     </Modal>
@@ -297,6 +315,7 @@ export function Dialogs() {
     case 'newArtboard': return <NewArtboardDialog close={close} />;
     case 'colorRange': return <ColorRangeDialog close={close} />;
     case 'refine': return <RefineDialog close={close} />;
+    case 'brushSettings': return <BrushSettingsDialog close={close} />;
     case 'automate': return <AutomateDialog mode={dialog.mode} close={close} />;
     case 'blurGallery': return <BlurGalleryDialog close={close} kind={dialog.mode} />;
     case 'develop': return <DevelopDialog close={close} edit={dialog.edit} />;

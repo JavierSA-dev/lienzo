@@ -83,6 +83,7 @@ try {
   await page.keyboard.press('h'); ok('H → Mano', (await S()).tool === 'hand');
   await page.keyboard.press('z'); ok('Z → Zoom', (await S()).tool === 'zoom');
   await page.keyboard.press('b'); ok('B recuerda la última del grupo (Lápiz)', (await S()).tool === 'pencil');
+  await page.keyboard.press('Shift+b'); ok('Mayús+B → Pincel mezclador (orden de Photoshop)', (await S()).tool === 'mixer');
   await page.keyboard.press('Shift+b'); ok('Mayús+B alterna a Pincel', (await S()).tool === 'brush');
   await page.keyboard.down('Space'); ok('Espacio mantenido → Mano temporal', (await S()).tool === 'hand');
   await page.keyboard.up('Space'); ok('Al soltar Espacio vuelve al Pincel', (await S()).tool === 'brush');
@@ -929,6 +930,7 @@ try {
   await page.getByRole('button', { name: 'Todo mayúsculas' }).click(); await wait(200);
   await page.getByRole('button', { name: 'Justificar (última línea a la izquierda)' }).click(); await wait(200);
   ok('Mayúsculas y justificado', (await active()).text.caps === 'all' && (await active()).text.align === 'justify');
+  await page.evaluate(() => { const e = window.__lienzo; window.__log = []; if (!e.__wrapped) { const c = e.call.bind(e); e.call = (m, ...a) => { if (m === 'updateText' || m === 'undo' || m === 'redo') window.__log.push(m + ' ' + JSON.stringify(a).slice(0, 160)); return c(m, ...a); }; e.__wrapped = true; } });
   await menu('Texto', 'Deformar texto…');
   await page.getByLabel('Estilo', { exact: true }).selectOption('flag'); await wait(300);
   await page.getByLabel('Curvar (valor)').fill('60'); await wait(600);
@@ -936,7 +938,7 @@ try {
   await page.waitForFunction(() => { const s = window.__lienzoStore.getState(); const t = s.doc.layers.find((l) => l.id === s.doc.activeLayerId)?.text; return t?.warp?.style === 'flag' && t.warp.bend === 60; }, null, { timeout: 10000 }).catch(() => {});
   await page.getByRole('button', { name: 'OK' }).click();
   await page.waitForFunction(() => { const s = window.__lienzoStore.getState(); return s.doc.layers.find((l) => l.id === s.doc.activeLayerId)?.text?.warp?.bend === 60; }, null, { timeout: 15000 }).catch(() => {});
-  ok('Texto > Deformar texto (Bandera 60 %)', (await active()).text.warp?.style === 'flag' && (await active()).text.warp?.bend === 60);
+  ok('Texto > Deformar texto (Bandera 60 %)', (await active()).text.warp?.style === 'flag' && (await active()).text.warp?.bend === 60, JSON.stringify({ warp: (await active()).text?.warp, kind: (await active()).kind, dialog: (await S()).dialog, log: await page.evaluate(() => window.__log) }));
   await roundtrip('texto.psd');
   {
     const T = (await S()).doc.layers.find((l) => l.kind === 'text');

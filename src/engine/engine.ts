@@ -18,11 +18,12 @@ import { filterApron, WHOLE_FILTERS, type FilterName, type FilterParams } from '
 import { defaultAdjustment, ADJUSTMENT_LABELS } from './adjust';
 import { fixRedEye, strokeCoverage, type StrokeLocation } from './retouch';
 import { rasterizeText, rasterizeShape, rasterLimit, mul, invert as invertM, textBox, transformRect } from './vector';
-import { buildEffects, hasEffects } from './effects';
+import { buildEffects, hasEffects, USER_PATTERNS, userPatternAt, pattern } from './effects';
 import { downscale, quickRegion, upscaleMask, snapEdges, component, colorRange, refineMask, decontaminate, type ColorRangeParams, type RefineParams } from './smartsel';
 import { fontReady, loadGoogleFont } from './fonts';
 import { resetTextCache } from './text';
 import { newVectorMask, nextRev, rasterVectorMask, combineMasks, type VectorMask } from './vmask';
+import type { Symmetry, Stops, PatternId } from './types';
 import { cameraRawBand, cameraRawApron, CAMERA_RAW_DEFAULTS, localRadius, type CameraRaw } from './camraw';
 import type { ResampleMethod } from './resample';
 import { blurGalleryBand, type BlurGallery } from './blurgal';
@@ -73,7 +74,7 @@ const TOOL_LABEL = { spotHeal: 'Pincel corrector puntual', heal: 'Pincel correct
 
 const BRUSH_TOOLS: Partial<Record<ToolId, BrushMode>> = {
   brush: 'paint', pencil: 'paint', eraser: 'erase', clone: 'clone', dodge: 'dodge', burn: 'burn',
-  spotHeal: 'paint', remove: 'paint', heal: 'clone', blur: 'blur', sharpen: 'sharpen', smudge: 'smudge', historyBrush: 'paint',
+  spotHeal: 'paint', remove: 'paint', mixer: 'paint', heal: 'clone', blur: 'blur', sharpen: 'sharpen', smudge: 'smudge', historyBrush: 'paint',
 };
 
 /** Una pestaña: su documento con su historial, vista y estado propio. */
@@ -2318,12 +2319,13 @@ export class Engine {
 
   // ================================================================ degradado y bote
 
-  applyGradient(p0: [number, number], p1: [number, number], type: GradientType = 'linear', toTransparent = false, reverse = false) {
+  applyGradient(p0: [number, number], p1: [number, number], type: GradientType = 'linear', toTransparent = false, reverse = false, stops: Stops | null = null) {
     const d = this.doc;
     const L = d?.active();
     if (!d || !L) return;
     if (d.editMask && L.mask) {
-      const px = gradientPixels(this.docRect(), p0, p1, type, [lumOf(this.fg), 0, 0, 255], [lumOf(this.bg), 0, 0, 255], reverse);
+      const gs = stops ? { ...stops, c: stops.c.map(([t, r, g, b]) => [t, lumOf([r, g, b, 255]), 0, 0] as [number, number, number, number]) } : null;
+      const px = gradientPixels(this.docRect(), p0, p1, type, [lumOf(this.fg), 0, 0, 255], [lumOf(this.bg), 0, 0, 255], reverse, gs);
       const mask = L.mask;
       const patch = new TilePatch('Degradado (máscara)', L, 'mask');
       forTiles({ x: -L.x, y: -L.y, w: d.width, h: d.height }, (tx, ty, x0, y0, x1, y1) => {
@@ -2346,7 +2348,7 @@ export class Engine {
     if (!this.ensurePixel(L)) return;
     const region = d.selection ? intersect(d.selection.bounds()!, this.docRect())! : this.docRect();
     const to: RGBA = toTransparent ? [this.fg[0], this.fg[1], this.fg[2], 0] : this.bg;
-    const grad = this.perf('Degradado', () => gradientPixels(region, p0, p1, type, this.fg, to, reverse));
+    const grad = this.perf('Degradado', () => gradientPixels(region, p0, p1, type, this.fg, to, reverse, stops));
     const orig = L.readRegion(region.x - L.x, region.y - L.y, region.w, region.h);
     for (let i = 0; i < grad.length; i += 4) {
       const sa = grad[i + 3] / 255, da = orig[i + 3] / 255;
@@ -3490,6 +3492,89 @@ export class Engine {
 
   setTool(t: ToolId) { this.tool = t; }
   setBrush(b: Partial<BrushSettings>) { this.brush = { ...this.brush, ...b }; }
+
+  // Puntas de pincel muestreadas (pinceles importados .abr, definidos por el usuario o incluidos).
+  private brushTips = new Map<string, { w: number; h: number; a: Float32Array }>();
+  registerBrushTip(id: string, w: number, h: number, alpha: Uint8Array) {
+    const a = new Float32Array(w * h);
+    for (let i = 0; i < a.length; i++) a[i] = alpha[i] / 255;
+    this.brushTips.set(id, { w, h, a });
+  }
+  hasBrushTip(id: string) { return this.brushTips.has(id); }
+
+  /** Simetría al pintar (null = desactivada). */
+  private symmetry: Symmetry | null = null;
+  setSymmetry(sym: Symmetry | null) { this.symmetry = sym; }
+
+  /** Depósito del pincel mezclador: Cargar (color frontal) o Limpiar. */
+  private mixerState: { color: RGBA | null } = { color: null };
+  mixerReservoir(action: 'load' | 'clean') { this.mixerState.color = action === 'load' ? [...this.fg] as RGBA : null; }
+
+  /** Motivos del usuario: se registran desde la interfaz (IndexedDB) o al definirlos. */
+  registerPattern(id: string, w: number, h: number, data: Uint8ClampedArray) {
+    USER_PATTERNS.set(id, { w, h, data });
+    // Las capas con superposición de este motivo se recalculan.
+    for (const L of this.doc?.layers ?? []) if (L.effects?.patternOverlay?.pattern === id) this.fxVersions.delete(L.id);
+    this.scheduleEffects();
+  }
+
+  /** Edición > Definir motivo: la selección (o la capa) compuesta como motivo en mosaico. */
+  definePattern(): { w: number; h: number; data: Uint8ClampedArray } | null {
+    const d = this.doc;
+    const L = d?.active();
+    if (!d || !L) return null;
+    const b = d.selection?.bounds() ?? exactBounds(L) ?? this.docRect();
+    const r = intersect(b, this.docRect());
+    if (!r) return null;
+    if (r.w * r.h > 4096 * 4096) { this.toast('El motivo es demasiado grande (máx. 4096 × 4096).', 'warn'); return null; }
+    return { w: r.w, h: r.h, data: this.r.flatten(d, d.layers, r) };
+  }
+
+  /** Edición > Rellenar con un motivo (de imagen o generado), con escala. */
+  fillPattern(id: PatternId, scale = 1, preserveTransparency = false) {
+    const d = this.doc;
+    const L = d?.active();
+    if (!d || !L || !this.ensurePixel(L)) return;
+    const sel = d.selection;
+    const rect = sel ? intersect(sel.bounds()!, this.docRect()) : this.docRect();
+    if (!rect) return;
+    const px = L.readRegion(rect.x - L.x, rect.y - L.y, rect.w, rect.h);
+    const cell = Math.max(2, 16 * scale);
+    for (let y = 0; y < rect.h; y++) for (let x = 0; x < rect.w; x++) {
+      const i = (y * rect.w + x) * 4, X = rect.x + x, Y = rect.y + y;
+      const keep = preserveTransparency || L.lockAlpha ? px[i + 3] / 255 : 1;
+      let c: RGBA;
+      if (id.startsWith('user:')) c = userPatternAt(id, X, Y, scale) ?? [0, 0, 0, 0];
+      else { const t = pattern(id, X, Y, cell); c = [this.fg[0] + (this.bg[0] - this.fg[0]) * t, this.fg[1] + (this.bg[1] - this.fg[1]) * t, this.fg[2] + (this.bg[2] - this.fg[2]) * t, 255]; }
+      px[i] = c[0]; px[i + 1] = c[1]; px[i + 2] = c[2]; px[i + 3] = c[3] * keep;
+    }
+    const patch = new TilePatch('Rellenar con motivo', L);
+    applyRegion(L, patch, rect, px, sel);
+    this.commit(patch);
+    this.invalidate(rect);
+  }
+
+  /** Edición > Definir valor de pincel: la selección (o la capa) en escala de grises; lo oscuro pinta. */
+  defineBrushTip(): { w: number; h: number; alpha: Uint8Array } | null {
+    const d = this.doc;
+    const L = d?.active();
+    if (!d || !L) return null;
+    const b = d.selection?.bounds() ?? exactBounds(L);
+    if (!b) { this.toast('No hay nada que convertir en pincel.', 'warn'); return null; }
+    const r = intersect(b, this.docRect());
+    if (!r) return null;
+    const px = this.r.flatten(d, d.layers, r);
+    const k = Math.min(1, 1000 / Math.max(r.w, r.h));
+    const w = Math.max(1, Math.round(r.w * k)), h = Math.max(1, Math.round(r.h * k));
+    const alpha = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const X = Math.min(r.w - 1, Math.floor(x / k)), Y = Math.min(r.h - 1, Math.floor(y / k));
+      const i = (Y * r.w + X) * 4, sel = d.selection ? d.selection.get(r.x + X, r.y + Y) / 255 : 1;
+      const lum = (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114) / 255;
+      alpha[y * w + x] = Math.round((1 - lum) * (px[i + 3] / 255) * sel * 255);
+    }
+    return { w, h, alpha };
+  }
   setColors(fg: RGBA, bg: RGBA) { this.fg = fg; this.bg = bg; }
   setAutoSelect(on: boolean) { this.autoSelect = on; }
 
@@ -3612,10 +3697,15 @@ export class Engine {
         this.stroke = new BrushStroke({
           layer: L,
           // Corrector puntual: una marca translúcida indica la zona; al soltar se rellena.
-          settings: tool === 'pencil' ? { ...this.brush, hardness: 1 }
+          settings: tool === 'mixer' ? { ...this.brush, mixer: this.brush.mixer ?? { wet: 0.5, load: 0.5, mix: 0.5, loadEach: true, cleanEach: false, sampleAll: false } }
+            : tool === 'pencil' ? { ...this.brush, hardness: 1, mixer: undefined }
             : tool === 'spotHeal' ? { ...this.brush, opacity: 0.45, flow: 1 }
             : tool === 'remove' ? { ...this.brush, opacity: 0.5, flow: 1, hardness: 1 }
-            : tool === 'heal' ? { ...this.brush, opacity: 1, flow: 1 } : this.brush,
+            : tool === 'heal' ? { ...this.brush, opacity: 1, flow: 1 } : { ...this.brush, mixer: undefined },
+          tips: this.brushTips,
+          symmetry: tool === 'brush' || tool === 'pencil' || tool === 'eraser' || tool === 'mixer' ? this.symmetry : null,
+          bgColor: this.bg,
+          mixerState: this.mixerState,
           color,
           mode: toMask ? 'paint' : mode,
           clip,

@@ -246,6 +246,17 @@ try {
     await page.getByRole('button', { name: 'Cancelar' }).click(); await wait(300);
   }
 
+  // Fase 12 en el móvil: selector de pinceles.
+  await page.evaluate(() => window.__lienzoStore.getState().setTool('brush')); await wait(200);
+  await page.getByLabel('Valores preestablecidos de pincel').click(); await wait(300);
+  {
+    const bb = await page.getByTestId('brush-presets').boundingBox();
+    ok('Selector de pinceles en el móvil: cabe en la pantalla', !!bb && bb.x >= 0 && bb.x + bb.width <= 391, JSON.stringify(bb));
+    await page.locator('.brush-item', { hasText: 'Tiza' }).click(); await wait(300);
+    ok('Elegir un pincel desde el móvil', (await page.evaluate(() => window.__lienzoStore.getState().brush.tip)) === 'gen:chalk');
+    await page.evaluate(() => window.__lienzoStore.getState().setBrush({ tip: null, dyn: undefined, preset: undefined, spacing: 0.25 }));
+  }
+
   // Deformación de posición libre con el dedo: tocar pone chinchetas y arrastrar deforma.
   await page.getByTestId('m-menu').click(); await wait();
   await sheet().getByRole('button', { name: 'Edición' }).click(); await wait();

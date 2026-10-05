@@ -11,6 +11,7 @@ import { isEmpty as isEmptyPath } from '../engine/path';
 import { Rulers, GuideLines, hitGuide, snapPoint } from './Rulers';
 import { TouchGestures } from './touch';
 import { ArtboardLabels } from './Artboards';
+import { resolveGradient, GRADIENT_PRESETS } from './GradientEditor';
 import { quadOf, localToDoc, docToLocal, dragQuad, pushSpec, patchGrid, CORNER_GROUP, CORNER_TANGENTS, PATCH_CORNERS, puppetMesh, pushPuppet, invertPuppet } from './transformGeom';
 import { identityPatch, patchParam, patchWeights } from '../engine/meshwarp';
 import type { TransformState } from './store';
@@ -694,7 +695,8 @@ export function CanvasArea() {
           return;
         case 'gradient':
           if (Math.hypot(g.cur[0] - g.start[0], g.cur[1] - g.start[1]) >= 1) {
-            engine.call('applyGradient', g.start, g.cur, s.opts.gradientType, s.opts.gradientTransparent, s.opts.gradientReverse);
+            engine.call('applyGradient', g.start, g.cur, s.opts.gradientType, s.opts.gradientTransparent, s.opts.gradientReverse,
+              resolveGradient(s.opts.gradient ?? GRADIENT_PRESETS[s.opts.gradientTransparent ? 1 : 0], s.fg, s.bg, s.opts.gradientTransparency ?? true));
           }
           return;
         case 'shape': {
@@ -816,6 +818,7 @@ export function CanvasArea() {
   );
 
   const pcrop = useStore((st) => st.pcrop);
+  const symmetry = useStore((st) => st.symmetry);
   const cropOverlay = crop && tool === 'crop' && doc.open && (() => {
     const cx = X(crop.x), cy = Y(crop.y), cw = crop.w * Z, ch = crop.h * Z;
     const handles: [string, number, number][] = [
@@ -951,6 +954,20 @@ export function CanvasArea() {
         {polyPreview}
         <PathOverlay X={X} Y={Y} hover={hover && (tool === 'pen') ? toDoc(hover.x, hover.y) : null} />
         {cropOverlay}
+        {symmetry && ['brush', 'pencil', 'eraser', 'mixer'].includes(tool) && doc.open && (() => {
+          // Ejes de la simetría (como la ruta de simetría de Photoshop).
+          const n = symmetry.type === 'radial' || symmetry.type === 'mandala' ? symmetry.segments : symmetry.type === 'dual' ? 2 : 1;
+          const base = (symmetry.angle * Math.PI) / 180 + (symmetry.type === 'vertical' || symmetry.type === 'dual' ? Math.PI / 2 : symmetry.type === 'diagonal' ? Math.PI / 4 : 0);
+          const L = Math.hypot(doc.width, doc.height);
+          const lines = [];
+          for (let k = 0; k < n; k++) {
+            const a = base + (Math.PI * k) / n;
+            const radial = symmetry.type === 'radial';
+            const x0 = radial ? symmetry.cx : symmetry.cx - Math.cos(a) * L, y0 = radial ? symmetry.cy : symmetry.cy - Math.sin(a) * L;
+            lines.push(<line key={k} className="sym-axis" x1={X(x0)} y1={Y(y0)} x2={X(symmetry.cx + Math.cos(radial ? a * 2 : a) * L)} y2={Y(symmetry.cy + Math.sin(radial ? a * 2 : a) * L)} />);
+          }
+          return <g data-testid="symmetry-axes">{lines}<circle className="sym-center" cx={X(symmetry.cx)} cy={Y(symmetry.cy)} r={4} /></g>;
+        })()}
         {pcropOverlay}
         {straightenLine}
         {transformOverlay}

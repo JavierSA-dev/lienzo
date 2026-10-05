@@ -1,3 +1,4 @@
+import { sampleStops } from './ops';
 import { SELECTIVE_RANGES, type AdjustmentParams, type AdjustmentType, type RGBA } from './types';
 import { presetLut, encodeLut, decodeLut, type Lut3D } from './lut';
 
@@ -115,7 +116,8 @@ export function adjustmentUniforms(a: AdjustmentParams): AdjUniforms {
       const l = new Uint8Array(256 * 4);
       for (let v = 0; v < 256; v++) {
         const t = v / 255;
-        for (let c = 0; c < 3; c++) l[v * 4 + c] = clamp255(a.from[c] + (a.to[c] - a.from[c]) * t);
+        if (a.stops) { const c = sampleStops(a.stops, t); for (let k = 0; k < 3; k++) l[v * 4 + k] = clamp255(c[k]); }
+        else for (let c = 0; c < 3; c++) l[v * 4 + c] = clamp255(a.from[c] + (a.to[c] - a.from[c]) * t);
         l[v * 4 + 3] = 255;
       }
       return { kind: 1, lut: l, p0: z, p1: z, p2: z };

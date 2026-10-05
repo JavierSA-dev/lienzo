@@ -1,3 +1,4 @@
+import { GradientSwatch, resolveGradient } from './GradientEditor';
 // Estilo de capa (doble clic en la capa o Capa > Estilo de capa…), con la misma estructura que Photoshop:
 // a la izquierda Opciones de fusión y los 10 efectos con su casilla; a la derecha los ajustes del elegido.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -185,7 +186,9 @@ export function LayerStyleDialog({ close }: { close: () => void }) {
       body = <>
         {mode('Modo de fusión', e.blend, (blend) => upd('gradientOverlay', { blend }))}
         {rng('Opacidad', pct(e.opacity), 0, 100, (v) => upd('gradientOverlay', { opacity: v / 100 }), '%')}
-        {col('Color inicial', e.from, (from) => upd('gradientOverlay', { from }))}{col('Color final', e.to, (to) => upd('gradientOverlay', { to }))}
+        <label className="adj-row"><span>Degradado</span><GradientSwatch value={e.def ?? { name: 'Personalizado', stops: [{ t: 0, c: e.from }, { t: 1, c: e.to }], alpha: [{ t: 0, a: 1 }, { t: 1, a: 1 }], smooth: 1 }}
+          onChange={(g) => { const st = useStore.getState(); upd('gradientOverlay', { def: g, stops: resolveGradient(g, st.fg, st.bg) }); }} /></label>
+        {!e.def && <>{col('Color inicial', e.from, (from) => upd('gradientOverlay', { from }))}{col('Color final', e.to, (to) => upd('gradientOverlay', { to }))}</>}
         {check('Invertir', e.reverse, (reverse) => upd('gradientOverlay', { reverse }))}
         {pick('Estilo', e.style, GSTYLES, (style) => upd('gradientOverlay', { style }))}
         {rng('Ángulo', e.angle, -180, 180, (angle) => upd('gradientOverlay', { angle }), '°')}
@@ -198,7 +201,7 @@ export function LayerStyleDialog({ close }: { close: () => void }) {
       body = <>
         {mode('Modo de fusión', e.blend, (blend) => upd('patternOverlay', { blend }))}
         {rng('Opacidad', pct(e.opacity), 0, 100, (v) => upd('patternOverlay', { opacity: v / 100 }), '%')}
-        {pick('Motivo', e.pattern, PATTERNS, (pattern) => upd('patternOverlay', { pattern }))}
+        {pick('Motivo', e.pattern, [...useStore.getState().userPatterns.map((p) => [p.id as PatternId, p.name] as [PatternId, string]), ...PATTERNS], (pattern) => upd('patternOverlay', { pattern }))}
         {col('Color A', e.colorA, (colorA) => upd('patternOverlay', { colorA }))}{col('Color B', e.colorB, (colorB) => upd('patternOverlay', { colorB }))}
         {rng('Escala', e.scale, 10, 1000, (scale) => upd('patternOverlay', { scale }), '%')}
       </>;

@@ -6,6 +6,7 @@
 // - `styled`: el contenido de la capa (con la opacidad de relleno y la máscara ya aplicadas) más los
 //   efectos interiores y el trazo, en el orden de Photoshop. Se compone con el modo, la opacidad
 //   y "Fusionar si" de la capa original.
+import { sampleStops } from './ops';
 import type { BlendMode, LayerEffects, RGBA, GradientStyle, PatternId } from './types';
 import { PixelLayer } from './document';
 import { boxBlurH, boxBlurV } from './selection';
@@ -130,6 +131,7 @@ export function buildEffects(L: PixelLayer): BuiltEffects {
     const cell = Math.max(2, 16 * (po.scale / 100));
     over((i) => A[i] * po.opacity, (i) => {
       const x = r.x + (i % r.w), y = r.y + Math.floor(i / r.w);
+      if (po.pattern.startsWith('user:')) { const c = userPatternAt(po.pattern, x, y, po.scale / 100); if (c) return [c[0], c[1], c[2], 255] as RGBA; }
       return mixC(po.colorA, po.colorB, pattern(po.pattern, x, y, cell));
     }, po.blend ?? 'normal');
   }
@@ -138,6 +140,7 @@ export function buildEffects(L: PixelLayer): BuiltEffects {
     over((i) => A[i] * go.opacity, (i) => {
       let v = t(r.x + (i % r.w) + 0.5, r.y + Math.floor(i / r.w) + 0.5);
       if (go.reverse) v = 1 - v;
+      if (go.stops) { const c = sampleStops(go.stops, Math.max(0, Math.min(1, v))); return [c[0], c[1], c[2], 255] as RGBA; }
       return mixC(go.from, go.to, v);
     }, go.blend ?? 'normal');
   }
@@ -296,6 +299,18 @@ function hash(x: number, y: number) {
 }
 
 /** Motivos propios (generados), con valor 0..1 entre el color A y el B. */
+/** Motivos del usuario (Edición > Definir motivo): imagen RGBA en mosaico. */
+export const USER_PATTERNS = new Map<string, { w: number; h: number; data: Uint8ClampedArray }>();
+
+/** Color de un motivo de imagen en (x, y) con escala (1 = tamaño real). */
+export function userPatternAt(id: string, x: number, y: number, scale: number): RGBA | null {
+  const p = USER_PATTERNS.get(id);
+  if (!p) return null;
+  const u = Math.floor(x / scale), v = Math.floor(y / scale);
+  const i = ((((v % p.h) + p.h) % p.h) * p.w + (((u % p.w) + p.w) % p.w)) * 4;
+  return [p.data[i], p.data[i + 1], p.data[i + 2], p.data[i + 3]];
+}
+
 export function pattern(id: PatternId, x: number, y: number, cell: number): number {
   switch (id) {
     case 'checker': return (Math.floor(x / cell) + Math.floor(y / cell)) & 1;
@@ -313,6 +328,7 @@ export function pattern(id: PatternId, x: number, y: number, cell: number): numb
       const over = (Math.floor(x / s) + Math.floor(y / s)) & 1;
       return Math.min(1, (over ? warp : weft) * 0.7 + hash(x, y) * 0.3);
     }
+    default: return 0; // motivos de imagen: ver userPatternAt
   }
 }
 

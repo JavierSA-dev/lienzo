@@ -47,7 +47,7 @@ export type ToolId =
   | 'move' | 'marquee' | 'marqueeEllipse' | 'lasso' | 'polylasso' | 'wand' | 'crop' | 'eyedropper'
   | 'brush' | 'pencil' | 'clone' | 'eraser' | 'gradient' | 'bucket' | 'dodge' | 'burn'
   | 'text' | 'shape' | 'hand' | 'zoom'
-  | 'spotHeal' | 'heal' | 'patch' | 'pen' | 'pathSelect' | 'blur' | 'sharpen' | 'smudge' | 'historyBrush' | 'rotateView' | 'redEye' | 'objectSelect' | 'quickSelect' | 'perspectiveCrop' | 'remove';
+  | 'spotHeal' | 'heal' | 'patch' | 'pen' | 'pathSelect' | 'blur' | 'sharpen' | 'smudge' | 'historyBrush' | 'rotateView' | 'redEye' | 'objectSelect' | 'quickSelect' | 'perspectiveCrop' | 'remove' | 'mixer';
 
 export type LayerKind = 'pixel' | 'adjustment' | 'text' | 'shape' | 'group' | 'smart';
 
@@ -69,7 +69,7 @@ export type AdjustmentParams =
   | { type: 'invert' }
   | { type: 'threshold'; level: number }
   | { type: 'posterize'; levels: number }
-  | { type: 'gradientMap'; from: RGBA; to: RGBA }
+  | { type: 'gradientMap'; from: RGBA; to: RGBA; stops?: Stops; def?: GradientDef }
   | { type: 'vibrance'; vibrance: number; saturation: number }
   | { type: 'solidColor'; color: RGBA }
   | { type: 'photoFilter'; color: RGBA; density: number; preserveLuminosity: boolean }
@@ -157,8 +157,9 @@ export interface BevelFx {
 export interface SatinFx { enabled: boolean; color: RGBA; opacity: number; angle: number; distance: number; size: number; invert: boolean; blend?: BlendMode }
 export interface OverlayFx { enabled: boolean; color: RGBA; opacity: number; blend?: BlendMode }
 export type GradientStyle = 'linear' | 'radial' | 'angle' | 'reflected' | 'diamond';
-export interface GradientOverlayFx { enabled: boolean; from: RGBA; to: RGBA; opacity: number; angle: number; style: GradientStyle; reverse: boolean; scale: number; blend?: BlendMode }
-export type PatternId = 'checker' | 'dots' | 'stripes' | 'grid' | 'noise' | 'canvas';
+export interface GradientOverlayFx { enabled: boolean; from: RGBA; to: RGBA; opacity: number; angle: number; style: GradientStyle; reverse: boolean; scale: number; blend?: BlendMode; stops?: Stops; def?: GradientDef }
+/** Motivos generados o del usuario (`user:<id>`, imagen registrada). */
+export type PatternId = 'checker' | 'dots' | 'stripes' | 'grid' | 'noise' | 'canvas' | `user:${string}`;
 export interface PatternOverlayFx { enabled: boolean; pattern: PatternId; colorA: RGBA; colorB: RGBA; scale: number; opacity: number; blend?: BlendMode }
 export interface StrokeFx { enabled: boolean; color: RGBA; size: number; position?: 'outside' | 'inside' | 'center'; opacity?: number; blend?: BlendMode }
 /** Fusión condicional ("Fusionar si"): [negro inicio, negro fin, blanco inicio, blanco fin] en 0..255. */
@@ -189,6 +190,58 @@ export interface BrushSettings {
   spacing: number;   // fracción del diámetro
   pressureSize: boolean;
   pressureOpacity: boolean;
+  /** Forma de la punta: ángulo (°), redondez (0..1), voltear y punta muestreada (id registrado en el motor). */
+  angle?: number;
+  roundness?: number;
+  flipX?: boolean;
+  flipY?: boolean;
+  tip?: string | null;
+  /** Dinámicas (como el panel Ajustes de pincel de Photoshop). */
+  dyn?: BrushDynamics;
+  /** Ruido en los bordes y bordes húmedos. */
+  noise?: boolean;
+  wetEdges?: boolean;
+  /** Suavizado del trazo (0..1, «correa» como Photoshop). */
+  smoothing?: number;
+  /** Pincel mezclador: humedad, carga y mezcla (0..1), y cargar/limpiar tras cada trazo. */
+  mixer?: { wet: number; load: number; mix: number; loadEach: boolean; cleanEach: boolean; sampleAll: boolean };
+  /** Nombre del valor preestablecido (sólo para la interfaz). */
+  preset?: string;
+}
+
+export type DynControl = 'off' | 'pressure' | 'fade' | 'direction' | 'initialDirection';
+
+export interface BrushDynamics {
+  sizeJitter: number; sizeControl: DynControl; minDiameter: number;           // 0..1
+  angleJitter: number; angleControl: DynControl;                               // 0..1 (×360°)
+  roundJitter: number; minRoundness: number;
+  scatter: number; scatterBoth: boolean; count: number; countJitter: number;  // dispersión: ×diámetro
+  opacityJitter: number; opacityControl: DynControl; flowJitter: number; flowControl: DynControl;
+  fgBgJitter: number; fgBgControl: DynControl; hueJitter: number; satJitter: number; briJitter: number; perTip: boolean;
+  fadeSteps: number;
+}
+
+export const DEFAULT_DYN: BrushDynamics = {
+  sizeJitter: 0, sizeControl: 'off', minDiameter: 0, angleJitter: 0, angleControl: 'off', roundJitter: 0, minRoundness: 0.25,
+  scatter: 0, scatterBoth: false, count: 1, countJitter: 0, opacityJitter: 0, opacityControl: 'off', flowJitter: 0, flowControl: 'off',
+  fgBgJitter: 0, fgBgControl: 'off', hueJitter: 0, satJitter: 0, briJitter: 0, perTip: true, fadeSteps: 25,
+};
+
+/** Simetría al pintar (Photoshop: icono de mariposa en la barra de opciones). */
+export interface Symmetry {
+  type: 'vertical' | 'horizontal' | 'dual' | 'diagonal' | 'radial' | 'mandala';
+  cx: number; cy: number; angle: number; segments: number;
+}
+
+/** Degradado ya resuelto (colores concretos) que usa el motor. */
+export interface Stops { c: [number, number, number, number][]; a: [number, number][]; smooth: number }
+
+/** Degradado de varias paradas: color (t 0..1, RGBA o colores frontal/fondo) y opacidad. */
+export interface GradientDef {
+  name: string;
+  stops: { t: number; c: RGBA | 'fg' | 'bg' }[];
+  alpha: { t: number; a: number }[];
+  smooth: number; // 0..1
 }
 
 export type RGBA = [number, number, number, number]; // 0..255

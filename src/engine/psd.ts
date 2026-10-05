@@ -1,4 +1,5 @@
 import { newVectorMask } from './vmask';
+import { USER_PATTERNS } from './effects';
 import { readPsd, writePsdUint8Array, initializeCanvas, type Layer as PsdLayer, type Psd, type AdjustmentLayer, type LayerEffectsInfo, type Color as PsdColor, type UnitsValue } from 'ag-psd';
 import { EditorDocument, PixelLayer, MaskChannel } from './document';
 import { BLEND_MODES, SELECTIVE_RANGES, IDENTITY, type AdjustmentParams, type BlendMode, type RGBA, type LayerEffects, type BevelStyle, type TextParams, type Matrix, type WarpStyle } from './types';
@@ -267,7 +268,7 @@ function textToPsd(t: TextParams): LayerTextData {
 // ------------------------------------------------------------------ datos propios de Lienzo en el XMP
 
 /** Lo que Photoshop no sabe guardar a nuestra manera (p. ej. los motivos generados) va en el XMP del archivo. */
-interface Extra { patternOverlay?: LayerEffects['patternOverlay'] }
+interface Extra { patternOverlay?: LayerEffects['patternOverlay']; patternData?: { id: string; w: number; h: number; b64: string } }
 function writeExtras(x: Record<number, Extra>): string {
   const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(x))));
   return `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:lienzo="https://lienzo.app/ns/1.0/" lienzo:data="${b64}"/></rdf:RDF></x:xmpmeta><?xpacket end="w"?>`;
@@ -350,6 +351,11 @@ export function importPsd(name: string, buffer: ArrayBuffer): ImportResult {
         const br = l.blendingRanges?.compositeGrayBlendSource, bd = l.blendingRanges?.compositeGraphBlendDestinationRange;
         if (br && bd && (br.join() !== '0,0,255,255' || bd.join() !== '0,0,255,255')) fx.blendIf = { channel: 'gray', self: br as [number, number, number, number], under: bd as [number, number, number, number] };
         const mine = l.id !== undefined ? extras[l.id] : undefined;
+        if (mine?.patternData && !USER_PATTERNS.has(mine.patternData.id)) {
+          const bin = atob(mine.patternData.b64), data = new Uint8ClampedArray(bin.length);
+          for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
+          USER_PATTERNS.set(mine.patternData.id, { w: mine.patternData.w, h: mine.patternData.h, data });
+        }
         if (mine?.patternOverlay) fx.patternOverlay = mine.patternOverlay;
         else if (l.effects?.patternOverlay) warnings.add('motivos de "Superposición de motivo" (se sustituyen por uno propio)');
         if (Object.keys(fx).length) L.effects = fx;
@@ -390,7 +396,12 @@ export function exportPsd(doc: EditorDocument, composite: Uint8ClampedArray, psb
     if (fx && L.kind !== 'group' && L.kind !== 'adjustment') {
       const e = effectsToPsd(fx);
       if (e) base.effects = e;
-      if (fx.patternOverlay?.enabled) extras[L.id] = { patternOverlay: fx.patternOverlay };
+      if (fx.patternOverlay?.enabled) {
+        extras[L.id] = { patternOverlay: fx.patternOverlay };
+        // Los motivos de imagen del usuario viajan dentro del archivo.
+        const up = USER_PATTERNS.get(fx.patternOverlay.pattern);
+        if (up) { let bin = ''; for (let i = 0; i < up.data.length; i += 0x8000) bin += String.fromCharCode(...up.data.subarray(i, i + 0x8000)); extras[L.id].patternData = { id: fx.patternOverlay.pattern, w: up.w, h: up.h, b64: btoa(bin) }; }
+      }
       if (fx.fill !== undefined) base.fillOpacity = fx.fill;
       if (fx.blendIf) base.blendingRanges = { compositeGrayBlendSource: [...fx.blendIf.self], compositeGraphBlendDestinationRange: [...fx.blendIf.under], ranges: [] };
     }

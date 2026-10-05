@@ -7,3 +7,4 @@ bench/resultados.md
 *.log
 !tests/fixtures/pano*.jpg
 !tests/fixtures/hdr*.jpg
+!tests/fixtures/*.abr

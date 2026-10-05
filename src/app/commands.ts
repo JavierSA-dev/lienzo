@@ -1,6 +1,8 @@
 import { engine } from '../engine/client';
 import { identityPatch } from '../engine/meshwarp';
 import { RAW_EXT, RAW_ACCEPT, decodeRaw } from './raw';
+import { defineBrushPreset } from './BrushPanel';
+import { definePattern } from './patterns';
 import { useStore, toRgba, savePrefs, type DialogId, type TMode } from './store';
 import { askLocalFonts } from './localFonts';
 import type { AdjustmentType, BlendMode, ShapeKind, ToolId } from '../engine/types';
@@ -154,7 +156,7 @@ export const TOOL_GROUPS: { key: string; tools: ToolId[] }[] = [
   { key: 'C', tools: ['crop', 'perspectiveCrop'] },
   { key: 'I', tools: ['eyedropper'] },
   { key: 'J', tools: ['spotHeal', 'remove', 'heal', 'patch', 'redEye'] },
-  { key: 'B', tools: ['brush', 'pencil'] },
+  { key: 'B', tools: ['brush', 'pencil', 'mixer'] },
   { key: 'S', tools: ['clone'] },
   { key: 'Y', tools: ['historyBrush'] },
   { key: 'E', tools: ['eraser'] },
@@ -171,7 +173,7 @@ export const TOOL_GROUPS: { key: string; tools: ToolId[] }[] = [
 
 export const TOOL_NAMES: Record<ToolId, string> = {
   move: 'Mover', marquee: 'Marco rectangular', marqueeEllipse: 'Marco elíptico', lasso: 'Lazo', polylasso: 'Lazo poligonal',
-  wand: 'Varita mágica', crop: 'Recortar', perspectiveCrop: 'Recortar con perspectiva', eyedropper: 'Cuentagotas', brush: 'Pincel', pencil: 'Lápiz', clone: 'Tampón de clonar',
+  wand: 'Varita mágica', crop: 'Recortar', perspectiveCrop: 'Recortar con perspectiva', mixer: 'Pincel mezclador', eyedropper: 'Cuentagotas', brush: 'Pincel', pencil: 'Lápiz', clone: 'Tampón de clonar',
   eraser: 'Borrador', gradient: 'Degradado', bucket: 'Bote de pintura', dodge: 'Sobreexponer', burn: 'Subexponer',
   text: 'Texto horizontal', shape: 'Forma', hand: 'Mano', zoom: 'Zoom',
   spotHeal: 'Pincel corrector puntual', remove: 'Quitar', heal: 'Pincel corrector', patch: 'Parche', pen: 'Pluma', pathSelect: 'Selección de trazado',
@@ -202,7 +204,7 @@ function toolKey(key: string, cycle: boolean) {
   selectTool(next);
 }
 
-const PAINT_TOOLS = new Set<ToolId>(['quickSelect', 'brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'spotHeal', 'remove', 'heal', 'blur', 'sharpen', 'smudge', 'historyBrush']);
+const PAINT_TOOLS = new Set<ToolId>(['quickSelect', 'mixer', 'brush', 'pencil', 'eraser', 'clone', 'dodge', 'burn', 'spotHeal', 'remove', 'heal', 'blur', 'sharpen', 'smudge', 'historyBrush']);
 export const isPaintTool = (t: ToolId) => PAINT_TOOLS.has(t);
 
 // ------------------------------------------------------------------ capas
@@ -431,6 +433,9 @@ export const COMMANDS: Command[] = [
   { id: 'edit.autoAlign', label: 'Alinear capas automáticamente', needsDoc: true, run: call('autoAlignLayers') },
   { id: 'edit.autoBlend', label: 'Fusionar capas automáticamente (panorámica)', needsDoc: true, run: call('autoBlendLayers', 'panorama') },
   { id: 'edit.autoStack', label: 'Fusionar capas automáticamente (apilar enfoque)', needsDoc: true, run: call('autoBlendLayers', 'stack') },
+  { id: 'window.brushSettings', label: 'Ajustes de pincel', keys: ['F5'], run: dlg({ kind: 'brushSettings' }) },
+  { id: 'edit.definePattern', label: 'Definir motivo…', needsDoc: true, run: () => { void definePattern(); } },
+  { id: 'edit.defineBrush', label: 'Definir valor de pincel…', needsDoc: true, run: () => { void defineBrushPreset(); } },
   { id: 'filter.last', label: 'Último filtro', keys: ['Ctrl+Alt+F'], needsDoc: true, run: call('repeatFilter') },
   { id: 'filter.gaussianBlur', label: 'Desenfoque gaussiano…', needsDoc: true, run: dlg({ kind: 'filter', name: 'gaussianBlur' }) },
   { id: 'filter.boxBlur', label: 'Desenfoque de cuadro…', needsDoc: true, run: dlg({ kind: 'filter', name: 'boxBlur' }) },
