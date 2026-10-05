@@ -28,8 +28,17 @@ export function who(req) {
 
 // ------------------------------------------------------------------ almacenes
 
-const redisUrl = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
-const redisToken = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
+// La integración de Vercel puede añadir un prefijo a las variables (p. ej. STORAGE_KV_REST_API_URL).
+const envEnding = (...ends) => {
+  for (const end of ends) {
+    if (process.env[end]) return process.env[end];
+    const k = Object.keys(process.env).find((n) => n.endsWith(`_${end}`) && process.env[n]);
+    if (k) return process.env[k];
+  }
+  return undefined;
+};
+const redisUrl = envEnding('KV_REST_API_URL', 'UPSTASH_REDIS_REST_URL');
+const redisToken = envEnding('KV_REST_API_TOKEN', 'UPSTASH_REDIS_REST_TOKEN');
 
 async function redis(commands) {
   const r = await fetch(`${redisUrl.replace(/\/$/, '')}/pipeline`, {
@@ -45,11 +54,11 @@ const store = redisUrl && redisToken ? {
   name: 'redis',
   async get(keys) { return (await redis([['MGET', ...keys]]))[0].map((v) => Number(v ?? 0)); },
   async incr(keys) { await redis(keys.flatMap((k) => [['INCR', k], ['EXPIRE', k, 172800]])); },
-} : process.env.BLOB_READ_WRITE_TOKEN ? {
+} : envEnding('BLOB_READ_WRITE_TOKEN') ? {
   name: 'blob',
   async get(keys) {
     const { list } = await import('@vercel/blob');
-    return Promise.all(keys.map(async (k) => (await list({ prefix: `${k}/`, limit: 1000 })).blobs.length));
+    return Promise.all(keys.map(async (k) => (await list({ prefix: `${k}/`, limit: 1000, token: envEnding('BLOB_READ_WRITE_TOKEN') })).blobs.length));
   },
   async incr(keys) {
     const { put } = await import('@vercel/blob');
@@ -57,8 +66,9 @@ const store = redisUrl && redisToken ? {
     await Promise.all(keys.map(async (k) => {
       const path = `${k}/${Date.now()}-${crypto.randomBytes(4).toString('hex')}.txt`;
       // El almacén puede ser público o privado: si no acepta uno, se usa el otro (solo guarda un "1").
-      try { await put(path, '1', { access, addRandomSuffix: false }); }
-      catch { await put(path, '1', { access: access === 'private' ? 'public' : 'private', addRandomSuffix: false }); }
+      const token = envEnding('BLOB_READ_WRITE_TOKEN');
+      try { await put(path, '1', { access, addRandomSuffix: false, token }); }
+      catch { await put(path, '1', { access: access === 'private' ? 'public' : 'private', addRandomSuffix: false, token }); }
     }));
   },
 } : {
