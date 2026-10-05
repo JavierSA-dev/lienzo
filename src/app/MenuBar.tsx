@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { commandById, formatKeys, runCommand, BROWSER_RESERVED } from './commands';
 import { useStore } from './store';
 import { APP_NAME } from './brand';
+import { Sparkles } from 'lucide-react';
 
 export type Item = string | '-' | { label: string; soon: true } | { sub: string; items: Item[] };
 
@@ -51,7 +52,7 @@ export const MENUS: { label: string; items: Item[] }[] = [
     '-', 'ai.removeBg'] },
   { label: 'Vista', items: ['view.zoomIn', 'view.zoomOut', 'view.fit', 'view.actual', '-', 'view.proof', 'view.gamut', '-', 'view.extras', 'view.grid', 'view.rulers', 'view.guides', '-',
     'view.snap', 'view.lockGuides', 'view.newGuide', 'view.clearGuides', '-', 'view.fullscreen', 'view.mobileUi'] },
-  { label: 'Ventana', items: ['view.panels', 'window.brushSettings', 'window.timeline'] },
+  { label: 'Ventana', items: ['view.panels', 'window.brushSettings', 'window.timeline', '-', 'window.assistant'] },
   { label: 'Ayuda', items: ['help.shortcuts', { sub: 'Idioma', items: ['help.langEs', 'help.langEn'] }, '-', 'help.about'] },
 ];
 
@@ -96,6 +97,7 @@ export function MenuBar() {
   const ref = useRef<HTMLDivElement>(null);
   const doc = useStore((s) => s.doc);
   const recording = useStore((s) => s.recording);
+  const assistant = useStore((s) => s.assistantOpen);
 
   useEffect(() => {
     if (open === null) return;
@@ -118,6 +120,7 @@ export function MenuBar() {
         </div>
       ))}
       <div className="spacer" />
+      <button type="button" className="assistant-btn" data-testid="assistant-btn" title="Asistente de IA" aria-pressed={assistant} onClick={() => useStore.setState({ assistantOpen: !assistant })}><Sparkles size={14} /> Asistente</button>
       {recording && <span className="rec-label"><span className="rec-dot" /> Grabando acción</span>}
       {doc.open && <span className="doc-title">{doc.name}{doc.dirty ? ' •' : ''}</span>}
     </nav>

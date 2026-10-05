@@ -111,6 +111,8 @@ interface Store {
   panelsHidden: boolean;
   /** Ventana > Línea de tiempo. */
   timelineOpen: boolean;
+  /** Asistente de IA. */
+  assistantOpen: boolean;
   dialog: DialogId;
   selectionPath: string;
   transform: TransformState | null;
@@ -252,6 +254,7 @@ export const useStore = create<Store>((set, get) => ({
   cursor: null,
   panelsHidden: false,
   timelineOpen: false,
+  assistantOpen: false,
   dialog: null,
   selectionPath: '',
   transform: null,

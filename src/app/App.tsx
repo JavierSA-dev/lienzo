@@ -1,4 +1,5 @@
 import { Timeline } from './Timeline';
+import { AssistantPanel } from './assistant/Assistant';
 import { useEffect } from 'react';
 import { MenuBar } from './MenuBar';
 import { OptionsBar } from './OptionsBar';
@@ -137,6 +138,7 @@ export function App() {
         </div>
       )}
       <Timeline />
+      <AssistantPanel />
       {mobile ? null : <StatusBar />}
       {mobile ? <MobileContextBar /> : null}
       {mobile ? <MobileBottomBar /> : null}

@@ -4014,6 +4014,41 @@ export class Engine {
     this.setSelection(this.combine(Selection.fromMask(m, d.width, d.height), mode), 'Cargar selección');
   }
 
+  // ================================================================ asistente de IA
+
+  /** Resumen del documento para el asistente: capas, selección, estadísticas de tono/color y miniatura JPEG. */
+  async assistantContext(thumb = 512): Promise<Record<string, unknown> | null> {
+    const d = this.doc;
+    if (!d) return null;
+    const px = this.r.flatten(d, d.layers, this.docRect(), [255, 255, 255, 255]);
+    const n = d.width * d.height, step = Math.max(1, Math.floor(n / 200000));
+    const hist = new Uint32Array(256);
+    let sr = 0, sg = 0, sb = 0, ss = 0, c = 0;
+    for (let i = 0; i < n; i += step) {
+      const r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
+      const l = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+      hist[l]++; sr += r; sg += g; sb += b; c++;
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      ss += mx ? (mx - mn) / mx : 0;
+    }
+    const pct = (q: number) => { let acc = 0; for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= q * c) return v; } return 255; };
+    const k = Math.min(1, thumb / Math.max(d.width, d.height));
+    const tw = Math.max(1, Math.round(d.width * k)), th = Math.max(1, Math.round(d.height * k));
+    const small = k < 1 ? await this.scalePixels(px, d.width, d.height, tw, th) : px;
+    const jpeg = await encodeRaster(this.modePixels(small.slice()), tw, th, 'image/jpeg', 0.8);
+    return {
+      name: d.name, width: d.width, height: d.height, mode: d.mode, dpi: d.dpi,
+      activeLayerId: d.active()?.id ?? null,
+      layers: d.layers.map((l) => ({ id: l.id, name: l.name, kind: l.kind, visible: l.visible, opacity: Math.round(l.opacity * 100), parent: l.parent })),
+      selection: d.selection?.bounds() ?? null,
+      stats: {
+        meanLuma: Math.round((0.299 * sr + 0.587 * sg + 0.114 * sb) / c), p2: pct(0.02), p50: pct(0.5), p98: pct(0.98),
+        meanRGB: [Math.round(sr / c), Math.round(sg / c), Math.round(sb / c)], meanSaturation: Math.round((ss / c) * 100),
+      },
+      thumbnail: { w: tw, h: th, jpegBase64: await blobToDataUrl(jpeg).then((u) => u.split(',')[1]) },
+    };
+  }
+
   // ================================================================ línea de tiempo (animación de cuadros)
 
   /** Posición de referencia de una capa (las de texto, forma y objeto inteligente se mueven con su matriz). */

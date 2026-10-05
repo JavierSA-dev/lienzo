@@ -21,14 +21,19 @@ npm run dev          # http://localhost:5173
 | `node tests/e2e-photo.mjs` | Fase 11: revelado, RAW, lente, ruido, desenfoques, Quitar, escalado, panorámica, HDR y alinear (34 comprobaciones; la de RAW usa `tests/fixtures/sample.arw` si existe) |
 | `node tests/e2e-art.mjs` | Fase 12: pinceles (puntas, dinámicas, ABR, simetría, mezclador), degradados y motivos (25 comprobaciones) |
 | `node tests/e2e-output.mjs` | Fase 13: modos de color y prueba de colores, TIFF/PDF/SVG/GIF (validados con PIL, qpdf y pdftoppm), línea de tiempo, acciones con parámetros, lotes e inglés (66 comprobaciones) |
+| `node tests/e2e-assistant.mjs` | Asistente de IA (intérprete local, bucle con el modelo con respuestas simuladas, deshacer, sin créditos/sin servicio, móvil) y página de presentación (28 comprobaciones) |
 | `npm run e2e:mobile` | Móvil vertical/horizontal y tableta: 72 comprobaciones con toques de varios dedos |
 | `npm run i18n:scan` | Recorre menús, diálogos, herramientas y hojas móviles en inglés y lista los textos sin traducir |
+| `node tests/landing-shots.mjs` | Regenera las capturas de la página de presentación (`public/landing/*.webp`) |
 | `node tests/shots.mjs` | Capturas de la interfaz para revisión visual |
 | `npm run bench` | Compara Lienzo con Photopea en **tu** Chrome y **tu** GPU (`bench/resultados.md`) |
 
 La primera vez que uses Playwright: `npx playwright install chromium`.
 
 ## Desplegar
+
+En producción: **https://lienzo-editor.vercel.app** (editor) y **https://lienzo-editor.vercel.app/landing/** (presentación). Cada `git push` a `main` se despliega solo en Vercel. Para el asistente en la nube, añade `ANTHROPIC_API_KEY` en Vercel > Settings > Environment Variables.
+
 
 Es una web estática: `npm run build` genera `dist/`. En Vercel basta con importar el repositorio (el `vercel.json` ya pone las cabeceras COOP/COEP que activan los hilos y la caché del modelo de IA) o ejecutar `npx vercel --prod`. Sirve igual cualquier hosting estático que permita cabeceras (Netlify, Cloudflare Pages); si no las permite, el service worker las añade.
 
@@ -85,6 +90,8 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 **Filtros** (con vista previa): desenfoque gaussiano, de cuadro y de movimiento, máscara de enfoque, enfocar, ruido, mosaico, paso alto, hallar bordes, relieve, nubes, mediana y Licuar (deformar, reconstruir, fruncir, inflar).
 
+**Asistente de IA** (botón Asistente o Ventana > Asistente de IA): pide cambios con tus palabras, en español o inglés («mejora la foto, recórtala a 4:5 y añade el texto "Oferta" arriba»). Un intérprete local resuelve al instante y gratis las órdenes habituales (revelado, blanco y negro, looks, recortes, tamaño, giros, quitar fondo, seleccionar sujeto, texto, formas, capas, modo de color, exportar); lo demás va a un modelo de lenguaje (Claude) que ve una miniatura y las estadísticas del documento y usa las mismas herramientas. Todo queda en el historial y se deshace de una vez. `api/assistant.js` es la función de Vercel (variables `ANTHROPIC_API_KEY`, `ASSISTANT_MODEL`, `FREE_CREDITS`, `PREMIUM_TOKENS`); en local, `node server/assistant-dev.mjs`.
+
 **IA**: quitar fondo y seleccionar sujeto en local (u2netp, Apache-2.0, 4,5 MB, sin servidor). Relleno generativo con proveedor configurable; `server/generative-proxy.mjs` es un proxy de referencia con créditos diarios por usuario (base del modelo freemium).
 
 **Archivos**: PSD/PSB (grupos, máscaras de recorte, máscaras y capas de ajuste de ida y vuelta; modo de color, resolución y línea de tiempo), PNG, JPEG, WebP, GIF, BMP, AVIF. Exportar como PNG, JPEG, WebP, GIF, TIFF, PDF o SVG en 0,5x/1x/2x/3x, por mesas de trabajo, en un ZIP. PWA instalable que abre imágenes desde el sistema operativo.
@@ -106,7 +113,7 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 ## Resultados verificados (entorno de pruebas, GPU emulada por CPU)
 
-- 33/33 tests unitarios, 24/24 de la fase 1, 244/244 de las fases 2–9, 53/53 de la fase 10, 34/34 de la fase 11, 25/25 de la fase 12, 66/66 de la fase 13 y 72/72 de móvil y tableta (toques de varios dedos simulados) en Chromium.
+- 39/39 tests unitarios, 24/24 de la fase 1, 244/244 de las fases 2–9, 53/53 de la fase 10, 34/34 de la fase 11, 25/25 de la fase 12, 66/66 de la fase 13, 28/28 del asistente y la landing y 72/72 de móvil y tableta (toques de varios dedos simulados) en Chromium.
 - Composición GPU igual que la referencia en CPU (diferencia máxima 1/255, PSD de 50 capas).
 - Desenfoque gaussiano de 20 px en 24 MP: la interfaz no se bloquea (tarea larga máxima 0 ms).
 - Quitar fondo con IA local: ~2,5 s en CPU emulada. Relleno según contenido de un hueco de 150 px: ~1–3 s en un hilo.
@@ -115,7 +122,7 @@ Los tiempos absolutos no son representativos en ese entorno; ejecuta `npm run be
 
 ## Pendiente
 
-Ver el plan completo por fases en el documento del proyecto: 16 bits por canal, perfiles ICC reales (el CMYK actual es un modelo aproximado), Punto de fuga, asistente de IA, colaboración en tiempo real y app de escritorio (Tauri).
+Ver el plan completo por fases en el documento del proyecto: 16 bits por canal, perfiles ICC reales (el CMYK actual es un modelo aproximado), Punto de fuga, colaboración en tiempo real y app de escritorio (Tauri).
 
 ## Componentes de terceros
 

@@ -53,7 +53,31 @@ const PATTERNS: [RegExp, string | ((...m: string[]) => string)][] = [
   [/^(\d+) %$/, '$1%'],
   [/^(.*) @ ([\d.]+%) \((.+)\)(\*?)$/, (_m, n, z, mode, dirty) => `${n} @ ${z} (${DICT![mode] ?? mode})${dirty}`],
   [/^Sin título-(\d+)$/, 'Untitled-$1'],
+  // Asistente
+  [/^Revelado aplicado \((.+)\) en «(.+)»\.$/, (_m, a, l) => `Develop applied (${devNames(a)}) on “${trName(l)}”.`],
+  [/^Capa de ajuste (\w+) creada\.$/, 'Adjustment layer $1 created.'],
+  [/^Filtro (\w+) aplicado en «(.+)»\.$/, (_m, f, l) => `Filter ${f} applied on “${trName(l)}”.`],
+  [/^No se pudo aplicar (.+)\.$/, (_m, w) => `Couldn't apply ${tr(w)}.`],
+  [/^Imagen a (.+) px\.$/, 'Image resized to $1 px.'],
+  [/^Recortado a (.+) px\.$/, 'Cropped to $1 px.'],
+  [/^Girado (.+)°\.$/, 'Rotated $1°.'],
+  [/^Volteado en (\w+)\.$/, 'Flipped $1.'],
+  [/^Texto «(.+)» añadido\.$/, 'Text “$1” added.'],
+  [/^Forma (\w+) añadida\.$/, 'Shape $1 added.'],
+  [/^Opacidad (.+) %\.$/, 'Opacity $1%.'],
+  [/^Modo (\w+)\.$/, '$1 mode.'],
+  [/^Exportado (.+)\.$/, 'Exported $1.'],
+  [/^Capa activa: (.+)\.$/, 'Active layer: $1.'],
+  [/^Tipo de ajuste desconocido: (.+)$/, 'Unknown adjustment type: $1'],
+  [/^Filtro desconocido: (.+)$/, 'Unknown filter: $1'],
+  [/^Comando desconocido: (.+)$/, 'Unknown command: $1'],
+  [/^(.+) \(deshecho\)$/, (_m, t) => `${tr(t)} (undone)`],
+  [/^(.+) aplicado\.$/, (_m, t) => `${tr(t)} applied.`],
+  [/^(.+): hecho\.$/, (_m, t) => `${tr(t)}: done.`],
 ];
+
+const DEV: Record<string, string> = { exposición: 'exposure', contraste: 'contrast', iluminaciones: 'highlights', sombras: 'shadows', blancos: 'whites', negros: 'blacks', temperatura: 'temperature', matiz: 'tint', intensidad: 'vibrance', saturación: 'saturation', textura: 'texture', claridad: 'clarity', neblina: 'dehaze', viñeta: 'vignette', grano: 'grain', enfoque: 'sharpening', ruido: 'noise reduction' };
+const devNames = (s: string) => s.replace(/[a-záéíóúñ]+/g, (w) => DEV[w] ?? w).replace(/(\d),(\d)/g, '$1.$2');
 
 /** Nombres de capa: solo se traducen los que pone el programa (Capa 1, Fondo, Grupo 2…). */
 export function trName(name: string): string {

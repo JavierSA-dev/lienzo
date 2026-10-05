@@ -7,7 +7,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "e2e": "node tests/e2e.mjs && node tests/e2e-full.mjs && node tests/e2e-select.mjs && node tests/e2e-photo.mjs && node tests/e2e-art.mjs && node tests/e2e-output.mjs && node tests/e2e-mobile.mjs",
+    "e2e": "node tests/e2e.mjs && node tests/e2e-full.mjs && node tests/e2e-select.mjs && node tests/e2e-photo.mjs && node tests/e2e-art.mjs && node tests/e2e-output.mjs && node tests/e2e-assistant.mjs && node tests/e2e-mobile.mjs",
     "i18n:scan": "node tests/i18n-scan.mjs",
     "e2e:mobile": "node tests/e2e-mobile.mjs",
     "bench": "node bench/bench.mjs"

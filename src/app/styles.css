@@ -775,3 +775,38 @@ button.lstyle-item { font-weight: 600; padding: 6px 8px; }
 .batch-errors { color: #f08080; margin: 0; padding-left: 16px; max-height: 90px; overflow: auto; }
 .app.mobile .timeline-foot { flex-wrap: wrap; row-gap: 2px; }
 .timeline-foot .btn { white-space: nowrap; }
+
+/* ---------- Asistente de IA ---------- */
+.assistant-btn { display: inline-flex; align-items: center; gap: 5px; background: linear-gradient(135deg, #2f8cf0, #9b5cf0); border: 0; color: #fff; border-radius: 12px; padding: 3px 10px; font-size: 12px; margin-right: 10px; }
+.assistant-btn[aria-pressed="true"] { box-shadow: 0 0 0 2px rgba(255,255,255,.35) inset; }
+.assistant {
+  position: fixed; right: 290px; bottom: 34px; z-index: 40; width: 360px; max-height: min(560px, calc(100vh - 120px));
+  display: flex; flex-direction: column; background: #2b2b2b; border: 1px solid #1a1a1a; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.45); overflow: hidden;
+}
+.assistant-head { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--border); color: #fff; }
+.assistant-head .grow { flex: 1; }
+.assistant-title { font-weight: 600; font-size: 13px; }
+.assistant-cfg { padding: 8px; border-bottom: 1px solid var(--border); display: grid; gap: 6px; font-size: 12px; }
+.assistant-list { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; min-height: 120px; }
+.assistant-empty p { margin: 4px 0 8px; opacity: .8; }
+.assistant-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.amsg { flex: none; max-width: 88%; padding: 7px 9px; border-radius: 10px; font-size: 13px; line-height: 1.35; white-space: pre-wrap; }
+.amsg.from-user { align-self: flex-end; background: #2f6fd0; color: #fff; border-bottom-right-radius: 3px; }
+.amsg.from-ai { align-self: flex-start; background: #363636; border-bottom-left-radius: 3px; }
+.amsg.error { background: #4a2b2b; }
+.amsg.pending { display: inline-flex; align-items: center; gap: 6px; opacity: .85; }
+.amsg-acts { list-style: none; margin: 0 0 4px; padding: 0; display: grid; gap: 3px; font-size: 12px; }
+.amsg-acts li { display: flex; gap: 5px; align-items: flex-start; }
+.amsg-acts li.ok svg { color: #6fcf7f; margin-top: 2px; flex: none; }
+.amsg-acts li.bad svg { color: #f0a050; margin-top: 2px; flex: none; }
+.amsg-foot { display: flex; gap: 10px; align-items: center; margin-top: 4px; font-size: 11px; }
+.link-btn { background: none; border: 0; color: #8ab4ff; padding: 0; display: inline-flex; align-items: center; gap: 3px; font-size: 11px; }
+.assistant-input { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--border); align-items: flex-end; }
+.assistant-input textarea { flex: 1; resize: none; max-height: 120px; min-height: 34px; background: #1f1f1f; border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; color: var(--text); font: inherit; font-size: 13px; }
+.assistant-input .send { width: 34px; height: 34px; border-radius: 8px; background: var(--accent); color: #fff; }
+.spin { animation: lz-spin 1s linear infinite; }
+@keyframes lz-spin { to { transform: rotate(360deg); } }
+.app.panels-hidden .assistant { right: 16px; }
+.app.mobile .assistant { left: 8px; right: 8px; width: auto; bottom: calc(68px + env(safe-area-inset-bottom)); top: 56px; max-height: none; }
+.home-more { display: inline-block; margin-top: 18px; color: #8ab4ff; font-size: 14px; text-decoration: none; }
+.home-more:hover { text-decoration: underline; }

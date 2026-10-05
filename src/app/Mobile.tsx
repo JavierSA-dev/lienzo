@@ -2,7 +2,7 @@
 // Barra superior (menú, deshacer, capas, exportar), barra inferior de herramientas desplazable,
 // barra contextual (acciones de la selección, OK/Cancelar) y hojas que suben desde abajo.
 import { useEffect, useState, type ReactNode } from 'react';
-import {
+import { Sparkles,
   Menu, Undo2, Redo2, Layers as LayersIcon, Share2, SlidersHorizontal, ChevronLeft, ChevronRight, X, History, Palette, Check,
 } from 'lucide-react';
 import { useStore, type MobileSheet, savePrefs } from './store';
@@ -54,6 +54,7 @@ export function MobileTopBar() {
       {doc.open && <>
         <button className="m-icon" aria-label="Deshacer" disabled={!canUndo} onClick={() => engine.call('undo')} data-testid="m-undo"><Undo2 size={20} /></button>
         <button className="m-icon" aria-label="Rehacer" disabled={!canRedo} onClick={() => engine.call('redo')}><Redo2 size={20} /></button>
+        <button className="m-icon" aria-label="Asistente" data-testid="m-assistant" onClick={() => { openSheet(null); useStore.setState({ assistantOpen: !useStore.getState().assistantOpen }); }}><Sparkles size={20} /></button>
         <button className="m-icon" aria-label="Historial" onClick={() => openSheet('history')}><History size={20} /></button>
         <button className="m-icon" aria-label="Capas" onClick={() => openSheet('layers')} data-testid="m-layers"><LayersIcon size={20} /></button>
         <button className="m-icon accent" aria-label="Exportar" onClick={() => openSheet('export')} data-testid="m-export"><Share2 size={20} /></button>

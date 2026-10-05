@@ -486,6 +486,7 @@ export const COMMANDS: Command[] = [
   { id: 'view.lockGuides', label: 'Bloquear guías', keys: ['Ctrl+Alt+;'], checked: () => S().opts.lockGuides, run: () => S().setOpts({ lockGuides: !S().opts.lockGuides }) },
   { id: 'view.proof', label: 'Prueba de colores', keys: ['Ctrl+Y'], needsDoc: true, checked: () => !!S().doc.proof || S().doc.mode === 'cmyk', run: call('setProof') },
   { id: 'view.gamut', label: 'Avisar sobre gama', keys: ['Ctrl+Shift+Y'], needsDoc: true, checked: () => !!S().doc.gamutWarning, run: call('setGamutWarning') },
+  { id: 'window.assistant', label: 'Asistente de IA', checked: () => S().assistantOpen, run: () => useStore.setState({ assistantOpen: !S().assistantOpen }) },
   { id: 'window.timeline', label: 'Línea de tiempo', checked: () => S().timelineOpen, run: () => useStore.setState({ timelineOpen: !S().timelineOpen }) },
   { id: 'help.langEs', label: 'Español', checked: () => getLang() === 'es', run: () => setLang('es') },
   { id: 'help.langEn', label: 'English', checked: () => getLang() === 'en', run: () => setLang('en') },

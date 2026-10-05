@@ -60,7 +60,8 @@ for (const t of ['move', 'marquee', 'lasso', 'quickSelect', 'crop', 'eyedropper'
   await scan(page, `tool ${t}`);
 }
 for (const tab of ['Canales', 'Channels', 'Trazados', 'Paths', 'Capas', 'Layers']) await page.getByTestId(`tab-${tab}`).click().catch(() => {});
-await page.evaluate(() => window.__lienzoStore.setState({ timelineOpen: true }));
+await page.evaluate(() => window.__lienzoStore.setState({ timelineOpen: true, assistantOpen: true }));
+await page.getByLabel('Assistant settings').click().catch(() => {});
 await page.waitForTimeout(200); await scan(page, 'timeline');
 // Móvil.
 const m = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, serviceWorkers: 'block', locale: 'en-US' });

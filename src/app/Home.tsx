@@ -36,6 +36,7 @@ export function Home({ dragOver }: { dragOver: boolean }) {
             </button>
           ))}
         </div>
+        <a className="home-more" href="landing/" data-testid="home-landing">Qué es Lienzo y todo lo que puede hacer →</a>
       </div>
     </div>
   );
