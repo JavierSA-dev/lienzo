@@ -3,8 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Lienzo — Editor de imágenes profesional en el navegador</title>
-<meta name="description" content="Lienzo es un editor de imágenes profesional que funciona en el navegador: capas, PSD, RAW, pinceles, IA local, asistente, CMYK, PDF y animación. Gratis y sin instalar." />
+<title>Lienzo — Editor de fotos online gratis, alternativa a Photoshop en el navegador</title>
+<meta name="description" content="Editor de fotos online gratis y sin registro, alternativa a Photoshop: capas, máscaras, abre y guarda PSD, revela RAW, quita el fondo con IA y funciona en el móvil. Sin instalar nada." />
+<meta name="robots" content="index, follow" />
 <meta property="og:title" content="Lienzo — Editor de imágenes profesional en el navegador" />
 <meta property="og:description" content="Capas, PSD, RAW, pinceles, IA local y asistente. Gratis y sin instalar." />
 <meta property="og:type" content="website" />
@@ -15,6 +16,7 @@
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:image" content="https://lienzo-editor.vercel.app/landing/og.jpg" />
 <link rel="canonical" href="https://lienzo-editor.vercel.app/" />
+<script type="application/ld+json">[{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "Lienzo", "url": "https://lienzo-editor.vercel.app/", "applicationCategory": "MultimediaApplication", "operatingSystem": "Navegador web (Windows, macOS, Linux, Android, iOS)", "inLanguage": ["es", "en"], "description": "Editor de fotos online gratis en el navegador: capas, máscaras, PSD, RAW, pinceles e IA para quitar fondos.", "image": "https://lienzo-editor.vercel.app/landing/og.jpg", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "EUR"}}, {"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "¿Es una alternativa gratis a Photoshop?", "acceptedAnswer": {"@type": "Answer", "text": "Sí. Lienzo es un editor de fotos gratuito que funciona en el navegador, con capas, máscaras, archivos PSD, pinceles y los mismos atajos de teclado. No hace falta instalar nada ni crear una cuenta. No está afiliado a Adobe."}}, {"@type": "Question", "name": "¿Hay que instalar algo o crear una cuenta?", "acceptedAnswer": {"@type": "Answer", "text": "No. Abres la página y editas. Si quieres, puedes instalarlo como aplicación desde el navegador."}}, {"@type": "Question", "name": "¿Puedo abrir y guardar archivos PSD?", "acceptedAnswer": {"@type": "Answer", "text": "Sí: capas, grupos, máscaras, máscaras vectoriales y de recorte, capas de ajuste, textos editables y estilos de capa, de ida y vuelta."}}, {"@type": "Question", "name": "¿Se suben mis imágenes a algún sitio?", "acceptedAnswer": {"@type": "Answer", "text": "No. Todo ocurre en tu dispositivo, incluida la IA local. Solo si usas el asistente en la nube se envía una vista reducida para atender la petición."}}]}]</script>
 <meta name="theme-color" content="#14151a" />
 <link rel="icon" href="/icons/icon-192.png" />
 <!-- Visitas (Vercel Web Analytics, sin cookies): solo en el dominio publicado. -->
@@ -312,6 +314,7 @@
       <h2 data-en="Frequently asked questions">Preguntas frecuentes</h2>
     </div>
     <div class="wrap faq">
+      <details><summary data-en="Is it a free alternative to Photoshop?">¿Es una alternativa gratis a Photoshop?</summary><p data-en="Yes. Lienzo is a free photo editor that runs in the browser, with layers, masks, PSD files, brushes and the same keyboard shortcuts. No install or account needed. It is not affiliated with Adobe.">Sí. Lienzo es un editor de fotos gratuito que funciona en el navegador, con capas, máscaras, archivos PSD, pinceles y los mismos atajos de teclado. No hace falta instalar nada ni crear una cuenta. No está afiliado a Adobe.</p></details>
       <details><summary data-en="Do I need to install anything or create an account?">¿Hay que instalar algo o crear una cuenta?</summary><p data-en="No. Open the page and start editing. If you want, you can install it as an app from the browser.">No. Abres la página y editas. Si quieres, puedes instalarlo como aplicación desde el navegador.</p></details>
       <details><summary data-en="Are my images uploaded anywhere?">¿Se suben mis imágenes a algún sitio?</summary><p data-en="No. Everything happens on your device, including the local AI. Only if you use the cloud assistant or generative fill is a reduced preview sent to process your request.">No. Todo ocurre en tu dispositivo, incluida la IA local. Solo si usas el asistente en la nube o el relleno generativo se envía una vista reducida para atender la petición.</p></details>
       <details><summary data-en="Can I open and save PSD files?">¿Puedo abrir y guardar archivos PSD?</summary><p data-en="Yes: layers, groups, masks, vector masks, clipping masks, adjustment layers, editable text and layer styles, round trip.">Sí: capas, grupos, máscaras, máscaras vectoriales y de recorte, capas de ajuste, textos editables y estilos de capa, de ida y vuelta.</p></details>
@@ -355,7 +358,7 @@
     nodes.forEach(function (n) { n.setAttribute('data-es', n.textContent); });
     var imgs = Array.prototype.slice.call(document.querySelectorAll('[data-en-alt]'));
     imgs.forEach(function (n) { n.setAttribute('data-es-alt', n.getAttribute('alt')); });
-    var meta = { es: [document.title, document.querySelector('meta[name=description]').content], en: ['Lienzo — Professional image editor in your browser', 'Lienzo is a professional image editor that runs in your browser: layers, PSD, RAW, brushes, local AI, an assistant, CMYK, PDF and animation. Free, no install.'] };
+    var meta = { es: [document.title, document.querySelector('meta[name=description]').content], en: ['Lienzo — Free online photo editor, a Photoshop alternative in your browser', 'Free online photo editor with no sign-up, a Photoshop alternative: layers, masks, open and save PSD, RAW, AI background removal, works on mobile. Nothing to install.'] };
     function apply(lang) {
       document.documentElement.lang = lang;
       nodes.forEach(function (n) { n.textContent = n.getAttribute(lang === 'en' ? 'data-en' : 'data-es'); });
