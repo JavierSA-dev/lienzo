@@ -14,6 +14,7 @@ const step3 = { messages: [...step2.messages, { role: 'assistant', content: [{ t
 let handler: (rq: unknown, rs: Res) => Promise<void>;
 beforeAll(async () => {
   process.env.ANTHROPIC_API_KEY = 'test';
+  process.env.AI_GLOBAL_DAILY_LIMIT = '400';
   delete process.env.KV_REST_API_URL; delete process.env.UPSTASH_REDIS_REST_URL; delete process.env.BLOB_READ_WRITE_TOKEN;
   vi.stubGlobal('fetch', anthropic);
   handler = (await import('../../api/assistant.js')).default;
@@ -49,5 +50,21 @@ describe('cuota del asistente (10 al día por navegador)', () => {
     const r = mkRes();
     await handler(req('POST', 'otro-navegador-nuevo-123', '4.4.4.4', msg), r);
     expect(r.statusCode).toBe(402);
+  });
+  it('cambiar el id del navegador en cada petición no da llamadas ilimitadas (tope por IP: 300)', async () => {
+    let last = 0;
+    for (let i = 0; i < 301; i++) { const r = mkRes(); await handler(req('POST', `rot-${i}-xxxxxxxxxxxxxxxx`, '5.5.5.5', msg), r); last = r.statusCode; if (i < 300) expect(r.statusCode).toBe(200); }
+    expect(last).toBe(429);
+  });
+  it('techo global de llamadas al día para toda la web', async () => {
+    let r = mkRes();
+    for (let i = 0; i < 60 && r.statusCode !== 429; i++) { r = mkRes(); await handler(req('POST', `glob-${i}-xxxxxxxxxxxxxxx`, `6.6.6.${i}`, msg), r); }
+    expect(r.statusCode).toBe(429);
+    expect(JSON.parse(r.body).error).toMatch(/límite de uso para todos/);
+  });
+  it('rechaza bloques que la app no envía (p. ej. documentos o imágenes por URL)', async () => {
+    const r = mkRes();
+    await handler(req('POST', 'eeeeeeeeeeeeeeeeeeee', '7.7.7.7', { messages: [{ role: 'user', content: [{ type: 'document', source: { type: 'url', url: 'x' } }] }], tools: [] }), r);
+    expect(r.statusCode).toBe(400);
   });
 });

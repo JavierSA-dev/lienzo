@@ -113,7 +113,7 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 ## Resultados verificados (entorno de pruebas, GPU emulada por CPU)
 
-- 51/51 tests unitarios, 24/24 de la fase 1, 244/244 de las fases 2–9, 53/53 de la fase 10, 34/34 de la fase 11, 25/25 de la fase 12, 66/66 de la fase 13, 44/44 del asistente, la IA sobre la selección y la landing y 72/72 de móvil y tableta (toques de varios dedos simulados) en Chromium.
+- 54/54 tests unitarios, 24/24 de la fase 1, 244/244 de las fases 2–9, 53/53 de la fase 10, 34/34 de la fase 11, 25/25 de la fase 12, 66/66 de la fase 13, 44/44 del asistente, la IA sobre la selección y la landing y 72/72 de móvil y tableta (toques de varios dedos simulados) en Chromium.
 - Composición GPU igual que la referencia en CPU (diferencia máxima 1/255, PSD de 50 capas).
 - Desenfoque gaussiano de 20 px en 24 MP: la interfaz no se bloquea (tarea larga máxima 0 ms).
 - Quitar fondo con IA local: ~2,5 s en CPU emulada. Relleno según contenido de un hueco de 150 px: ~1–3 s en un hilo.

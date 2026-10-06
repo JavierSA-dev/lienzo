@@ -25,7 +25,8 @@ Si eres una sesión nueva de Claude, lee esto entero antes de tocar nada.
 - **Variables de entorno en Vercel:**
   - `ANTHROPIC_API_KEY`: no la pidas ni la muestres nunca.
   - Upstash Redis con prefijo `STORAGE_` (`STORAGE_KV_REST_API_URL` y `STORAGE_KV_REST_API_TOKEN`), para la cuota.
-  - Opcionales: `ASSISTANT_MODEL` (por defecto `claude-sonnet-4-5`), `ASSISTANT_MAX_TOKENS` (12000), `AI_DAILY_LIMIT` (10), `AI_DAILY_IP_LIMIT` (30), `AI_DAILY_RAW_LIMIT` (120), `PREMIUM_TOKENS`.
+  - Opcionales: `ASSISTANT_MODEL` (por defecto `claude-sonnet-4-5`), `ASSISTANT_MAX_TOKENS` (12000), `AI_DAILY_LIMIT` (10), `AI_DAILY_IP_LIMIT` (30), `AI_DAILY_RAW_LIMIT` (120), `AI_DAILY_RAW_IP_LIMIT` (300), `AI_GLOBAL_DAILY_LIMIT` (600), `PREMIUM_TOKENS`.
+- **Límite de gasto:** Javier debe tener un tope mensual en la consola de Anthropic (Settings → Limits).
 - **LinkedIn:** Javier va a anunciarlo con el mensaje "lo he hecho con Claude en 2 días, probadlo gratis". La imagen para compartir es `public/landing/og.jpg` (1200×630).
 
 ## Estructura
@@ -48,7 +49,8 @@ Si eres una sesión nueva de Claude, lee esto entero antes de tocar nada.
   - Tras cada ronda, el modelo recibe una imagen del resultado. Con selección activa, recibe además la zona ampliada.
 - **Barra contextual de la selección:** `src/app/SelectionBar.tsx`. Aparece bajo la selección con un campo para pedir cambios a la IA solo ahí. En móvil es "✨ Editar con IA" en la barra inferior.
 - **Cuota de pruebas:** `api/_quota.js`.
-  - Límites por día: 10 peticiones por navegador (cabecera `X-Lienzo-Device`), 30 por IP y 120 llamadas al modelo.
+  - Límites por día: 10 peticiones por navegador (cabecera `X-Lienzo-Device`) y 30 por IP; llamadas al modelo: 120 por navegador, 300 por IP y 600 en toda la web (techo de gasto, `AI_GLOBAL_DAILY_LIMIT`).
+  - La API solo acepta bloques de texto, imagen en base64 y herramientas (máx. 4 imágenes por mensaje), para que no se use como proxy genérico.
   - Solo se cobra si el turno ejecuta herramientas.
   - `GET /api/assistant` devuelve la cuota.
 
@@ -69,7 +71,7 @@ Resultados de la última vez que se pasaron:
 
 | Batería | Resultado |
 | --- | --- |
-| Unitarios | 51 |
+| Unitarios | 54 |
 | e2e | 24 |
 | full | 244 |
 | select | 53 |

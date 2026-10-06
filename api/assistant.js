@@ -7,11 +7,13 @@
 //   ASSISTANT_MODEL     modelo (claude-sonnet-4-5 por defecto)
 //   AI_DAILY_LIMIT      peticiones de IA al día por navegador (10)
 //   AI_DAILY_IP_LIMIT   tope diario por IP, por si se borra el navegador (30)
+//   AI_DAILY_RAW_LIMIT / AI_DAILY_RAW_IP_LIMIT  llamadas al modelo al día por navegador (120) y por IP (300)
+//   AI_GLOBAL_DAILY_LIMIT  llamadas al modelo al día en toda la web (600): techo de gasto
 //   PREMIUM_TOKENS      tokens separados por comas con uso ilimitado (usuarios de pago)
 //   + el almacén de la cuota: Upstash Redis o Vercel Blob (ver api/_quota.js)
 //
 // GET /api/assistant devuelve la cuota del navegador que pregunta (para mostrarla en la app).
-import { who, quota, spend, storeName, DEVICE_LIMIT } from './_quota.js';
+import { who, quota, spend, spendGlobal, storeName, DEVICE_LIMIT } from './_quota.js';
 
 const PREMIUM = new Set((process.env.PREMIUM_TOKENS ?? '').split(',').filter(Boolean));
 const TRIAL = `El asistente de IA está en pruebas y en desarrollo (irá mejorando): cada navegador tiene ${DEVICE_LIMIT} peticiones de IA al día. Las órdenes sencillas (mejorar, recortar, quitar el fondo…) no cuentan: se hacen en tu equipo.`;
@@ -64,6 +66,12 @@ export default async function handler(req, res) {
   const { messages, tools } = body ?? {};
   if (!Array.isArray(messages) || !messages.length || messages.length > 40 || !Array.isArray(tools) || tools.length > 40) return send(res, 400, { error: 'Petición no válida.' });
   if (JSON.stringify(body).length > 1_500_000) return send(res, 413, { error: 'Petición demasiado grande.' });
+  // Solo texto, imágenes y bloques de herramientas; como mucho 4 imágenes por mensaje.
+  const okBlock = (b) => b && ['text', 'image', 'tool_use', 'tool_result'].includes(b.type) && (b.type !== 'image' || b.source?.type === 'base64');
+  const imgs = (c) => (Array.isArray(c) ? c.reduce((n, b) => n + (b?.type === 'image' ? 1 : b?.type === 'tool_result' ? imgs(b.content) : 0), 0) : 0);
+  if (!messages.every((m) => ['user', 'assistant'].includes(m?.role) && (typeof m.content === 'string' || (Array.isArray(m.content) && m.content.every(okBlock))) && imgs(m.content) <= 4)) {
+    return send(res, 400, { error: 'Petición no válida.' });
+  }
 
   // Una petición cuenta solo si hace algo: se cobra al llegar el PRIMER resultado de herramientas del turno
   // (las respuestas que solo son texto, como "no puedo hacer eso", no gastan cuota).
@@ -74,9 +82,10 @@ export default async function handler(req, res) {
   while (turnStart > 0 && !(messages[turnStart]?.role === 'user' && !isToolResult(messages[turnStart]))) turnStart--;
   const firstToolRound = isToolResult(last) && messages.slice(turnStart + 1).filter(isToolResult).length === 1;
   let left = null;
+  let q;
+  try { q = await quota(id); } catch { return send(res, 503, { error: 'No se puede comprobar la cuota ahora mismo. Inténtalo en un momento.' }); }
+  if (q.globalBlocked) return send(res, 429, { error: `La IA de pruebas ha llegado hoy a su límite de uso para todos (estamos en pruebas). Vuelve mañana; mientras, las órdenes sencillas siguen funcionando.`, left: q.left, limit: DEVICE_LIMIT });
   if (!premium) {
-    let q;
-    try { q = await quota(id); } catch { return send(res, 503, { error: 'No se puede comprobar la cuota ahora mismo. Inténtalo en un momento.' }); }
     left = q.left;
     // Los pasos de herramientas de una petición ya aceptada no se cortan a medias.
     if (q.rawBlocked) return send(res, 429, { error: 'Demasiadas peticiones por hoy desde este navegador. Vuelve mañana.', left: q.left, limit: DEVICE_LIMIT });
@@ -93,7 +102,8 @@ export default async function handler(req, res) {
     });
     const j = await r.json();
     if (!r.ok) return send(res, 502, { error: j?.error?.message ?? `Error ${r.status} del modelo.` });
-    if (!premium) {
+    if (premium) await spendGlobal(id).catch(() => {});
+    else {
       await spend(id, firstToolRound).catch(() => {});
       if (firstToolRound) left = Math.max(0, (left ?? DEVICE_LIMIT) - 1);
     }
