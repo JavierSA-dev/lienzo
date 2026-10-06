@@ -23,6 +23,13 @@ export function SelectionBar({ sel, X, Y, area }: { sel: Rect; X: (x: number) =>
   // Una selección nueva vuelve a mostrar la barra.
   const key = `${sel.x},${sel.y},${sel.w},${sel.h}`;
   useEffect(() => { setHidden(false); }, [key]);
+  // Al pinchar en el lienzo (otra selección, pintar…) la barra se aparta hasta que cambie la selección.
+  useEffect(() => {
+    const area = document.querySelector('[data-testid="canvas-area"]');
+    const down = (e: Event) => { if (!(e.target as Element | null)?.closest?.('.selbar')) setHidden(true); };
+    area?.addEventListener('pointerdown', down, true);
+    return () => area?.removeEventListener('pointerdown', down, true);
+  }, []);
   // Con Mayús/Alt/Ctrl pulsadas se está modificando la selección: la barra se aparta para no estorbar.
   const [mods, setMods] = useState(false);
   useEffect(() => {
