@@ -48,4 +48,4 @@ export async function gridify(b64: string, scale: number, x0 = 0, y0 = 0): Promi
   }
 }
 
-export const GRID_NOTE = 'La imagen lleva una cuadrícula rosa con las coordenadas del DOCUMENTO en amarillo (x arriba, y a la izquierda): lee las posiciones con ella, no con los píxeles de la imagen.';
+export const GRID_NOTE = 'La cuadrícula rosa rotula en amarillo las coordenadas de la vista (x arriba, y a la izquierda).';

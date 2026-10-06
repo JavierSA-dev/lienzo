@@ -78,7 +78,7 @@ Resultados de la última vez que se pasaron:
 | photo | 34 |
 | art | 25 |
 | output | 66 |
-| assistant | 44 |
+| assistant | 46 |
 | mobile | 72 |
 
 ## Pendiente o ideas

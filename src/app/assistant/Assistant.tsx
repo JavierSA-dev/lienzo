@@ -5,7 +5,7 @@ import { Sparkles, Send, X, Settings2, Undo2, Check, AlertTriangle, Loader2 } fr
 import { engine } from '../../engine/client';
 import { useStore } from '../store';
 import { planLocal, type Stats } from './local';
-import { toolByName, toolSchemas } from './tools';
+import { toolByName, toolSchemas, VIEW_MAX } from './tools';
 import { gridify, GRID_NOTE } from './grid';
 
 type Act = { label: string; ok: boolean };
@@ -82,25 +82,34 @@ export function AssistantPanel() {
 
   /** Bucle con el modelo: envía, ejecuta las herramientas pedidas y devuelve sus resultados. */
   const viaAI = async (text: string, acts: Act[]): Promise<string> => {
-    const ctx = await engine.call<Record<string, unknown> | null>('assistantContext', 512);
-    const { thumbnail, ...summary } = (ctx ?? {}) as { thumbnail?: { jpegBase64: string; scale: number; note?: string } } & Record<string, unknown>;
-    if (thumbnail) { thumbnail.jpegBase64 = await gridify(thumbnail.jpegBase64, thumbnail.scale); (summary as Record<string, unknown>).thumbnail = { note: `${thumbnail.note ?? ''} ${GRID_NOTE}` }; }
-    // Las imágenes de turnos anteriores se quitan (solo cuenta la actual).
+    const ctx = await engine.call<Record<string, unknown> | null>('assistantContext', VIEW_MAX);
+    type R4 = { x: number; y: number; w: number; h: number };
+    const { thumbnail, layers, selection: selDoc, width: docW, height: docH, ...rest } = (ctx ?? {}) as {
+      thumbnail?: { jpegBase64: string; scale: number; w: number; h: number }; layers?: { bounds: R4 | null }[]; selection?: R4 | null; width?: number; height?: number;
+    } & Record<string, unknown>;
+    // Todo lo que ve el modelo va en coordenadas de la VISTA (los píxeles de la imagen general).
+    const k = thumbnail?.scale ?? 1;
+    const toView = (r: R4 | null | undefined) => (r ? { x: Math.round(r.x * k), y: Math.round(r.y * k), w: Math.round(r.w * k), h: Math.round(r.h * k) } : null);
+    const summary = ctx ? {
+      ...rest, view: thumbnail ? { width: thumbnail.w, height: thumbnail.h } : null, realSize: { width: docW, height: docH },
+      coordinates: `Todas las coordenadas (las de este resumen, las que ves en las imágenes y las que das a las herramientas) son píxeles de la VISTA de ${thumbnail?.w}×${thumbnail?.h}, la primera imagen. La app las convierte al tamaño real. ${GRID_NOTE}`,
+      layers: layers?.map((l) => ({ ...l, bounds: toView(l.bounds) })), selection: toView(selDoc),
+    } : null;
     // Las imágenes de turnos anteriores se quitan (también dentro de resultados de herramientas).
     const strip = (b: { type: string; content?: unknown }): unknown => b.type === 'image' ? { type: 'text', text: '[imagen anterior]' }
       : b.type === 'tool_result' && Array.isArray(b.content) ? { ...b, content: (b.content as { type: string }[]).map(strip) } : b;
     wire.current = wire.current.map((w) => (Array.isArray(w.content) ? { ...w, content: (w.content as { type: string }[]).map(strip) } : w));
     const content: unknown[] = [];
-    if (thumbnail) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: thumbnail.jpegBase64 } });
+    if (thumbnail) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await gridify(thumbnail.jpegBase64, 1) } });
     // Con una selección, el modelo ve además la zona seleccionada ampliada (con margen).
-    const sel = (summary as { selection?: { x: number; y: number; w: number; h: number } | null }).selection;
     let selNote = '';
-    if (sel) {
-      const m = Math.round(Math.max(sel.w, sel.h) * 0.25);
-      const v = await engine.call<{ w: number; h: number; scale: number; rect: { x: number; y: number; w: number; h: number }; jpegBase64: string } | null>('assistantView', { x: sel.x - m, y: sel.y - m, w: sel.w + 2 * m, h: sel.h + 2 * m }, 512).catch(() => null);
+    if (selDoc && summary?.selection) {
+      const m = Math.round(Math.max(selDoc.w, selDoc.h) * 0.25);
+      const v = await engine.call<{ w: number; h: number; scale: number; rect: R4; jpegBase64: string } | null>('assistantView', { x: selDoc.x - m, y: selDoc.y - m, w: selDoc.w + 2 * m, h: selDoc.h + 2 * m }, 512).catch(() => null);
       if (v) {
-        content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await gridify(v.jpegBase64, v.scale, v.rect.x, v.rect.y) } });
-        selNote = `\n\nHay una SELECCIÓN activa (x=${sel.x}, y=${sel.y}, ${sel.w}×${sel.h} px). La segunda imagen es esa zona ampliada con margen (x=${v.rect.x}, y=${v.rect.y}, ${v.rect.w}×${v.rect.h}), con su cuadrícula de coordenadas del documento. Salvo que diga otra cosa, la petición se refiere a lo seleccionado.`;
+        content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await gridify(v.jpegBase64, v.scale / k, v.rect.x * k, v.rect.y * k) } });
+        const sv = summary.selection;
+        selNote = `\n\nHay una SELECCIÓN activa (x=${sv.x}, y=${sv.y}, ${sv.w}×${sv.h}). La segunda imagen es esa zona ampliada con margen, con su cuadrícula. Salvo que diga otra cosa, la petición se refiere a lo seleccionado.`;
       }
     }
     content.push({ type: 'text', text: `Documento: ${ctx ? JSON.stringify(summary) : 'ninguno abierto'}${selNote}\n\nPetición: ${text}` });
@@ -131,11 +140,11 @@ export function AssistantPanel() {
       }
       // El modelo ve cómo ha quedado el documento y puede corregirse.
       if (changed && S().doc.open) {
-        const v = await engine.call<{ w: number; h: number; scale: number; jpegBase64: string } | null>('assistantView', null, 640).catch(() => null);
+        const v = await engine.call<{ w: number; h: number; scale: number; jpegBase64: string } | null>('assistantView', null, VIEW_MAX).catch(() => null);
         const last = results[results.length - 1];
         if (v && last) {
-          const note = { type: 'text', text: `Así queda el documento ahora. ${GRID_NOTE} Compruébalo: si no está bien, corrígelo antes de terminar (si un paso salió mal, deshazlo con undo y prueba otra cosa; no repitas lo mismo).` };
-          last.content = [...(Array.isArray(last.content) ? last.content : [{ type: 'text', text: String(last.content) }]), note, { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await gridify(v.jpegBase64, v.scale) } }];
+          const note = { type: 'text', text: `Así queda el documento ahora (vista de ${v.w}×${v.h}). ${GRID_NOTE} Compruébalo: si no está bien, corrígelo antes de terminar (si un paso salió mal, deshazlo con undo y prueba otra cosa; no repitas lo mismo).` };
+          last.content = [...(Array.isArray(last.content) ? last.content : [{ type: 'text', text: String(last.content) }]), note, { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await gridify(v.jpegBase64, 1) } }];
         }
       }
       wire.current.push({ role: 'user', content: results });

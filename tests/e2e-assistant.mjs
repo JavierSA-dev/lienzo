@@ -221,10 +221,33 @@ try {
     await page.waitForFunction(() => !document.querySelector('.amsg.pending'), null, { timeout: 30000 }).catch(() => {});
     await wait(500);
     const msg = calls3[0]?.messages.at(-1).content ?? [];
-    ok('Con selección, el modelo recibe la zona ampliada y sabe que hay selección', msg.filter((b) => b.type === 'image').length === 2 && /SELECCIÓN activa \(x=\d+, y=\d+, \d+×\d+ px\)/.test(JSON.stringify(msg)) && calls3[0]?.tools.some((t) => t.name === 'recolor'), `${calls3.length} llamadas; ${JSON.stringify(msg).replace(/"data":"[^"]+"/g, '').slice(0, 300)}`);
+    ok('Con selección, el modelo recibe la zona ampliada y sabe que hay selección', msg.filter((b) => b.type === 'image').length === 2 && /SELECCIÓN activa \(x=\d+, y=\d+, \d+×\d+\)/.test(JSON.stringify(msg)) && calls3[0]?.tools.some((t) => t.name === 'recolor'), `${calls3.length} llamadas; ${JSON.stringify(msg).replace(/"data":"[^"]+"/g, '').slice(0, 300)}`);
     await page.unroute('**/api/assistant');
     await call('deselect'); await wait(300);
     ok('Sin selección no hay barra', !(await bar.isVisible().catch(() => false)));
+    await page.getByLabel('Cerrar asistente').click(); await wait(200);
+  }
+
+  // --- coordenadas de la vista: el modelo da posiciones en la imagen que ve y la app las pasa al documento
+  {
+    await newDoc(3000, 2000, 'white');
+    const calls4 = [];
+    await page.route('**/api/assistant', async (route) => {
+      if (route.request().method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: true, limit: 10, left: 7 }) });
+      const body = JSON.parse(route.request().postData());
+      calls4.push(body);
+      const isResult = body.messages.at(-1).content.some?.((b) => b.type === 'tool_result');
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(isResult
+        ? { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Hecho.' }] }
+        : { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 's1', name: 'select', input: { what: 'rect', x: 128, y: 128, width: 256, height: 128 } }] }) });
+    });
+    await page.getByTestId('assistant-btn').click(); await wait(200);
+    await ask('selecciona la ventana de arriba a la izquierda', 800);
+    const txt = (calls4[0]?.messages.at(-1).content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join(' ');
+    ok('El modelo recibe la vista (1280×853) y el tamaño real aparte', /"view":\{"width":1280,"height":853\}/.test(txt) && /"realSize":\{"width":3000,"height":2000\}/.test(txt), txt.slice(0, 200));
+    const sl = (await S()).doc.selection;
+    ok('Coordenadas de la vista → documento (128,128 256×128 → 300,300 600×300)', sl && Math.abs(sl.x - 300) <= 2 && Math.abs(sl.y - 300) <= 2 && Math.abs(sl.w - 600) <= 3 && Math.abs(sl.h - 300) <= 3, JSON.stringify(sl));
+    await page.unroute('**/api/assistant');
     await page.getByLabel('Cerrar asistente').click(); await wait(200);
   }
 

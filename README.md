@@ -21,7 +21,7 @@ npm run dev          # http://localhost:5173 (presentación) y http://localhost:
 | `node tests/e2e-photo.mjs` | Fase 11: revelado, RAW, lente, ruido, desenfoques, Quitar, escalado, panorámica, HDR y alinear (34 comprobaciones; la de RAW usa `tests/fixtures/sample.arw` si existe) |
 | `node tests/e2e-art.mjs` | Fase 12: pinceles (puntas, dinámicas, ABR, simetría, mezclador), degradados y motivos (25 comprobaciones) |
 | `node tests/e2e-output.mjs` | Fase 13: modos de color y prueba de colores, TIFF/PDF/SVG/GIF (validados con PIL, qpdf y pdftoppm), línea de tiempo, acciones con parámetros, lotes e inglés (66 comprobaciones) |
-| `node tests/e2e-assistant.mjs` | Asistente de IA (intérprete local, bucle con el modelo con respuestas simuladas, deshacer, sin créditos/sin servicio, móvil) IA sobre la selección con la barra contextual, y página de presentación (44 comprobaciones) |
+| `node tests/e2e-assistant.mjs` | Asistente de IA (intérprete local, bucle con el modelo con respuestas simuladas, deshacer, sin créditos/sin servicio, móvil) IA sobre la selección con la barra contextual, y página de presentación (46 comprobaciones) |
 | `npm run e2e:mobile` | Móvil vertical/horizontal y tableta: 72 comprobaciones con toques de varios dedos |
 | `npm run i18n:scan` | Recorre menús, diálogos, herramientas y hojas móviles en inglés y lista los textos sin traducir |
 | `node tests/landing-shots.mjs` | Regenera las capturas de la página de presentación (`public/landing/*.webp`) |
@@ -113,7 +113,7 @@ Entrada del lápiz               Historial por deltas de tiles          27 modos
 
 ## Resultados verificados (entorno de pruebas, GPU emulada por CPU)
 
-- 55/55 tests unitarios, 24/24 de la fase 1, 244/244 de las fases 2–9, 53/53 de la fase 10, 34/34 de la fase 11, 25/25 de la fase 12, 66/66 de la fase 13, 44/44 del asistente, la IA sobre la selección y la landing y 72/72 de móvil y tableta (toques de varios dedos simulados) en Chromium.
+- 55/55 tests unitarios, 24/24 de la fase 1, 244/244 de las fases 2–9, 53/53 de la fase 10, 34/34 de la fase 11, 25/25 de la fase 12, 66/66 de la fase 13, 46/46 del asistente, la IA sobre la selección y la landing y 72/72 de móvil y tableta (toques de varios dedos simulados) en Chromium.
 - Composición GPU igual que la referencia en CPU (diferencia máxima 1/255, PSD de 50 capas).
 - Desenfoque gaussiano de 20 px en 24 MP: la interfaz no se bloquea (tarea larga máxima 0 ms).
 - Quitar fondo con IA local: ~2,5 s en CPU emulada. Relleno según contenido de un hueco de 150 px: ~1–3 s en un hilo.

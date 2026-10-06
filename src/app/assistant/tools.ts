@@ -32,6 +32,16 @@ const doc = () => S().doc;
 const need = () => { if (!doc().open) throw new Error('No hay ningún documento abierto.'); };
 
 /**
+ * El modelo trabaja en las coordenadas de la VISTA que recibe (la imagen general, de VIEW_MAX px
+ * de lado mayor como mucho): es como mejor localiza las cosas. Aquí se pasan a px del documento.
+ */
+export const VIEW_MAX = 1280;
+/** px de vista por px de documento. */
+export const viewK = () => { const d = doc(); return d.open ? Math.min(1, VIEW_MAX / Math.max(d.width, d.height)) : 1; };
+/** Coordenada o tamaño de la vista (lo que da el modelo) → px de documento; `def` ya está en px de documento. */
+const dv = (v: unknown, def: number) => { const n = num(v, NaN); return isFinite(n) ? n / viewK() : def; };
+
+/**
  * Capa sobre la que aplicar un revelado o un filtro: la activa si tiene píxeles; si es de ajuste,
  * texto o forma, la capa de píxeles (u objeto inteligente) más alta por debajo de ella.
  */
@@ -136,7 +146,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'resize_image',
-    description: 'Cambia el tamaño de la imagen (remuestrea). Da width y/o height en px o percent; se conserva la proporción si falta uno.',
+    description: 'Cambia el tamaño de la imagen (remuestrea). Da width y/o height en px REALES del documento (no de la vista) o percent; se conserva la proporción si falta uno.',
     input_schema: { type: 'object', properties: { width: N('px'), height: N('px'), percent: N('%') } },
     run: async (a) => {
       need();
@@ -153,12 +163,12 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'crop',
-    description: 'Recorta el documento. Con ratio ("16:9", "1:1", "4:5", "9:16"…) recorta centrado al mayor rectángulo de esa proporción; o da x, y, width, height en px.',
+    description: 'Recorta el documento. Con ratio ("16:9", "1:1", "4:5", "9:16"…) recorta centrado al mayor rectángulo de esa proporción; o da x, y, width, height en px de la vista.',
     input_schema: { type: 'object', properties: { ratio: { type: 'string' }, x: N('px'), y: N('px'), width: N('px'), height: N('px') } },
     run: async (a) => {
       need();
       const { width: W, height: H } = doc();
-      let r = { x: num(a.x), y: num(a.y), w: num(a.width, W), h: num(a.height, H) };
+      let r = { x: dv(a.x, 0), y: dv(a.y, 0), w: dv(a.width, W), h: dv(a.height, H) };
       if (typeof a.ratio === 'string' && /^\s*\d+(\.\d+)?\s*[:x/]\s*\d+(\.\d+)?\s*$/.test(a.ratio)) {
         const [p, q] = a.ratio.split(/[:x/]/).map(Number), k = p / q;
         const w = Math.min(W, H * k), h = w / k;
@@ -185,7 +195,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'select',
-    description: 'Selección: what = "subject" (sujeto principal con IA local), "all", "none", "invert", o "rect"/"ellipse" con x, y, width, height en px.',
+    description: 'Selección: what = "subject" (sujeto principal con IA local), "all", "none", "invert", o "rect"/"ellipse" con x, y, width, height en px de la vista.',
     input_schema: { type: 'object', properties: { what: { type: 'string', enum: ['subject', 'all', 'none', 'invert', 'rect', 'ellipse'] }, x: N('px'), y: N('px'), width: N('px'), height: N('px'), feather: N('px') }, required: ['what'] },
     run: async (a) => {
       need();
@@ -195,8 +205,8 @@ export const TOOLS: ToolDef[] = [
         case 'none': await engine.call('deselect'); return 'Selección quitada.';
         case 'invert': await engine.call('invertSelection'); return 'Selección invertida.';
         default: {
-          const r = { x: num(a.x), y: num(a.y), w: num(a.width, doc().width), h: num(a.height, doc().height) };
-          await engine.call('selectShape', r, a.what === 'ellipse' ? 'ellipse' : 'rect', 'replace', num(a.feather));
+          const r = { x: dv(a.x, 0), y: dv(a.y, 0), w: dv(a.width, doc().width), h: dv(a.height, doc().height) };
+          await engine.call('selectShape', r, a.what === 'ellipse' ? 'ellipse' : 'rect', 'replace', dv(a.feather, 0));
           return 'Zona seleccionada.';
         }
       }
@@ -242,7 +252,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'add_text',
-    description: 'Añade una capa de texto editable. Colocación: position "top" | "center" | "bottom" (centrado en horizontal) o x/y en px de documento (y = línea base; align "left" | "center" | "right" respecto a x). size en px (por defecto ~8 % del alto). color "#hex". font: Arial, Georgia, Impact, Verdana, "Times New Roman" o cualquier Google Font (Montserrat, Bebas Neue, Oswald, Poppins, Playfair Display, Anton, Lobster, Press Start 2P…). Estilo tipo logo: stroke (contorno {color, width}) y shadow (sombra paralela).',
+    description: 'Añade una capa de texto editable. Colocación: position "top" | "center" | "bottom" (centrado en horizontal) o x/y en px de la vista (y = línea base; align "left" | "center" | "right" respecto a x). size en px de la vista (por defecto ~8 % del alto). color "#hex". font: Arial, Georgia, Impact, Verdana, "Times New Roman" o cualquier Google Font (Montserrat, Bebas Neue, Oswald, Poppins, Playfair Display, Anton, Lobster, Press Start 2P…). Estilo tipo logo: stroke (contorno {color, width}) y shadow (sombra paralela).',
     input_schema: { type: 'object', properties: {
       text: { type: 'string' }, position: { type: 'string', enum: ['top', 'center', 'bottom'] }, x: N('px'), y: N('px'), align: { type: 'string', enum: ['left', 'center', 'right'] },
       size: N('px'), color: { type: 'string' }, font: { type: 'string' }, bold: { type: 'boolean' }, italic: { type: 'boolean' }, tracking: N('milésimas de eme'),
@@ -251,17 +261,17 @@ export const TOOLS: ToolDef[] = [
     run: async (a) => {
       need();
       const { width: W, height: H } = doc();
-      const size = Math.max(6, Math.round(num(a.size, Math.max(12, H * 0.08))));
+      const size = Math.max(6, Math.round(dv(a.size, Math.max(12, H * 0.08))));
       const pos = a.position != null ? String(a.position) : a.x == null && a.y == null ? 'center' : '';
       const align = (pos ? 'center' : ['left', 'center', 'right'].includes(String(a.align)) ? String(a.align) : 'left') as 'left' | 'center' | 'right';
-      const x = pos ? W / 2 : num(a.x, align === 'center' ? W / 2 : W * 0.05);
-      const y = pos === 'top' ? size * 1.2 : pos === 'bottom' ? H - size * 0.5 : pos === 'center' ? H / 2 + size * 0.35 : num(a.y, H / 2);
+      const x = pos ? W / 2 : dv(a.x, align === 'center' ? W / 2 : W * 0.05);
+      const y = pos === 'top' ? size * 1.2 : pos === 'bottom' ? H - size * 0.5 : pos === 'center' ? H / 2 + size * 0.35 : dv(a.y, H / 2);
       const color = parseColor(a.color) ?? toRgba(S().fg);
       const id = await engine.call<number | undefined>('createText', { text: String(a.text), x, y, size, color, font: typeof a.font === 'string' && a.font ? a.font : 'Arial', bold: !!a.bold, italic: !!a.italic, align, tracking: num(a.tracking) });
       const st = a.stroke as { color?: string; width?: number } | undefined;
       if (id && (st || a.shadow)) {
         await engine.call('setEffects', id, {
-          ...(st ? { stroke: { enabled: true, color: parseColor(st.color) ?? [0, 0, 0, 255], size: Math.max(1, num(st.width, Math.round(size / 18))), position: 'outside' } } : {}),
+          ...(st ? { stroke: { enabled: true, color: parseColor(st.color) ?? [0, 0, 0, 255], size: Math.max(1, Math.round(dv(st.width, size / 18))), position: 'outside' } } : {}),
           ...(a.shadow ? { dropShadow: { enabled: true, color: [0, 0, 0, 255], opacity: 0.6, angle: 120, distance: Math.round(size / 14), size: Math.round(size / 10) } } : {}),
         }, true);
       }
@@ -270,7 +280,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'draw_svg',
-    description: 'Dibuja una ilustración (un perro, un logo, un icono, una mascota, un fondo decorativo…) escribiendo un SVG completo, que se coloca como objeto inteligente en una capa nueva. Haz dibujos detallados y bonitos: estilo ilustración plana o semiplana con formas suaves (path con curvas Bézier), varias capas de color, luces y sombras, contorno coherente; nunca solo cuatro círculos. Incluye xmlns y viewBox, y encuadra el dibujo para que ocupe casi todo el viewBox (márgenes pequeños); fondo transparente salvo que se pida. x, y, width en px de documento (por defecto centrado y al 60 % del lado menor).',
+    description: 'Dibuja una ilustración (un perro, un logo, un icono, una mascota, un fondo decorativo…) escribiendo un SVG completo, que se coloca como objeto inteligente en una capa nueva. Haz dibujos detallados y bonitos: estilo ilustración plana o semiplana con formas suaves (path con curvas Bézier), varias capas de color, luces y sombras, contorno coherente; nunca solo cuatro círculos. Incluye xmlns y viewBox, y encuadra el dibujo para que ocupe casi todo el viewBox (márgenes pequeños); fondo transparente salvo que se pida. x, y, width, height en px de la vista (por defecto centrado y al 60 % del lado menor).',
     input_schema: { type: 'object', properties: { svg: { type: 'string' }, name: { type: 'string' }, x: N('px'), y: N('px'), width: N('px'), height: N('px (opcional: con width, el dibujo se ajusta dentro de ese recuadro y se centra en él)') }, required: ['svg'] },
     run: async (a) => {
       if (!doc().open) await engine.call('newDoc', 1080, 1080, 'white', 'Dibujo.psd');
@@ -280,16 +290,16 @@ export const TOOLS: ToolDef[] = [
       if (!/xmlns=/.test(svg)) svg = svg.replace(/<svg/i, '<svg xmlns="http://www.w3.org/2000/svg"');
       const vb = svg.match(/viewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i);
       const aspect = vb ? Number(vb[1]) / Math.max(1e-6, Number(vb[2])) : 1;
-      let w = num(a.width, Math.min(W, H) * 0.6), h = w / aspect;
+      let w = dv(a.width, Math.min(W, H) * 0.6), h = w / aspect;
       let x: number, y: number;
       if (a.width != null && a.height != null) {
         // Recuadro dado (p. ej. donde estaba un logo): se ajusta dentro y se centra.
-        const bw = w, bh = Math.max(1, num(a.height, h));
+        const bw = w, bh = Math.max(1, dv(a.height, h));
         if (h > bh) { h = bh; w = h * aspect; }
-        x = num(a.x, (W - bw) / 2) + (bw - w) / 2; y = num(a.y, (H - bh) / 2) + (bh - h) / 2;
+        x = dv(a.x, (W - bw) / 2) + (bw - w) / 2; y = dv(a.y, (H - bh) / 2) + (bh - h) / 2;
       } else {
         if (h > H) { h = H; w = h * aspect; }
-        x = num(a.x, (W - w) / 2); y = num(a.y, (H - h) / 2);
+        x = dv(a.x, (W - w) / 2); y = dv(a.y, (H - h) / 2);
       }
       const png = await svgToPng(svg, Math.max(1, Math.round(w)), Math.max(1, Math.round(h)));
       await engine.call('placeSmart', `${String(a.name ?? 'Dibujo')}.png`, png, 'image/png', { x: Math.round(x), y: Math.round(y) });
@@ -298,7 +308,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'new_document',
-    description: 'Crea un documento nuevo (width, height en px; background "white" | "black" | "transparent").',
+    description: 'Crea un documento nuevo (width, height en px reales; background "white" | "black" | "transparent").',
     input_schema: { type: 'object', properties: { width: N('px'), height: N('px'), background: { type: 'string', enum: ['white', 'black', 'transparent'] }, name: { type: 'string' } } },
     run: async (a) => {
       const w = clamp(Math.round(num(a.width, 1080)), 1, 12000), h = clamp(Math.round(num(a.height, 1080)), 1, 12000);
@@ -308,24 +318,26 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'inspect',
-    description: 'Mira de cerca una zona del documento (x, y, width, height en px de documento) y devuelve una imagen ampliada. Úsalo para localizar con precisión lo que vas a seleccionar, borrar o sustituir (un logo, un texto, una cara) antes de actuar.',
+    description: 'Mira de cerca una zona (x, y, width, height en px de la vista) y devuelve una imagen ampliada con su cuadrícula de coordenadas de la vista. Úsalo para localizar con precisión lo que vas a seleccionar, borrar o sustituir (un logo, un texto, una cara) antes de actuar.',
     input_schema: { type: 'object', properties: { x: N('px'), y: N('px'), width: N('px'), height: N('px') }, required: ['x', 'y', 'width', 'height'] },
     run: async (a) => {
       need();
-      const v = await engine.call<{ w: number; h: number; scale: number; rect: { x: number; y: number; w: number; h: number }; jpegBase64: string } | null>('assistantView', { x: num(a.x), y: num(a.y), w: num(a.width), h: num(a.height) }, 768);
+      const k = viewK();
+      const v = await engine.call<{ w: number; h: number; scale: number; rect: { x: number; y: number; w: number; h: number }; jpegBase64: string } | null>('assistantView', { x: dv(a.x, 0), y: dv(a.y, 0), w: dv(a.width, 0), h: dv(a.height, 0) }, 768);
       if (!v) throw new Error('Esa zona está fuera del documento.');
-      return { text: `Zona x=${v.rect.x}, y=${v.rect.y}, ${v.rect.w}×${v.rect.h} px de documento. ${GRID_NOTE}`, image: await gridify(v.jpegBase64, v.scale, v.rect.x, v.rect.y) };
+      const R = (n: number) => Math.round(n * k);
+      return { text: `Zona x=${R(v.rect.x)}, y=${R(v.rect.y)}, ${R(v.rect.w)}×${R(v.rect.h)} (px de la vista), ampliada. ${GRID_NOTE}`, image: await gridify(v.jpegBase64, v.scale / k, v.rect.x * k, v.rect.y * k) };
     },
   },
   {
     name: 'add_shape',
-    description: 'Añade una capa de forma vectorial: shape "rect" | "ellipse" | "line" | "polygon", x, y, width, height en px, color de relleno, radius (esquinas).',
+    description: 'Añade una capa de forma vectorial: shape "rect" | "ellipse" | "line" | "polygon", x, y, width, height en px de la vista, color de relleno, radius (esquinas).',
     input_schema: { type: 'object', properties: { shape: { type: 'string', enum: ['rect', 'ellipse', 'line', 'polygon'] }, x: N('px'), y: N('px'), width: N('px'), height: N('px'), color: { type: 'string' }, radius: N('px') }, required: ['shape'] },
     run: async (a) => {
       need();
       const { width: W, height: H } = doc();
       const fill = parseColor(a.color) ?? toRgba(S().fg);
-      await engine.call('createShape', { shape: a.shape, x: num(a.x, W * 0.25), y: num(a.y, H * 0.25), w: num(a.width, W * 0.5), h: num(a.height, H * 0.5), fill, radius: num(a.radius) });
+      await engine.call('createShape', { shape: a.shape, x: dv(a.x, W * 0.25), y: dv(a.y, H * 0.25), w: dv(a.width, W * 0.5), h: dv(a.height, H * 0.5), fill, radius: dv(a.radius, 0) });
       return `Forma ${String(a.shape)} añadida.`;
     },
   },
