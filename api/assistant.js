@@ -88,7 +88,7 @@ export default async function handler(req, res) {
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: process.env.ASSISTANT_MODEL ?? 'claude-sonnet-4-5', max_tokens: 1500, system: SYSTEM, tools, messages }),
+      body: JSON.stringify({ model: process.env.ASSISTANT_MODEL ?? 'claude-sonnet-4-5', max_tokens: Number(process.env.ASSISTANT_MAX_TOKENS ?? 12000), system: SYSTEM, tools, messages }),
     });
     const j = await r.json();
     if (!r.ok) return send(res, 502, { error: j?.error?.message ?? `Error ${r.status} del modelo.` });

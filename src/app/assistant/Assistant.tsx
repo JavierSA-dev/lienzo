@@ -100,6 +100,7 @@ export function AssistantPanel() {
       const blocks = (j.content ?? []) as { type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }[];
       wire.current.push({ role: 'assistant', content: blocks });
       const uses = blocks.filter((b) => b.type === 'tool_use');
+      if (j.stop_reason === 'max_tokens') throw new Error('La respuesta del modelo se cortó por larga. Pídelo más sencillo o en partes.');
       if (!uses.length || j.stop_reason !== 'tool_use') return blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim() || 'Hecho.';
       const results: { type: string; tool_use_id?: string; content: unknown; is_error?: boolean }[] = [];
       let changed = false;
