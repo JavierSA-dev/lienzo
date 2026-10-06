@@ -93,3 +93,12 @@ describe('recolorParams', () => {
     expect(recolorParams({ h: 0.3, s: 0.6, l: 0.5, chroma: 0.4 }, rgbToHsl(158, 158, 158)).saturation).toBe(-100);
   });
 });
+
+describe('cuadrícula de coordenadas para el modelo', () => {
+  it('paso redondo con 6-12 líneas', async () => {
+    const { gridStep } = await import('../../src/app/assistant/grid');
+    expect(gridStep(1200)).toBe(100);
+    expect(gridStep(4000)).toBe(500);
+    expect(gridStep(300)).toBe(25);
+  });
+});

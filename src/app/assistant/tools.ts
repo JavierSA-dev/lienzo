@@ -9,6 +9,7 @@ import type { AdjustmentType, AdjustmentParams } from '../../engine/types';
 import { useStore, toRgba } from '../store';
 import { commandById, COMMANDS, download } from '../commands';
 import { parseColor, recolorParams, rgbToHsl } from './color';
+import { gridify, GRID_NOTE } from './grid';
 
 export interface ToolOut { text: string; image?: string }
 
@@ -269,7 +270,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'draw_svg',
-    description: 'Dibuja una ilustración (un perro, un logo, un icono, una mascota, un fondo decorativo…) escribiendo un SVG completo, que se coloca como objeto inteligente en una capa nueva. Haz dibujos detallados y bonitos: estilo ilustración plana o semiplana con formas suaves (path con curvas Bézier), varias capas de color, luces y sombras, contorno coherente; nunca solo cuatro círculos. Incluye xmlns y viewBox; fondo transparente salvo que se pida. x, y, width en px de documento (por defecto centrado y al 60 % del lado menor).',
+    description: 'Dibuja una ilustración (un perro, un logo, un icono, una mascota, un fondo decorativo…) escribiendo un SVG completo, que se coloca como objeto inteligente en una capa nueva. Haz dibujos detallados y bonitos: estilo ilustración plana o semiplana con formas suaves (path con curvas Bézier), varias capas de color, luces y sombras, contorno coherente; nunca solo cuatro círculos. Incluye xmlns y viewBox, y encuadra el dibujo para que ocupe casi todo el viewBox (márgenes pequeños); fondo transparente salvo que se pida. x, y, width en px de documento (por defecto centrado y al 60 % del lado menor).',
     input_schema: { type: 'object', properties: { svg: { type: 'string' }, name: { type: 'string' }, x: N('px'), y: N('px'), width: N('px'), height: N('px (opcional: con width, el dibujo se ajusta dentro de ese recuadro y se centra en él)') }, required: ['svg'] },
     run: async (a) => {
       if (!doc().open) await engine.call('newDoc', 1080, 1080, 'white', 'Dibujo.psd');
@@ -313,7 +314,7 @@ export const TOOLS: ToolDef[] = [
       need();
       const v = await engine.call<{ w: number; h: number; scale: number; rect: { x: number; y: number; w: number; h: number }; jpegBase64: string } | null>('assistantView', { x: num(a.x), y: num(a.y), w: num(a.width), h: num(a.height) }, 768);
       if (!v) throw new Error('Esa zona está fuera del documento.');
-      return { text: `Zona x=${v.rect.x}, y=${v.rect.y}, ${v.rect.w}×${v.rect.h} px de documento, mostrada a ${v.w}×${v.h} (documento = imagen / ${Math.round(v.scale * 1000) / 1000} + origen).`, image: v.jpegBase64 };
+      return { text: `Zona x=${v.rect.x}, y=${v.rect.y}, ${v.rect.w}×${v.rect.h} px de documento. ${GRID_NOTE}`, image: await gridify(v.jpegBase64, v.scale, v.rect.x, v.rect.y) };
     },
   },
   {

@@ -6,6 +6,7 @@ import { engine } from '../../engine/client';
 import { useStore } from '../store';
 import { planLocal, type Stats } from './local';
 import { toolByName, toolSchemas } from './tools';
+import { gridify, GRID_NOTE } from './grid';
 
 type Act = { label: string; ok: boolean };
 type Msg = { role: 'user' | 'assistant'; text: string; acts?: Act[]; undoTo?: number; via?: 'local' | 'ia'; error?: boolean };
@@ -82,7 +83,8 @@ export function AssistantPanel() {
   /** Bucle con el modelo: envía, ejecuta las herramientas pedidas y devuelve sus resultados. */
   const viaAI = async (text: string, acts: Act[]): Promise<string> => {
     const ctx = await engine.call<Record<string, unknown> | null>('assistantContext', 512);
-    const { thumbnail, ...summary } = (ctx ?? {}) as { thumbnail?: { jpegBase64: string } } & Record<string, unknown>;
+    const { thumbnail, ...summary } = (ctx ?? {}) as { thumbnail?: { jpegBase64: string; scale: number; note?: string } } & Record<string, unknown>;
+    if (thumbnail) { thumbnail.jpegBase64 = await gridify(thumbnail.jpegBase64, thumbnail.scale); (summary as Record<string, unknown>).thumbnail = { note: `${thumbnail.note ?? ''} ${GRID_NOTE}` }; }
     // Las imágenes de turnos anteriores se quitan (solo cuenta la actual).
     // Las imágenes de turnos anteriores se quitan (también dentro de resultados de herramientas).
     const strip = (b: { type: string; content?: unknown }): unknown => b.type === 'image' ? { type: 'text', text: '[imagen anterior]' }
@@ -97,13 +99,13 @@ export function AssistantPanel() {
       const m = Math.round(Math.max(sel.w, sel.h) * 0.25);
       const v = await engine.call<{ w: number; h: number; scale: number; rect: { x: number; y: number; w: number; h: number }; jpegBase64: string } | null>('assistantView', { x: sel.x - m, y: sel.y - m, w: sel.w + 2 * m, h: sel.h + 2 * m }, 512).catch(() => null);
       if (v) {
-        content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: v.jpegBase64 } });
-        selNote = `\n\nHay una SELECCIÓN activa (x=${sel.x}, y=${sel.y}, ${sel.w}×${sel.h} px). La segunda imagen es esa zona ampliada con margen (zona x=${v.rect.x}, y=${v.rect.y}, ${v.rect.w}×${v.rect.h}; documento = imagen / ${Math.round(v.scale * 1000) / 1000} + origen). Salvo que diga otra cosa, la petición se refiere a lo seleccionado.`;
+        content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await gridify(v.jpegBase64, v.scale, v.rect.x, v.rect.y) } });
+        selNote = `\n\nHay una SELECCIÓN activa (x=${sel.x}, y=${sel.y}, ${sel.w}×${sel.h} px). La segunda imagen es esa zona ampliada con margen (x=${v.rect.x}, y=${v.rect.y}, ${v.rect.w}×${v.rect.h}), con su cuadrícula de coordenadas del documento. Salvo que diga otra cosa, la petición se refiere a lo seleccionado.`;
       }
     }
     content.push({ type: 'text', text: `Documento: ${ctx ? JSON.stringify(summary) : 'ninguno abierto'}${selNote}\n\nPetición: ${text}` });
     wire.current.push({ role: 'user', content });
-    for (let step = 0; step < 12; step++) {
+    for (let step = 0; step < 16; step++) {
       const r = await fetch(cfg.endpoint || '/api/assistant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers() },
@@ -132,8 +134,8 @@ export function AssistantPanel() {
         const v = await engine.call<{ w: number; h: number; scale: number; jpegBase64: string } | null>('assistantView', null, 640).catch(() => null);
         const last = results[results.length - 1];
         if (v && last) {
-          const note = { type: 'text', text: `Así queda el documento ahora (${v.w}×${v.h}; documento = imagen / ${Math.round(v.scale * 10000) / 10000}). Compruébalo: si no está bien, corrígelo antes de terminar.` };
-          last.content = [...(Array.isArray(last.content) ? last.content : [{ type: 'text', text: String(last.content) }]), note, { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: v.jpegBase64 } }];
+          const note = { type: 'text', text: `Así queda el documento ahora. ${GRID_NOTE} Compruébalo: si no está bien, corrígelo antes de terminar (si un paso salió mal, deshazlo con undo y prueba otra cosa; no repitas lo mismo).` };
+          last.content = [...(Array.isArray(last.content) ? last.content : [{ type: 'text', text: String(last.content) }]), note, { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await gridify(v.jpegBase64, v.scale) } }];
         }
       }
       wire.current.push({ role: 'user', content: results });

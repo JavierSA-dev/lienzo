@@ -71,7 +71,7 @@ Resultados de la última vez que se pasaron:
 
 | Batería | Resultado |
 | --- | --- |
-| Unitarios | 54 |
+| Unitarios | 55 |
 | e2e | 24 |
 | full | 244 |
 | select | 53 |
