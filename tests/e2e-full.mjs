@@ -509,6 +509,23 @@ try {
   await page.waitForFunction(() => window.__lienzoStore.getState().doc.history.at(-1)?.label === 'Relleno según contenido', null, { timeout: 20000 }).catch(() => {});
   ok('Rellenar > Según el contenido', near(await lpx(140, 100), [255, 255, 255, 255], 6), JSON.stringify(await lpx(140, 100)));
   await call('deselect');
+  {
+    // Quitar un sol de un cielo degradado: el hueco continúa el degradado (sin mancha de otro tono).
+    const ref = await page.evaluate(async () => {
+      const c = document.createElement('canvas'); c.width = 800; c.height = 500; const g = c.getContext('2d');
+      const sky = g.createLinearGradient(0, 0, 0, 500); sky.addColorStop(0, '#4a90d9'); sky.addColorStop(1, '#f6d7b0'); g.fillStyle = sky; g.fillRect(0, 0, 800, 500);
+      const want = [...g.getImageData(600, 150, 1, 1).data];
+      g.fillStyle = '#ffd34d'; g.beginPath(); g.arc(600, 150, 60, 0, 7); g.fill();
+      const buf = await (await new Promise((r) => c.toBlob(r, 'image/png'))).arrayBuffer();
+      await window.__lienzo.call('open', 'cielo.png', buf, 'image/png');
+      await window.__lienzo.call('magicWand', 600, 150, 60, true, false, 'replace');
+      await window.__lienzo.call('growSelection', 4);
+      await window.__lienzo.call('contentAwareFill');
+      return want;
+    });
+    await wait(300);
+    ok('Según el contenido en un cielo degradado: sin mancha (continúa el degradado)', near(await px(600, 150), ref, 4), `${JSON.stringify(await px(600, 150))} vs ${JSON.stringify(ref)}`);
+  }
 
   // =========================================================== FASE 5: PLUMA
   await newDoc(400, 300, 'white');

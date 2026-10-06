@@ -73,7 +73,7 @@ Resultados de la última vez que se pasaron:
 | --- | --- |
 | Unitarios | 55 |
 | e2e | 24 |
-| full | 244 |
+| full | 245 |
 | select | 53 |
 | photo | 34 |
 | art | 25 |

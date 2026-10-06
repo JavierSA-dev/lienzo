@@ -291,7 +291,11 @@ export function inpaint(src: Uint8ClampedArray, w: number, h: number, holeIn: Ui
           if (hole[i] || wsum[i] <= 0) continue;
           for (let c = 0; c < C; c++) diff[i * C + c] = img[i * C + c] - acc[i * C + c] / wsum[i];
         }
-        membrane(diff, hole, lw, lh, 60);
+        // Solo la banda reconstruida alrededor del hueco fija la corrección; el resto (sin datos) también
+        // se interpola, para que los ceros lejanos no la diluyan (dejaba una mancha en degradados como el cielo).
+        const free = new Uint8Array(lw * lh);
+        for (let i = 0; i < lw * lh; i++) free[i] = hole[i] || wsum[i] <= 0 ? 1 : 0;
+        membrane(diff, free, lw, lh, 60);
         for (let i = 0; i < lw * lh; i++) {
           if (!hole[i] || wsum[i] <= 0) continue;
           for (let c = 0; c < C; c++) img[i * C + c] = acc[i * C + c] / wsum[i] + diff[i * C + c];
@@ -308,9 +312,55 @@ export function inpaint(src: Uint8ClampedArray, w: number, h: number, holeIn: Ui
 
   const out = new Uint8ClampedArray(n * C);
   const top = levels[0].img;
+  // Entorno liso (cielo, degradado, pared): los parches copiados de otra altura dejan una mancha de otro
+  // tono. Ahí manda la interpolación armónica desde el borde (continúa el degradado) y de los parches
+  // solo se conserva el detalle fino.
+  if (smoothAround(src, holeIn, w, h)) {
+    const harm = Float32Array.from(src);
+    membrane(harm, holeIn, w, h, Math.min(300, Math.max(40, Math.round(Math.sqrt(holeCount)))));
+    const fine = boxBlur(top, w, h, 2);
+    for (let i = 0; i < n; i++) if (holeIn[i]) for (let c = 0; c < C; c++) top[i * C + c] = harm[i * C + c] + (top[i * C + c] - fine[i * C + c]);
+  }
   for (let i = 0; i < n; i++) {
     if (holeIn[i]) for (let c = 0; c < C; c++) out[i * C + c] = top[i * C + c];
     else for (let c = 0; c < C; c++) out[i * C + c] = src[i * C + c];
+  }
+  return out;
+}
+
+/** ¿El borde del hueco (unos px por fuera) es liso? Media del gradiente de luminancia baja. */
+function smoothAround(src: Uint8ClampedArray, hole: Uint8Array, w: number, h: number): boolean {
+  const L = (i: number) => 0.299 * src[i * C] + 0.587 * src[i * C + 1] + 0.114 * src[i * C + 2];
+  const near = new Uint8Array(w * h);
+  const B = 4;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (!hole[y * w + x]) continue;
+    for (let dy = -B; dy <= B; dy += 2) for (let dx = -B; dx <= B; dx += 2) {
+      const xx = x + dx, yy = y + dy;
+      if (xx >= 0 && yy >= 0 && xx < w && yy < h && !hole[yy * w + xx]) near[yy * w + xx] = 1;
+    }
+  }
+  let sum = 0, cnt = 0;
+  for (let y = 0; y < h - 1; y++) for (let x = 0; x < w - 1; x++) {
+    const i = y * w + x;
+    if (!near[i] || hole[i + 1] || hole[i + w]) continue;
+    sum += Math.abs(L(i + 1) - L(i)) + Math.abs(L(i + w) - L(i)); cnt++;
+  }
+  return cnt > 20 && sum / cnt < 4;
+}
+
+/** Desenfoque de caja (radio r) separable, para quedarse con el detalle fino de una imagen RGBA. */
+function boxBlur(img: Float32Array, w: number, h: number, r: number): Float32Array {
+  const tmp = new Float32Array(img.length), out = new Float32Array(img.length);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) for (let c = 0; c < C; c++) {
+    let s = 0, k = 0;
+    for (let d = -r; d <= r; d++) { const xx = x + d; if (xx < 0 || xx >= w) continue; s += img[(y * w + xx) * C + c]; k++; }
+    tmp[(y * w + x) * C + c] = s / k;
+  }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) for (let c = 0; c < C; c++) {
+    let s = 0, k = 0;
+    for (let d = -r; d <= r; d++) { const yy = y + d; if (yy < 0 || yy >= h) continue; s += tmp[(yy * w + x) * C + c]; k++; }
+    out[(y * w + x) * C + c] = s / k;
   }
   return out;
 }
