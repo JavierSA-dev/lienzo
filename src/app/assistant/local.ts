@@ -51,10 +51,44 @@ function clauses(text: string): string[] {
     .filter(Boolean);
 }
 
-function one(c: string, st: Stats | null): Step[] | null {
+/**
+ * Peticiones sobre una selección ("elimínalo", "ponlo rojo", "más claro"): actúan solo en lo seleccionado,
+ * como la barra de tareas contextual de un editor profesional.
+ */
+function onSelection(s: string, n: number | null, less: boolean): Step[] | null {
+  if (has(s, /(fondo|background|selecci[oó]n|selection)/)) return null;
+  // Sustituir lo seleccionado por otra cosa ("cámbialo por una estrella dorada") lo hace el modelo.
+  if (has(s, /(\bpor\b|sustitu|reemplaz|replace|swap|\binto\b|\ben una?\b)/) && !has(s, /\bcolor\b/)) return null;
+  if (has(s, /(sin color|qu[ií]ta(le)? el color|desatura|desaturate|blanco y negro|black and white|b\/n)/)) {
+    return [{ tool: 'adjustment_layer', args: { type: 'hueSat', params: { saturation: -100 } } }];
+  }
+  if (has(s, /^(elim[ií]n|borr|b[oó]rr|quit|qu[ií]t|suprim|remove|delete|erase|get rid|haz que desaparezca|hazlo desaparecer)/) || has(s, /\b(elim[ií]nal[oa]s?|b[oó]rral[oa]s?|qu[ií]tal[oa]s?)\b/)) {
+    if (has(s, /(brillo|luz|contraste|contrast|satura|ruido|noise|grano|desenfoque|blur|color|sombra|shadow|nitidez)/)) return null;
+    return [{ tool: 'content_aware_fill', args: {} }];
+  }
+  const col = colorIn(s);
+  if (col && has(s, /(cambi|c[aá]mbi|pon|hazl|haz que|haz|pint|p[ií]nt|ti[ñn]|t[ií][ñn]|colore|vuelv|conv|make|turn|change|paint|color)/) && !has(s, /(rellena|fill)/)) {
+    return [{ tool: 'recolor', args: { color: col } }];
+  }
+  const adj: Step[] = [];
+  if (has(s, /(m[aá]s clar|aclara|ilumina|brighter|lighten|m[aá]s luz|oscur|darken|darker|m[aá]s oscur)/)) {
+    const darker = has(s, /(oscur|darken|darker)/);
+    adj.push({ tool: 'adjustment_layer', args: { type: 'brightness', params: { brightness: (darker ? -1 : 1) * (n != null && n <= 150 ? n : 45), contrast: 0 } } });
+  }
+  if (has(s, /(contraste|contrast)/)) adj.push({ tool: 'adjustment_layer', args: { type: 'brightness', params: { brightness: 0, contrast: (less ? -1 : 1) * (n != null && n <= 100 ? n : 30) } } });
+  if (has(s, /(saturaci|saturat|m[aá]s color|m[aá]s vivo|vivid|vibrant|intens)/)) adj.push({ tool: 'adjustment_layer', args: { type: 'vibrance', params: { vibrance: less ? -40 : 40, saturation: less ? -20 : 15 } } });
+  if (adj.length) return adj;
+  if (has(s, /(desenf[oó]c|difum[ií]n|blur|desenfoque|pix[eé]la|pixelate|censura)/)) {
+    return has(s, /(pix[eé]la|pixelate|censura)/) ? [{ tool: 'filter', args: { name: 'mosaic', cell: n ?? 16 } }] : [{ tool: 'filter', args: { name: 'gaussianBlur', radius: n ?? 12 } }];
+  }
+  return null;
+}
+
+function one(c: string, st: Stats | null, sel = false): Step[] | null {
   const s = c.toLowerCase();
   const n = numIn(s.replace(/\d+\s*[:x×]\s*\d+/, ''));
   const less = has(s, /\b(menos|baja|reduce|disminuye|quita(?! el fondo)|bajar|reducir|less|lower|decrease|reduce|darker|oscur)/);
+  if (sel && !/["“«]/.test(c)) { const r = onSelection(s, n, less); if (r) return r; }
   // --- IA y selección
   if (has(s, /(quita|elimina|borra|remove|delete|erase).*(fondo|background)|(fondo|background).*(transparente|transparent)/)) return [{ tool: 'remove_background', args: {} }];
   if (has(s, /(selecciona|select).*(sujeto|persona|subject|person|objeto principal)/)) return [{ tool: 'select', args: { what: 'subject' } }];
@@ -158,10 +192,10 @@ function one(c: string, st: Stats | null): Step[] | null {
 }
 
 /** Plan de pasos para una petición, o null si no se entiende. */
-export function planLocal(text: string, stats: Stats | null): Step[] | null {
+export function planLocal(text: string, stats: Stats | null, selection = false): Step[] | null {
   const out: Step[] = [];
   for (const c of clauses(text)) {
-    const r = one(c, stats);
+    const r = one(c, stats, selection);
     if (!r) return null;
     out.push(...r);
   }

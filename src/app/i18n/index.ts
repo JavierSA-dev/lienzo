@@ -54,7 +54,8 @@ const PATTERNS: [RegExp, string | ((...m: string[]) => string)][] = [
   [/^(.*) @ ([\d.]+%) \((.+)\)(\*?)$/, (_m, n, z, mode, dirty) => `${n} @ ${z} (${DICT![mode] ?? mode})${dirty}`],
   [/^Sin título-(\d+)$/, 'Untitled-$1'],
   // Asistente
-  [/^Versión de pruebas: te quedan (\d+) de (\d+) peticiones de IA hoy\. Las órdenes sencillas no cuentan\.$/, 'Trial version: $1 of $2 AI requests left today. Simple commands don\'t count.'],
+  [/^El asistente está en pruebas y en desarrollo: irá mejorando\. Te quedan (\d+) de (\d+) peticiones de IA hoy; las órdenes sencillas no cuentan\.$/, 'The assistant is in beta and still in development: it will keep improving. $1 of $2 AI requests left today; simple commands don\'t count.'],
+  [/^Color cambiado a (.+?)( en la selección)? \(capa de ajuste Tono\/Saturación\)\.$/, (_m: string, c: string, s?: string) => `Color changed to ${c}${s ? ' in the selection' : ''} (Hue/Saturation adjustment layer).`],
   [/^Has usado las (\d+) peticiones de IA de hoy\. .*Mañana tendrás otras \d+\.$/, (_m, n) => `You've used today's ${n} AI requests. Lienzo is in a trial phase: each browser gets ${n} AI requests a day. Simple commands (enhance, crop, remove background…) don't count: they run on your device. You'll get ${n} more tomorrow.`],
   [/^Revelado aplicado \((.+)\) en «(.+)»\.$/, (_m, a, l) => `Develop applied (${devNames(a)}) on “${trName(l)}”.`],
   [/^Capa de ajuste (\w+) creada\.$/, 'Adjustment layer $1 created.'],

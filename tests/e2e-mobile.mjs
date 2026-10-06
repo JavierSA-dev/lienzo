@@ -5,7 +5,7 @@ import { spawn, execSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 
 const PORT = 4176;
-const URL = `http://localhost:${PORT}/`;
+const URL = `http://localhost:${PORT}/app/`;
 const results = [];
 const ok = (name, cond, extra = '') => { results.push({ name, pass: !!cond, extra }); console.log(`${cond ? '✔' : '✘'} ${name} ${extra}`); };
 

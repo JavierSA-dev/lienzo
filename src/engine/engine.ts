@@ -4051,6 +4051,37 @@ export class Engine {
     };
   }
 
+  /**
+   * Color medio (HSL 0..1) de lo seleccionado en la imagen compuesta, ponderado por la selección.
+   * El tono es la media circular ponderada por la saturación (los grises no cuentan para el tono).
+   */
+  selectionColorStats(): { h: number; s: number; l: number; chroma: number; bounds: Rect } | null {
+    const d = this.doc;
+    if (!d) return null;
+    // Sin selección: toda la imagen.
+    const b = d.selection ? d.selection.bounds() : this.docRect();
+    if (!b) return null;
+    const px = this.r.flatten(d, d.layers, b, [255, 255, 255, 255]);
+    const m = d.selection ? d.selection.region(b) : new Uint8Array(b.w * b.h).fill(255);
+    const step = Math.max(1, Math.floor((b.w * b.h) / 150000));
+    let W = 0, ls = 0, ss = 0, hx = 0, hy = 0, hw = 0;
+    for (let i = 0; i < b.w * b.h; i += step) {
+      const w = m[i] / 255;
+      if (w < 0.5) continue;
+      const r = px[i * 4] / 255, g = px[i * 4 + 1] / 255, bl = px[i * 4 + 2] / 255;
+      const mx = Math.max(r, g, bl), mn = Math.min(r, g, bl), l = (mx + mn) / 2, c = mx - mn;
+      const sat = c === 0 ? 0 : c / (1 - Math.abs(2 * l - 1));
+      let h = 0;
+      if (c) h = mx === r ? ((g - bl) / c + 6) % 6 : mx === g ? (bl - r) / c + 2 : (r - g) / c + 4;
+      const a = (h / 6) * Math.PI * 2;
+      W += w; ls += l * w; ss += sat * w;
+      hx += Math.cos(a) * c * w; hy += Math.sin(a) * c * w; hw += c * w;
+    }
+    if (!W) return null;
+    const h = ((Math.atan2(hy, hx) / (Math.PI * 2)) + 1) % 1;
+    return { h, s: ss / W, l: ls / W, chroma: hw / W, bounds: b };
+  }
+
   /** Vista (o un recorte ampliado) del documento en JPEG para que el asistente vea el resultado. */
   async assistantView(rect: Rect | null = null, max = 640): Promise<{ w: number; h: number; scale: number; rect: Rect; jpegBase64: string } | null> {
     const d = this.doc;

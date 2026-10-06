@@ -17,6 +17,8 @@ const loadCfg = (): Cfg => { try { return { endpoint: '/api/assistant', token: '
 const saveCfg = (c: Cfg) => { try { localStorage.setItem(KEY, JSON.stringify(c)); } catch { /* sin almacenamiento */ } };
 
 const SUGGESTIONS = ['Mejora la foto', 'Quita el fondo', 'Blanco y negro', 'Recorta a 4:5', 'Más cálida y con más contraste', 'Añade el texto "Oferta" arriba en blanco'];
+/** Con una selección activa, las sugerencias son sobre lo seleccionado. */
+const SEL_SUGGESTIONS = ['Elimínalo', 'Ponlo rojo', 'Hazlo más claro', 'Quítale el color', 'Desenfócalo', 'Pixélalo'];
 
 const S = () => useStore.getState();
 
@@ -53,6 +55,8 @@ function rich(t: string) {
 export function AssistantPanel() {
   const open = useStore((s) => s.assistantOpen);
   const docOpen = useStore((s) => s.doc.open);
+  const hasSel = useStore((s) => !!s.doc.selection);
+  const ask = useStore((s) => s.assistantAsk);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -86,7 +90,18 @@ export function AssistantPanel() {
     wire.current = wire.current.map((w) => (Array.isArray(w.content) ? { ...w, content: (w.content as { type: string }[]).map(strip) } : w));
     const content: unknown[] = [];
     if (thumbnail) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: thumbnail.jpegBase64 } });
-    content.push({ type: 'text', text: `Documento: ${ctx ? JSON.stringify(summary) : 'ninguno abierto'}\n\nPetición: ${text}` });
+    // Con una selección, el modelo ve además la zona seleccionada ampliada (con margen).
+    const sel = (summary as { selection?: { x: number; y: number; w: number; h: number } | null }).selection;
+    let selNote = '';
+    if (sel) {
+      const m = Math.round(Math.max(sel.w, sel.h) * 0.25);
+      const v = await engine.call<{ w: number; h: number; scale: number; rect: { x: number; y: number; w: number; h: number }; jpegBase64: string } | null>('assistantView', { x: sel.x - m, y: sel.y - m, w: sel.w + 2 * m, h: sel.h + 2 * m }, 512).catch(() => null);
+      if (v) {
+        content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: v.jpegBase64 } });
+        selNote = `\n\nHay una SELECCIÓN activa (x=${sel.x}, y=${sel.y}, ${sel.w}×${sel.h} px). La segunda imagen es esa zona ampliada con margen (zona x=${v.rect.x}, y=${v.rect.y}, ${v.rect.w}×${v.rect.h}; documento = imagen / ${Math.round(v.scale * 1000) / 1000} + origen). Salvo que diga otra cosa, la petición se refiere a lo seleccionado.`;
+      }
+    }
+    content.push({ type: 'text', text: `Documento: ${ctx ? JSON.stringify(summary) : 'ninguno abierto'}${selNote}\n\nPetición: ${text}` });
     wire.current.push({ role: 'user', content });
     for (let step = 0; step < 12; step++) {
       const r = await fetch(cfg.endpoint || '/api/assistant', {
@@ -139,7 +154,7 @@ export function AssistantPanel() {
     try {
       let stats: Stats | null = null;
       if (S().doc.open) stats = ((await engine.call<{ stats: Stats } | null>('assistantContext', 64))?.stats) ?? null;
-      const plan = cfg.alwaysAI ? null : planLocal(text, stats);
+      const plan = cfg.alwaysAI ? null : planLocal(text, stats, !!S().doc.selection);
       if (plan) {
         for (const p of plan) {
           const a = await runTool(p.tool, p.args);
@@ -164,6 +179,15 @@ export function AssistantPanel() {
     } finally { setBusy(false); }
   };
 
+  // Peticiones desde la barra de la selección.
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  useEffect(() => {
+    if (!open || !ask) return;
+    useStore.setState({ assistantAsk: null });
+    void sendRef.current(ask.text);
+  }, [open, ask]);
+
   if (!open) return null;
   return (
     <section className="assistant" data-testid="assistant" aria-label="Asistente">
@@ -181,17 +205,18 @@ export function AssistantPanel() {
         </div>
       )}
       <div className="assistant-quota" data-testid="assistant-quota">
+        <b>Beta</b>{' '}
         {quota?.premium ? 'Premium: peticiones de IA sin límite.'
-          : quota?.configured && quota.left != null ? `Versión de pruebas: te quedan ${quota.left} de ${quota.limit} peticiones de IA hoy. Las órdenes sencillas no cuentan.`
-          : quota && !quota.configured ? 'Versión de pruebas: el modelo de IA no está activado; funcionan las órdenes sencillas.'
-          : 'Versión de pruebas: peticiones de IA limitadas al día; las órdenes sencillas no cuentan.'}
+          : quota?.configured && quota.left != null ? `El asistente está en pruebas y en desarrollo: irá mejorando. Te quedan ${quota.left} de ${quota.limit} peticiones de IA hoy; las órdenes sencillas no cuentan.`
+          : quota && !quota.configured ? 'El asistente está en pruebas: el modelo de IA no está activado; funcionan las órdenes sencillas.'
+          : 'El asistente está en pruebas y en desarrollo: peticiones de IA limitadas al día; las órdenes sencillas no cuentan.'}
       </div>
       <div className="assistant-list" ref={list} data-testid="assistant-list">
         {!msgs.length && (
           <div className="assistant-empty">
-            <p>{docOpen ? 'Dime qué quieres cambiar en la imagen.' : 'Abre o crea un documento y dime qué quieres hacer.'}</p>
+            <p>{!docOpen ? 'Abre o crea un documento y dime qué quieres hacer.' : hasSel ? 'Dime qué hago con lo seleccionado.' : 'Dime qué quieres cambiar en la imagen. Consejo: selecciona algo (un sombrero, una cara) y pídeme cambios solo ahí.'}</p>
             <div className="assistant-chips">
-              {SUGGESTIONS.map((s) => <button type="button" key={s} className="chip" disabled={!docOpen || busy} onClick={() => void send(s)}>{s}</button>)}
+              {(hasSel ? SEL_SUGGESTIONS : SUGGESTIONS).map((s) => <button type="button" key={s} className="chip" disabled={!docOpen || busy} onClick={() => void send(s)}>{s}</button>)}
             </div>
           </div>
         )}
@@ -215,8 +240,13 @@ export function AssistantPanel() {
         ))}
         {busy && <div className="amsg from-ai pending"><Loader2 size={14} className="spin" /> Trabajando…</div>}
       </div>
+      {hasSel && docOpen && msgs.length > 0 && (
+        <div className="assistant-chips sel-chips" aria-label="Sugerencias para la selección">
+          {SEL_SUGGESTIONS.slice(0, 4).map((s) => <button type="button" key={s} className="chip" disabled={busy} onClick={() => void send(s)}>{s}</button>)}
+        </div>
+      )}
       <form className="assistant-input" onSubmit={(e) => { e.preventDefault(); void send(); }}>
-        <textarea ref={field} rows={1} value={input} placeholder="p. ej. sube el contraste y recorta a 16:9" aria-label="Petición al asistente"
+        <textarea ref={field} rows={1} value={input} placeholder={hasSel ? 'p. ej. elimínalo, ponlo azul…' : 'p. ej. sube el contraste y recorta a 16:9'} aria-label="Petición al asistente"
           onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } if (e.key === 'Escape') useStore.setState({ assistantOpen: false }); }}
           onChange={(e) => setInput(e.target.value)} />
         <button type="submit" className="icon-btn send" aria-label="Enviar" disabled={!input.trim() || busy}><Send size={15} /></button>

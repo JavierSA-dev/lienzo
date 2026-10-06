@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { planLocal, autoEnhance } from '../../src/app/assistant/local';
+import { recolorParams, rgbToHsl } from '../../src/app/assistant/color';
 import { parseColor } from '../../src/app/assistant/color';
 
 const tools = (t: string) => planLocal(t, null)?.map((s) => s.tool) ?? null;
@@ -43,5 +44,52 @@ describe('asistente local', () => {
     expect(parseColor('#ff0000')).toEqual([255, 0, 0, 255]);
     expect(parseColor('azul')).toEqual([30, 136, 229, 255]);
     expect(parseColor('rgb(1, 2, 3)')).toEqual([1, 2, 3, 255]);
+  });
+});
+
+describe('peticiones sobre una selección', () => {
+  const sel = (t: string) => planLocal(t, null, true);
+  it('eliminar lo seleccionado → relleno según el contenido', () => {
+    for (const t of ['Elimínalo', 'elimina el sombrero', 'bórralo', 'quítalo', 'remove it', 'quita el texto']) expect(sel(t)?.[0].tool, t).toBe('content_aware_fill');
+  });
+  it('cambiar el color → recolor con el color pedido', () => {
+    expect(sel('ponlo rojo')).toEqual([{ tool: 'recolor', args: { color: 'rojo' } }]);
+    expect(sel('cámbiale el color a azul')?.[0]).toEqual({ tool: 'recolor', args: { color: 'azul' } });
+    expect(sel('hazlo #00ff00')?.[0]).toEqual({ tool: 'recolor', args: { color: '#00ff00' } });
+  });
+  it('ajustes con capa de ajuste (se limitan a la selección con su máscara)', () => {
+    expect(sel('hazlo más claro')?.[0]).toMatchObject({ tool: 'adjustment_layer', args: { type: 'brightness' } });
+    expect(sel('más oscuro')?.[0].args).toMatchObject({ params: { brightness: -45 } });
+    expect(sel('quítale el color')?.[0]).toMatchObject({ tool: 'adjustment_layer', args: { type: 'hueSat', params: { saturation: -100 } } });
+    expect(sel('desenfócalo')?.[0]).toMatchObject({ tool: 'filter', args: { name: 'gaussianBlur' } });
+    expect(sel('pixélalo')?.[0]).toMatchObject({ tool: 'filter', args: { name: 'mosaic' } });
+  });
+  it('sustituir por otra cosa va al modelo', () => {
+    expect(sel('cámbialo por una estrella dorada')).toBeNull();
+    expect(sel('conviértelo en un gato')).toBeNull();
+    expect(sel('cambia el color por rojo')?.[0].tool).toBe('recolor');
+  });
+  it('sin selección no se confunde', () => {
+    expect(planLocal('quita el fondo', null, true)?.[0].tool).toBe('remove_background');
+    expect(planLocal('quita la selección', null, true)?.[0].tool).toBe('select');
+    expect(planLocal('elimínalo', null, false)).toBeNull();
+  });
+});
+
+describe('recolorParams', () => {
+  it('rota el tono del color medio al pedido', () => {
+    const p = recolorParams({ h: 0, s: 0.7, l: 0.45, chroma: 0.5 }, rgbToHsl(30, 136, 229)); // rojo → azul
+    expect(p.colorize).toBe(false);
+    expect(Math.abs(p.hue - (rgbToHsl(30, 136, 229)[0] * 360 - 360))).toBeLessThan(2);
+  });
+  it('colorea lo que es casi gris (sombrero negro → rojo)', () => {
+    const p = recolorParams({ h: 0, s: 0.03, l: 0.12, chroma: 0.01 }, rgbToHsl(229, 57, 53));
+    expect(p.colorize).toBe(true);
+    expect(p.hue).toBeLessThan(5);
+    expect(p.exposure).toBeGreaterThan(1); // se aclara con exposición, no lavando el color
+    expect(p.lightness).toBe(0);
+  });
+  it('a gris: quita la saturación', () => {
+    expect(recolorParams({ h: 0.3, s: 0.6, l: 0.5, chroma: 0.4 }, rgbToHsl(158, 158, 158)).saturation).toBe(-100);
   });
 });

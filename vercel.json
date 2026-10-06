@@ -40,5 +40,22 @@
     "api/assistant.js": {
       "maxDuration": 120
     }
-  }
+  },
+  "redirects": [
+    {
+      "source": "/landing",
+      "destination": "/",
+      "permanent": false
+    },
+    {
+      "source": "/landing/",
+      "destination": "/",
+      "permanent": false
+    },
+    {
+      "source": "/app",
+      "destination": "/app/",
+      "permanent": false
+    }
+  ]
 }

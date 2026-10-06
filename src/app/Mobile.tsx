@@ -125,6 +125,7 @@ export function MobileContextBar() {
   else if (tool === 'polylasso') items = [['Cerrar selección', () => press('Enter'), 'primary']];
   else if (penDrawing != null) items = [['Terminar trazado', () => press('Enter'), 'primary']];
   else if (doc.selection) items = [
+    ['✨ Editar con IA', () => useStore.setState({ assistantOpen: true }), 'primary'],
     ['Deseleccionar', () => run('select.none')], ['Invertir', () => run('select.invert')], ['Refinar', () => run('select.refine')],
     ['Rellenar según contenido', () => run('edit.contentAware')], ['Capa vía copiar', () => run('layer.viaCopy')],
     ['Máscara', () => engine.call('addMask', 'selection')], ['Transformar', () => run('edit.freeTransform')],

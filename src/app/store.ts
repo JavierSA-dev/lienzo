@@ -113,6 +113,8 @@ interface Store {
   timelineOpen: boolean;
   /** Asistente de IA. */
   assistantOpen: boolean;
+  /** Petición enviada al asistente desde fuera del panel (barra de la selección). */
+  assistantAsk: { text: string; n: number } | null;
   dialog: DialogId;
   selectionPath: string;
   transform: TransformState | null;
@@ -255,6 +257,7 @@ export const useStore = create<Store>((set, get) => ({
   panelsHidden: false,
   timelineOpen: false,
   assistantOpen: false,
+  assistantAsk: null,
   dialog: null,
   selectionPath: '',
   transform: null,

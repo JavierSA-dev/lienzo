@@ -5,7 +5,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
 
 const PORT = 4182;
-const URL = `http://localhost:${PORT}/`;
+const URL = `http://localhost:${PORT}/app/`;
 const results = [];
 let page;
 const ok = (name, cond, extra = '') => {
@@ -142,7 +142,7 @@ try {
     ok('Se envían las herramientas, la miniatura y el resumen', calls[0].tools.some((t) => t.name === 'develop') && calls[0].messages.at(-1).content.some((b) => b.type === 'image') && /Documento: \{/.test(JSON.stringify(calls[0].messages.at(-1).content)));
     ok('El resultado de la herramienta vuelve al modelo', calls[1].messages.at(-1).content[0].type === 'tool_result' && calls[1].messages.at(-1).content[0].tool_use_id === 'tu_1');
     ok('La herramienta se ejecuta (más cálida)', after[0] - after[2] > before[0] - before[2] + 5, `${JSON.stringify(before)} → ${JSON.stringify(after)}`);
-    ok('Cuota de la versión de pruebas visible y actualizada (9 de 10)', /te quedan 9 de 10 peticiones de IA hoy/.test(await page.getByTestId('assistant-quota').innerText()), await page.getByTestId('assistant-quota').innerText());
+    ok('Cuota de la versión de pruebas visible y actualizada (9 de 10)', /quedan 9 de 10 peticiones de IA hoy/i.test(await page.getByTestId('assistant-quota').innerText()), await page.getByTestId('assistant-quota').innerText());
     ok('Se envía un identificador de navegador estable', devices.size === 1 && /^[0-9a-f-]{36}$/.test([...devices][0] ?? ''), [...devices].join(','));
     ok('Respuesta del modelo en el chat, marcada "IA"', /Listo: más cálida/.test(r) && /\bIA\b/.test(r), r.replace(/\n/g, ' | '));
   }
@@ -187,6 +187,47 @@ try {
   await page.getByLabel('Petición al asistente').press('Escape'); await wait(200);
   ok('Esc cierra el asistente', !(await panel().isVisible().catch(() => false)));
 
+  // --- IA sobre la selección (barra contextual)
+  {
+    await newDoc(400, 300, 'white');
+    await call('selectShape', { x: 50, y: 50, w: 100, h: 100 }, 'rect', 'replace', 0); await call('fill', [200, 40, 40, 255]);
+    await call('selectShape', { x: 40, y: 40, w: 120, h: 120 }, 'rect', 'replace', 0); await wait(300);
+    const bar = page.getByTestId('selbar');
+    ok('Selección → barra contextual con petición a la IA', await bar.isVisible());
+    const bb = await bar.boundingBox(), [, sy] = await scr(0, 160);
+    ok('La barra aparece bajo la selección', !!bb && bb.y >= sy - 2 && bb.y < sy + 40, `${bb?.y} vs ${sy}`);
+    await page.getByTestId('selbar-input').fill('ponlo azul');
+    await page.getByTestId('selbar-input').press('Enter');
+    await page.waitForFunction(() => !document.querySelector('.amsg.pending'), null, { timeout: 30000 }).catch(() => {});
+    await wait(1200);
+    const p = await px(100, 100), out = await px(300, 250);
+    ok('«ponlo azul» sobre la selección → azul solo dentro', p[2] > p[0] + 60 && near(out, [255, 255, 255, 255], 2), `${JSON.stringify(p)} fuera ${JSON.stringify(out)}`);
+    ok('Lo hace una capa de ajuste Tono/Saturación con máscara', (await S()).doc.layers.some((l) => l.kind === 'adjustment' && l.hasMask), (await S()).doc.layers.map((l) => l.kind).join(','));
+    ok('El asistente se abre y muestra lo hecho (local, sin gastar cuota)', /Color cambiado a azul en la selección/.test(await lastReply()) && /Local/.test(await lastReply()), await lastReply());
+    await page.getByTestId('selbar-remove').click();
+    await page.waitForFunction(() => window.__lienzoStore.getState().doc.history.some((h) => (h.label ?? h) === 'Relleno según contenido'), null, { timeout: 30000 }).catch(() => {});
+    await wait(500);
+    const q = await px(100, 100);
+    ok('Botón Eliminar de la barra: borra lo seleccionado (relleno según contenido)', q[0] > 225 && q[1] > 225 && q[2] > 225, JSON.stringify(q));
+    // Petición libre con selección: el modelo recibe la zona ampliada y el aviso de la selección.
+    const calls3 = [];
+    await page.route('**/api/assistant', async (route) => {
+      if (route.request().method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: true, limit: 10, left: 7 }) });
+      calls3.push(JSON.parse(route.request().postData()));
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'Vale.' }] }) });
+    });
+    await page.getByTestId('selbar-input').fill('cámbialo por una estrella dorada');
+    await page.getByTestId('selbar-go').click();
+    await page.waitForFunction(() => !document.querySelector('.amsg.pending'), null, { timeout: 30000 }).catch(() => {});
+    await wait(500);
+    const msg = calls3[0]?.messages.at(-1).content ?? [];
+    ok('Con selección, el modelo recibe la zona ampliada y sabe que hay selección', msg.filter((b) => b.type === 'image').length === 2 && /SELECCIÓN activa \(x=\d+, y=\d+, \d+×\d+ px\)/.test(JSON.stringify(msg)) && calls3[0]?.tools.some((t) => t.name === 'recolor'), `${calls3.length} llamadas; ${JSON.stringify(msg).replace(/"data":"[^"]+"/g, '').slice(0, 300)}`);
+    await page.unroute('**/api/assistant');
+    await call('deselect'); await wait(300);
+    ok('Sin selección no hay barra', !(await bar.isVisible().catch(() => false)));
+    await page.getByLabel('Cerrar asistente').click(); await wait(200);
+  }
+
   // --- móvil
   {
     const m = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, serviceWorkers: 'block', locale: 'es-ES' });
@@ -202,6 +243,12 @@ try {
     await mp.waitForTimeout(1500);
     const st = await mp.evaluate(() => window.__lienzoStore.getState().doc);
     ok('Sugerencia desde el móvil (recorte 4:5)', Math.abs(st.width / st.height - 0.8) < 0.01, `${st.width}×${st.height}`);
+    await mp.getByLabel('Cerrar asistente').click(); await mp.waitForTimeout(200);
+    await mp.evaluate(() => window.__lienzo.call('selectShape', { x: 20, y: 20, w: 100, h: 100 }, 'rect', 'replace', 0)); await mp.waitForTimeout(400);
+    const ai = mp.getByRole('button', { name: '✨ Editar con IA' });
+    ok('Móvil: con selección, la barra inferior ofrece «Editar con IA» (sin barra flotante)', await ai.isVisible() && !(await mp.getByTestId('selbar').isVisible().catch(() => false)));
+    await ai.click(); await mp.waitForTimeout(300);
+    ok('Móvil: «Editar con IA» abre el asistente con sugerencias para la selección', await mp.getByTestId('assistant').locator('.chip', { hasText: 'Elimínalo' }).isVisible());
     await m.close();
   }
 
@@ -211,23 +258,25 @@ try {
     const lerr = [];
     lp.on('pageerror', (e) => lerr.push(String(e)));
     lp.on('response', (r) => { if (r.status() >= 400) lerr.push(`${r.status()} ${r.url()}`); });
-    await lp.goto(URL + 'landing/');
+    await lp.goto(URL.replace('/app/', '/'));
     await lp.waitForLoadState('networkidle');
     ok('Landing: carga sin errores (imágenes incluidas)', lerr.length === 0 && (await lp.locator('img').evaluateAll((im) => im.every((i) => i.complete && i.naturalWidth > 0))), lerr.join(' | '));
     const href = await lp.locator('.hero .btn.primary').getAttribute('href');
-    ok('Landing: el botón principal abre el editor', /^\/(\?lang=es)?$/.test(href ?? ''), href ?? '');
+    ok('Landing: el botón principal abre el editor', /^\/app\/(\?lang=es)?$/.test(href ?? ''), href ?? '');
     ok('Landing: enlace al repositorio', (await lp.locator('a[href*="github.com/JavierSA-dev/lienzo"]').count()) >= 2);
     await lp.locator('#lang').click();
-    ok('Landing: cambia a inglés', (await lp.locator('h1').innerText()).includes('right in your browser') && (await lp.locator('.hero .btn.primary').getAttribute('href')) === '/?lang=en');
+    ok('Landing: cambia a inglés', (await lp.locator('h1').innerText()).includes('right in your browser') && (await lp.locator('.hero .btn.primary').getAttribute('href')) === '/app/?lang=en');
     await Promise.all([lp.waitForNavigation(), lp.locator('.hero .btn.primary').click()]);
     await lp.waitForFunction(() => window.__lienzoStore?.getState().ready, null, { timeout: 20000 });
     ok('Landing → editor en inglés', (await lp.locator('.menu-btn').first().innerText()) === 'File');
     const mp = await (await browser.newContext({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true, locale: 'es-ES' })).newPage();
-    await mp.goto(URL + 'landing/');
+    await mp.goto(URL.replace('/app/', '/'));
     ok('Landing en el móvil: sin desbordes horizontales', await mp.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await page.goto(URL + '?lang=es');
     await page.waitForFunction(() => window.__lienzoStore?.getState().ready, null, { timeout: 20000 });
-    ok('Inicio del editor enlaza a la landing', (await page.getByTestId('home-landing').getAttribute('href')) === 'landing/');
+    ok('Inicio del editor enlaza a la landing', (await page.getByTestId('home-landing').getAttribute('href')) === '/');
+    const old = await (await browser.newContext()).newPage();
+    ok('La landing está en la raíz y el editor en /app/', (await old.goto(URL.replace('/app/', '/'))).ok() && (await old.locator('.hero .app-link').count()) === 1);
   }
 
   await page.screenshot({ path: 'tests/out-assistant.png' });

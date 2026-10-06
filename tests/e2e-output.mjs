@@ -5,7 +5,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { inflateSync } from 'node:zlib';
 
 const PORT = 4180;
-const URL = `http://localhost:${PORT}/`;
+const URL = `http://localhost:${PORT}/app/`;
 const results = [];
 let page;
 const ok = (name, cond, extra = '') => {

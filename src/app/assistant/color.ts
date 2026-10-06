@@ -22,3 +22,39 @@ export function parseColor(v: unknown): RGBA | null {
   return named[s] ? hex(named[s]) : null;
 }
 
+
+const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
+
+/** RGB 0..255 → HSL 0..1. */
+export function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2, c = mx - mn;
+  if (!c) return [0, 0, l];
+  const s = c / (1 - Math.abs(2 * l - 1));
+  const h = mx === r ? ((g - b) / c + 6) % 6 : mx === g ? (b - r) / c + 2 : (r - g) / c + 4;
+  return [h / 6, s, l];
+}
+
+/**
+ * Ajustes que llevan el color medio de una zona (st) al color pedido conservando el sombreado:
+ * Tono/Saturación (las zonas casi grises, como un sombrero negro, se colorean) y, si hay que
+ * aclarar bastante, una exposición previa (aclarar con Tono/Saturación lava el color hacia el blanco).
+ */
+export function recolorParams(st: { h: number; s: number; l: number; chroma: number }, [th, ts, tl]: [number, number, number]) {
+  const dl = tl - st.l;
+  const exposure = dl > 0.08 && ts >= 0.08 ? Math.round(clamp(2.2 * Math.log2(tl / Math.max(0.04, st.l)) * 0.85, 0, 4) * 100) / 100 : 0;
+  const light = (k: number) => {
+    if (exposure) return 0;
+    const z = dl > 0 ? dl / Math.max(0.05, 1 - st.l) : dl / Math.max(0.05, st.l);
+    return Math.round(clamp(z * k * 100, -100, 100));
+  };
+  let hueSat;
+  if (ts < 0.08) hueSat = { hue: 0, saturation: -100, lightness: light(0.7), colorize: false }; // a gris, blanco o negro
+  else if (st.s < 0.12 || st.chroma < 0.06) hueSat = { hue: Math.round(th * 360), saturation: Math.round(clamp((ts - 0.5) * 200, -100, 100)), lightness: light(0.55), colorize: true };
+  else {
+    let dh = (th - st.h) * 360;
+    dh = ((dh + 540) % 360) - 180;
+    hueSat = { hue: Math.round(dh), saturation: Math.round(clamp((ts / Math.max(0.05, st.s) - 1) * 100, -100, 100)), lightness: light(0.5), colorize: false };
+  }
+  return { ...hueSat, exposure };
+}

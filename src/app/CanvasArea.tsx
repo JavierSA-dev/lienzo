@@ -11,6 +11,8 @@ import { isEmpty as isEmptyPath } from '../engine/path';
 import { Rulers, GuideLines, hitGuide, snapPoint } from './Rulers';
 import { TouchGestures } from './touch';
 import { ArtboardLabels } from './Artboards';
+import { SelectionBar } from './SelectionBar';
+import { useIsMobile } from './Mobile';
 import { resolveGradient, GRADIENT_PRESETS } from './GradientEditor';
 import { quadOf, localToDoc, docToLocal, dragQuad, pushSpec, patchGrid, CORNER_GROUP, CORNER_TANGENTS, PATCH_CORNERS, puppetMesh, pushPuppet, invertPuppet } from './transformGeom';
 import { identityPatch, patchParam, patchWeights } from '../engine/meshwarp';
@@ -90,6 +92,7 @@ export function CanvasArea() {
   const selectionPath = useStore((s) => s.selectionPath);
   const transform = useStore((s) => s.transform);
   const textEdit = useStore((s) => s.textEdit);
+  const mobile = useIsMobile();
   const crop = useStore((s) => s.crop);
   const fg = useStore((s) => s.fg);
 
@@ -934,6 +937,9 @@ export function CanvasArea() {
       data-testid="canvas-area"
     >
       <canvas ref={canvasRef} />
+      {doc.open && doc.selection && !ui && !transform && !textEdit && !mobile && !rot && !['crop', 'perspectiveCrop', 'pen'].includes(tool) && (
+        <SelectionBar sel={doc.selection} X={X} Y={Y} area={area} />
+      )}
       <svg className="overlay" width="100%" height="100%">
         <g transform={rot ? `rotate(${(rot * 180) / Math.PI} ${area.w / 2} ${area.h / 2})` : undefined}>
         {grid}

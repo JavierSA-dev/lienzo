@@ -8,7 +8,7 @@ import { defaultAdjustment } from '../../engine/adjust';
 import type { AdjustmentType, AdjustmentParams } from '../../engine/types';
 import { useStore, toRgba } from '../store';
 import { commandById, COMMANDS, download } from '../commands';
-import { parseColor } from './color';
+import { parseColor, recolorParams, rgbToHsl } from './color';
 
 export interface ToolOut { text: string; image?: string }
 
@@ -211,7 +211,33 @@ export const TOOLS: ToolDef[] = [
     name: 'content_aware_fill',
     description: 'Rellena la selección actual según el contenido (borra objetos). Requiere una selección.',
     input_schema: { type: 'object', properties: {} },
-    run: async () => { need(); if (!doc().selection) throw new Error('Hace falta una selección.'); await engine.call('contentAwareFill'); return 'Zona rellenada según el contenido.'; },
+    run: async () => {
+      need();
+      if (!doc().selection) throw new Error('Hace falta una selección.');
+      await pixelTarget();
+      // Como "Quitar" de Photoshop: se amplía un poco la selección para no dejar bordes del objeto.
+      const b = doc().selection!;
+      const grow = Math.round(clamp(Math.min(b.w, b.h) * 0.03, 2, 8));
+      await engine.call('growSelection', grow);
+      await changed(() => engine.call('contentAwareFill'), 'el relleno según el contenido');
+      return 'Zona rellenada según el contenido (objeto eliminado).';
+    },
+  },
+  {
+    name: 'recolor',
+    description: 'Cambia el color de lo seleccionado (o de toda la imagen si no hay selección) conservando luces, sombras y textura, p. ej. "pon el sombrero rojo". Crea una capa de ajuste Tono/Saturación con la selección como máscara (no destructiva). color: "#hex" o nombre (rojo, azul…).',
+    input_schema: { type: 'object', properties: { color: { type: 'string', description: '"#hex" o nombre del color' } }, required: ['color'] },
+    run: async (a) => {
+      need();
+      const c = parseColor(a.color);
+      if (!c) throw new Error(`No entiendo el color «${String(a.color)}».`);
+      const st = await engine.call<{ h: number; s: number; l: number; chroma: number } | null>('selectionColorStats');
+      if (!st) throw new Error('La selección está vacía.');
+      const { exposure, ...params } = recolorParams(st, rgbToHsl(c[0], c[1], c[2]));
+      if (exposure) await engine.call('newAdjustmentLayer', 'exposure', { type: 'exposure', exposure, offset: 0, gamma: 1 });
+      await engine.call('newAdjustmentLayer', 'hueSat', { ...defaultAdjustment('hueSat', toRgba(S().fg), toRgba(S().bg)), ...params, type: 'hueSat' });
+      return `Color cambiado a ${String(a.color)}${doc().selection ? ' en la selección' : ''} (capa de ajuste Tono/Saturación).`;
+    },
   },
   {
     name: 'add_text',
@@ -244,7 +270,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: 'draw_svg',
     description: 'Dibuja una ilustración (un perro, un logo, un icono, una mascota, un fondo decorativo…) escribiendo un SVG completo, que se coloca como objeto inteligente en una capa nueva. Haz dibujos detallados y bonitos: estilo ilustración plana o semiplana con formas suaves (path con curvas Bézier), varias capas de color, luces y sombras, contorno coherente; nunca solo cuatro círculos. Incluye xmlns y viewBox; fondo transparente salvo que se pida. x, y, width en px de documento (por defecto centrado y al 60 % del lado menor).',
-    input_schema: { type: 'object', properties: { svg: { type: 'string' }, name: { type: 'string' }, x: N('px'), y: N('px'), width: N('px') }, required: ['svg'] },
+    input_schema: { type: 'object', properties: { svg: { type: 'string' }, name: { type: 'string' }, x: N('px'), y: N('px'), width: N('px'), height: N('px (opcional: con width, el dibujo se ajusta dentro de ese recuadro y se centra en él)') }, required: ['svg'] },
     run: async (a) => {
       if (!doc().open) await engine.call('newDoc', 1080, 1080, 'white', 'Dibujo.psd');
       const { width: W, height: H } = doc();
@@ -254,8 +280,16 @@ export const TOOLS: ToolDef[] = [
       const vb = svg.match(/viewBox\s*=\s*["']\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)/i);
       const aspect = vb ? Number(vb[1]) / Math.max(1e-6, Number(vb[2])) : 1;
       let w = num(a.width, Math.min(W, H) * 0.6), h = w / aspect;
-      if (h > H) { h = H; w = h * aspect; }
-      const x = num(a.x, (W - w) / 2), y = num(a.y, (H - h) / 2);
+      let x: number, y: number;
+      if (a.width != null && a.height != null) {
+        // Recuadro dado (p. ej. donde estaba un logo): se ajusta dentro y se centra.
+        const bw = w, bh = Math.max(1, num(a.height, h));
+        if (h > bh) { h = bh; w = h * aspect; }
+        x = num(a.x, (W - bw) / 2) + (bw - w) / 2; y = num(a.y, (H - bh) / 2) + (bh - h) / 2;
+      } else {
+        if (h > H) { h = H; w = h * aspect; }
+        x = num(a.x, (W - w) / 2); y = num(a.y, (H - h) / 2);
+      }
       const png = await svgToPng(svg, Math.max(1, Math.round(w)), Math.max(1, Math.round(h)));
       await engine.call('placeSmart', `${String(a.name ?? 'Dibujo')}.png`, png, 'image/png', { x: Math.round(x), y: Math.round(y) });
       return `Dibujo «${String(a.name ?? 'Dibujo')}» colocado (${Math.round(w)} × ${Math.round(h)} px).`;

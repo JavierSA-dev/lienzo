@@ -4,7 +4,7 @@ import { spawn, execSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 
 const PORT = 4179;
-const URL = `http://localhost:${PORT}/`;
+const URL = `http://localhost:${PORT}/app/`;
 const results = [];
 let page;
 const ok = (name, cond, extra = '') => {

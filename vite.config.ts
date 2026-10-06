@@ -16,5 +16,6 @@ export default defineConfig({
   // LibRaw trae su propio worker y su .wasm: se sirve tal cual (sin preempaquetar).
   optimizeDeps: { exclude: ['libraw-wasm'] },
   base: process.env.BASE_PATH ?? '/',
-  build: { target: 'es2022', sourcemap: true },
+  // Dos páginas: la presentación en la raíz y el editor en /app/.
+  build: { target: 'es2022', sourcemap: true, rollupOptions: { input: { main: 'index.html', app: 'app/index.html' } } },
 });

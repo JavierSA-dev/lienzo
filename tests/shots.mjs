@@ -10,7 +10,7 @@ const page = await (await browser.newContext({ viewport: { width: 1440, height: 
 const call = (m, ...a) => page.evaluate(([m, a]) => window.__lienzo.call(m, ...a), [m, a]);
 const wait = (ms = 300) => page.waitForTimeout(ms);
 const out = process.argv[2] ?? 'tests/shots';
-await page.goto(`http://localhost:${PORT}/`);
+await page.goto(`http://localhost:${PORT}/app/`);
 await page.waitForFunction(() => window.__lienzoStore?.getState().ready);
 await page.screenshot({ path: `${out}-0-inicio.png` });
 await call('newDoc', 1200, 800, 'white', 'Cartel.psd');

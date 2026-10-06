@@ -6,7 +6,7 @@ import { makeLayers } from './make-psd.mjs';
 import { compositePixel } from './reference.mjs';
 
 const PORT = 4173;
-const URL = `http://localhost:${PORT}/`;
+const URL = `http://localhost:${PORT}/app/`;
 const results = [];
 const ok = (name, cond, extra = '') => { results.push({ name, pass: !!cond, extra }); console.log(`${cond ? '✔' : '✘'} ${name} ${extra}`); };
 

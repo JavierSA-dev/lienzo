@@ -24,7 +24,7 @@ async function scan(page, where) {
 }
 const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, serviceWorkers: 'block', locale: 'en-US' });
 const page = await ctx.newPage();
-await page.goto(`http://localhost:${PORT}/`);
+await page.goto(`http://localhost:${PORT}/app/`);
 await page.waitForFunction(() => window.__lienzoStore?.getState().ready, null, { timeout: 20000 });
 await scan(page, 'home');
 await page.evaluate(() => window.__lienzo.call('newDoc', 800, 600, 'white', 'test.psd'));
@@ -66,7 +66,7 @@ await page.waitForTimeout(200); await scan(page, 'timeline');
 // Móvil.
 const m = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, serviceWorkers: 'block', locale: 'en-US' });
 const mp = await m.newPage();
-await mp.goto(`http://localhost:${PORT}/`);
+await mp.goto(`http://localhost:${PORT}/app/`);
 await mp.waitForFunction(() => window.__lienzoStore?.getState().ready, null, { timeout: 20000 });
 await scan(mp, 'mobile home');
 await mp.evaluate(() => window.__lienzo.call('newDoc', 800, 600, 'white', 'test.psd'));

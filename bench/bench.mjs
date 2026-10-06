@@ -63,7 +63,7 @@ try {
   // ---------------- Lienzo
   console.log('\nLienzo');
   const p1 = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-  await p1.goto(`http://localhost:${PORT}/`);
+  await p1.goto(`http://localhost:${PORT}/app/`);
   await p1.waitForFunction(() => window.__lienzoStore?.getState().ready);
   console.log('  GPU:', await p1.evaluate(() => window.__lienzoStore.getState().renderer));
   results.lienzo = await measure(p1, async (op) => {

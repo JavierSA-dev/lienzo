@@ -31,7 +31,7 @@ async function build(page) {
 // Escritorio
 {
   const page = await (await browser.newContext({ viewport: { width: 1600, height: 960 }, deviceScaleFactor: 1, serviceWorkers: 'block', locale: 'es-ES' })).newPage();
-  await page.goto(`http://localhost:${PORT}/`);
+  await page.goto(`http://localhost:${PORT}/app/`);
   await page.waitForFunction(() => window.__lienzoStore?.getState().ready);
   await build(page);
   await page.evaluate(() => window.__lienzo.call('fit', false));
@@ -60,7 +60,7 @@ async function build(page) {
 // Móvil
 {
   const page = await (await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, serviceWorkers: 'block', locale: 'es-ES' })).newPage();
-  await page.goto(`http://localhost:${PORT}/`);
+  await page.goto(`http://localhost:${PORT}/app/`);
   await page.waitForFunction(() => window.__lienzoStore?.getState().ready);
   await build(page);
   await page.evaluate(() => window.__lienzo.call('fit', false));
